@@ -449,7 +449,9 @@ fn is_dsh_web_endpoint(url: &Url) -> bool {
         return false;
     }
     let body = String::from_utf8_lossy(&body);
-    body.contains("window.__DSH_BOOT__")
+    // DSH 0.1.1-rc.1 起注入形式由 `window.__DSH_BOOT__` 变为
+    // `globalThis["__DSH_BOOT__"]`，因此按标记名子串匹配以兼容两种格式。
+    body.contains("__DSH_BOOT__")
         && body.contains("@deepseek-ai/dsh-client-connection")
         && body.contains("/plugins/")
 }

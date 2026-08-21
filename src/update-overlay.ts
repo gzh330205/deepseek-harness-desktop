@@ -47,6 +47,9 @@ function render(update: DshUpdateStatus): void {
   dismiss.addEventListener("click", () => void invoke("dismiss_update_overlay"));
   actions.append(dismiss);
   actions.hidden = false;
+
+  // 完成/失败后主窗口已有对话框引导，浮层 5 秒后自动关闭，避免一直残留。
+  window.setTimeout(() => void invoke("dismiss_update_overlay"), 5000);
 }
 
 async function poll(): Promise<void> {
