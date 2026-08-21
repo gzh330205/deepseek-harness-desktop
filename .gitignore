@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src-tauri/target/
+.env
+.env.*
+!.env.example
+# Tauri updater private signing key: keep only the public key in Git.
+src-tauri/keys/*.key
+!src-tauri/keys/*.key.pub

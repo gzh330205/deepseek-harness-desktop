@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DSH Desktop",
+  "version": "0.2.6",
+  "identifier": "ai.deepseek.dsh-desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DSH Desktop",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 920,
+        "minHeight": 620,
+        "visible": false,
+        "dragDropEnabled": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://ipc.localhost; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCOTk5OEJDMUM1MjQyMgpSV1FpSk1YQmk1bTVDSTRzcU5KeXVqeDlrMkNhS0VmS2c3MVFrVWNsR2xHcWUzcmd5a1BiZHlGUgo=",
+      "endpoints": [
+        "https://github.com/gzh330205/deepseek-harness-desktop/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": "all",
+    "icon": ["icons/whale-original.png", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese"],
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "startMenuFolder": "DSH Desktop"
+      }
+    },
+    "publisher": "DeepSeek Harness Desktop",
+    "copyright": "Copyright © 2026 DeepSeek Harness Desktop"
+  }
+}

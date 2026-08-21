@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DSH Desktop</title>
+  </head>
+  <body>
+    <main class="shell" aria-live="polite">
+      <section class="card">
+        <header class="card-header">
+          <div class="brand-mark">DSH</div>
+          <div class="shell-actions">
+            <button id="settings-trigger" class="icon-button" type="button" title="设置" aria-label="设置">⚙</button>
+            <button id="about-trigger" class="icon-button" type="button" title="关于" aria-label="关于">i</button>
+          </div>
+        </header>
+        <p class="eyebrow">DESKTOP LAUNCHER</p>
+        <h1 id="title">正在准备 DeepSeek Harness</h1>
+        <p id="detail">桌面端正在寻找或启动本机 DSH Web 服务。</p>
+        <div class="progress" aria-hidden="true"><span></span></div>
+        <p id="address" class="address"></p>
+        <pre id="logs" class="logs" hidden></pre>
+        <button id="retry" type="button" hidden>重新启动服务</button>
+      </section>
+
+      <aside id="update-indicator" class="update-indicator" hidden role="status" aria-live="polite">
+        <span id="update-spinner" class="update-spinner" aria-hidden="true"></span>
+        <span id="update-indicator-text">正在更新 DSH…</span>
+      </aside>
+
+      <section id="update-dialog" class="update-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
+        <div class="update-dialog-card">
+          <p class="eyebrow">DSH UPDATE</p>
+          <h2 id="update-dialog-title">发现新版本</h2>
+          <p id="update-dialog-message"></p>
+          <div id="update-dialog-actions" class="update-dialog-actions"></div>
+        </div>
+      </section>
+
+      <section id="settings-panel" class="panel" hidden aria-labelledby="settings-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">DESKTOP SHELL</p>
+            <h2 id="settings-title">设置</h2>
+          </div>
+        </div>
+        <label class="setting-row" for="close-behavior">
+          <span>
+            <strong>关闭窗口时</strong>
+            <small>选择主窗口关闭按钮的行为。</small>
+          </span>
+          <select id="close-behavior">
+            <option value="minimizeToTray">最小化到托盘</option>
+            <option value="exit">退出应用</option>
+          </select>
+        </label>
+        <p id="settings-status" class="settings-status" role="status"></p>
+      </section>
+
+      <section id="about-panel" class="panel about-panel" hidden aria-labelledby="about-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">DSH DESKTOP</p>
+            <h2 id="about-title">关于</h2>
+          </div>
+        </div>
+        <p>DeepSeek Harness 的 Tauri 桌面壳。</p>
+        <dl class="about-details">
+          <div><dt>版本</dt><dd id="version">—</dd></div>
+          <div><dt>运行方式</dt><dd>复用或管理本机 DSH Web 服务</dd></div>
+        </dl>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
