@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permissions for the DSH Desktop launcher","local":true,"windows":["main","settings","about","update-overlay","desktop-update"],"permissions":["core:default","updater:default"]}}
+{"default":{"identifier":"default","description":"Default permissions for the DSH Desktop launcher","local":true,"windows":["main","settings","about","update-overlay","desktop-update","dsh-update-prompt"],"permissions":["core:default","core:window:allow-close","updater:default"]}}

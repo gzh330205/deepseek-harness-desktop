@@ -7,9 +7,11 @@
   </head>
   <body>
     <main class="update-overlay" aria-live="polite">
-      <span id="spinner" class="spinner" aria-hidden="true"></span>
-      <span id="message"></span>
-      <div id="actions" class="actions" hidden></div>
+      <div class="update-overlay-row">
+        <span id="spinner" class="spinner" aria-hidden="true"></span>
+        <span id="message"></span>
+      </div>
+      <div id="progress" class="progress" hidden aria-hidden="true"><span></span></div>
     </main>
     <script type="module" src="/src/update-overlay.ts"></script>
   </body>

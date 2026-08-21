@@ -1,7 +1,7 @@
 import "./desktop-update.css";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { check, type DownloadEvent } from "@tauri-apps/plugin-updater";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 
 function requiredElement<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -11,6 +11,9 @@ function requiredElement<T extends HTMLElement>(selector: string): T {
 
 const title = requiredElement<HTMLHeadingElement>("#title");
 const message = requiredElement<HTMLParagraphElement>("#message");
+const progress = requiredElement<HTMLElement>("#progress");
+const progressFill = requiredElement<HTMLElement>("#progress-fill");
+const status = requiredElement<HTMLParagraphElement>("#status");
 const actions = requiredElement<HTMLElement>("#actions");
 
 function clearActions(): void {
@@ -29,47 +32,102 @@ function addButton(label: string, onClick: () => void, secondary = false): HTMLB
   return button;
 }
 
+// 结果通知 Rust 并关闭窗口：Rust 继续检查 DSH 更新（有桌面更新的成功路径
+// 会直接重启应用，不会走到这里）。
+function notifyAndClose(): void {
+  const currentWindow = getCurrentWebviewWindow();
+  void invoke("desktop_update_done").finally(() => {
+    void currentWindow.close().catch(() => {});
+  });
+}
+
 async function main(): Promise<void> {
-  const closeWindow = (): void => void getCurrentWebviewWindow().close();
-  const update = await check({ timeout: 10_000 }).catch(() => null);
+  let update: Update | null;
+  try {
+    update = await check({ timeout: 10_000 });
+  } catch {
+    // 检查失败（网络/服务器不可用）与“无更新”必须区分：失败时提示重试。
+    title.textContent = "无法检查更新";
+    message.textContent = "无法连接更新服务器（网络或服务器不可用）。请重试。";
+    status.textContent = "";
+    progress.hidden = true;
+    addButton("重试", () => {
+      clearActions();
+      void main();
+    });
+    addButton("关闭", notifyAndClose, true);
+    return;
+  }
   if (!update) {
+    // 桌面没有更新：短暂提示后自动关闭，继续检查 DSH 更新。
     title.textContent = "当前已是最新版本";
-    message.textContent = "没有发现 DSH Desktop 新版本。";
-    addButton("关闭", closeWindow, true);
+    message.textContent = "没有发现 DSH Desktop 新版本，正在检查 DSH 更新…";
+    window.setTimeout(notifyAndClose, 900);
     return;
   }
 
   title.textContent = "发现 DSH Desktop 新版本";
-  message.textContent = `当前版本 ${update.currentVersion}，最新版本 ${update.version}。是否下载并安装更新？`;
-  const install = addButton("下载并安装", async () => {
-    install.disabled = true;
-    clearActions();
-    title.textContent = "正在下载更新…";
-    let downloaded = 0;
-    let total: number | undefined;
-    const onEvent = (event: DownloadEvent): void => {
-      if (event.event === "Started") {
-        total = event.data.contentLength ?? undefined;
-      } else if (event.event === "Progress") {
-        downloaded += event.data.chunkLength;
-      }
-      const percent =
-        total && total > 0 ? `（${Math.round((downloaded / total) * 100)}%）` : "";
-      message.textContent = `正在下载更新… ${(downloaded / 1024 / 1024).toFixed(1)} MB${percent}`;
-    };
-    try {
-      await update.downloadAndInstall(onEvent);
-      title.textContent = "更新已完成";
-      message.textContent = "DSH Desktop 已更新到最新版本，正在重启…";
-      clearActions();
-      await invoke("restart_desktop_app");
-    } catch (error) {
-      title.textContent = "更新失败";
-      message.textContent = String(error);
-      addButton("关闭", closeWindow, true);
-    }
+  message.textContent = `当前版本 ${update.currentVersion}，最新版本 ${update.version}。是否立即下载并更新？`;
+  addButton("更新", () => {
+    void startUpdate(update);
   });
-  addButton("暂不更新", closeWindow, true);
+  addButton("暂不更新", notifyAndClose, true);
+}
+
+async function startUpdate(update: Update): Promise<void> {
+  // 下载/安装期间锁定主窗口：禁止操作 DSH 页面，避免与更新冲突。
+  const unlock = (): void => void invoke("set_main_window_locked", { locked: false }).catch(() => {});
+  try {
+    await invoke("set_main_window_locked", { locked: true });
+  } catch {
+    // 主窗口不存在等异常不阻塞下载。
+  }
+
+  clearActions();
+  title.textContent = "正在下载更新…";
+  message.textContent = "下载期间已锁定页面，请等待更新完成。";
+  progress.hidden = false;
+  progressFill.style.width = "0%";
+
+  let downloaded = 0;
+  let total: number | undefined;
+  const onEvent = (event: DownloadEvent): void => {
+    if (event.event === "Started") {
+      total = event.data.contentLength ?? undefined;
+    } else if (event.event === "Progress") {
+      downloaded += event.data.chunkLength;
+    }
+    const percent =
+      total && total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : undefined;
+    progressFill.style.width = percent != null ? `${percent}%` : "40%";
+    status.textContent = percent != null ? `${percent}%` : "";
+    const megabytes = (downloaded / 1024 / 1024).toFixed(1);
+    message.textContent =
+      percent != null
+        ? `正在下载更新… ${megabytes} MB（${percent}%）`
+        : `正在下载更新… ${megabytes} MB`;
+  };
+
+  try {
+    await update.download(onEvent);
+    // 下载完成 → 开始安装更新。
+    title.textContent = "下载完成，正在安装更新…";
+    message.textContent = "安装完成后应用将自动重启并使用新版本。";
+    progressFill.style.width = "100%";
+    status.textContent = "100%";
+    await update.install();
+    title.textContent = "更新已完成";
+    message.textContent = "DSH Desktop 已更新到最新版本，正在重启…";
+    clearActions();
+    await invoke("restart_desktop_app");
+  } catch (error) {
+    unlock();
+    progress.hidden = true;
+    status.textContent = "";
+    title.textContent = "更新失败";
+    message.textContent = String(error);
+    addButton("关闭", notifyAndClose, true);
+  }
 }
 
 void main();

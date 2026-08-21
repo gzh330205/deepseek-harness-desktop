@@ -19,7 +19,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Manager, PhysicalPosition, RunEvent, State, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
 };
 use url::Url;
 
@@ -36,6 +37,9 @@ const TRAY_ABOUT_ID: &str = "about";
 const TRAY_QUIT_ID: &str = "quit";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const UPDATE_OVERLAY_LABEL: &str = "update-overlay";
+const UPDATE_OVERLAY_WIDTH: f64 = 300.0;
+const UPDATE_OVERLAY_HEIGHT: f64 = 76.0;
+const UPDATE_OVERLAY_PADDING: f64 = 18.0;
 // The launcher will flag a DSH installation older than this baseline even when
 // the registry does not yet offer a newer release.
 const MINIMUM_DSH_VERSION: &str = "0.1.0-rc.7";
@@ -134,6 +138,9 @@ struct ShellSettings {
 struct AppLifecycle {
     explicit_exit_requested: bool,
     close_behavior: CloseBehavior,
+    /// 桌面更新检测只在本会话内收敛一次：窗口显式通知与窗口关闭事件可能同时
+    /// 到达，需要去重后再进入 DSH 更新检查。
+    desktop_update_resolved: bool,
 }
 
 type ManagedLifecycle = Arc<Mutex<AppLifecycle>>;
@@ -744,6 +751,26 @@ fn show_main_window(app: &AppHandle) {
     let _ = window.set_focus();
 }
 
+fn overlay_corner_position(app: &AppHandle) -> Option<(f64, f64)> {
+    let main_window = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let size = main_window.inner_size().ok()?;
+    let position = main_window.outer_position().ok()?;
+    let x = f64::from(position.x + size.width as i32) - UPDATE_OVERLAY_WIDTH - UPDATE_OVERLAY_PADDING;
+    let y = f64::from(position.y + size.height as i32) - UPDATE_OVERLAY_HEIGHT - UPDATE_OVERLAY_PADDING;
+    Some((x, y))
+}
+
+/// 主窗口移动或缩放时重新把更新浮层贴回右下角。
+fn position_update_overlay(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(UPDATE_OVERLAY_LABEL) else {
+        return;
+    };
+    let Some((x, y)) = overlay_corner_position(app) else {
+        return;
+    };
+    let _ = window.set_position(PhysicalPosition::new(x as i32, y as i32));
+}
+
 fn show_update_overlay(app: &AppHandle) {
     if app.get_webview_window(UPDATE_OVERLAY_LABEL).is_some() {
         return;
@@ -751,26 +778,20 @@ fn show_update_overlay(app: &AppHandle) {
     let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
     };
-    let Ok(size) = main_window.inner_size() else {
+    // 浮层只在进入 DSH 页面后才创建，此时主窗口已显示，位置真实有效；
+    // 计算失败（窗口不可见等）则不弹，避免浮层漂到屏幕左上角。
+    let Some((x, y)) = overlay_corner_position(app) else {
         return;
     };
-    let Ok(position) = main_window.outer_position() else {
-        return;
-    };
-    let width = 280.0;
-    let height = 52.0;
-    let padding = 18.0;
-    let x = f64::from(position.x + size.width as i32) - width - padding;
-    let y = f64::from(position.y + size.height as i32) - height - padding;
     let Ok(builder) = WebviewWindowBuilder::new(
         app,
         UPDATE_OVERLAY_LABEL,
         WebviewUrl::App("update-overlay.html".into()),
     )
     .title("DSH 更新")
-    .inner_size(width, height)
-    .min_inner_size(width, height)
-    .max_inner_size(width, height)
+    .inner_size(UPDATE_OVERLAY_WIDTH, UPDATE_OVERLAY_HEIGHT)
+    .min_inner_size(UPDATE_OVERLAY_WIDTH, UPDATE_OVERLAY_HEIGHT)
+    .max_inner_size(UPDATE_OVERLAY_WIDTH, UPDATE_OVERLAY_HEIGHT)
     .position(x, y)
     .resizable(false)
     .maximizable(false)
@@ -781,7 +802,8 @@ fn show_update_overlay(app: &AppHandle) {
     .transparent(true)
     .shadow(false)
     .data_directory(auxiliary_webview_data_directory(app, UPDATE_OVERLAY_LABEL))
-    .parent(&main_window) else {
+    .parent(&main_window)
+    else {
         return;
     };
     let _ = builder.build();
@@ -794,38 +816,141 @@ fn dismiss_update_overlay(app: AppHandle) {
     }
 }
 
-const DESKTOP_UPDATE_LABEL: &str = "desktop-update";
-
-/// 显示 DSH Desktop 软件自身更新的独立对话框窗口。与主窗口导航无关，
-/// DSH 页面加载后依然可见、可下载安装。
-fn show_desktop_update_window(app: &AppHandle) {
-    if app.get_webview_window(DESKTOP_UPDATE_LABEL).is_some() {
-        if let Some(window) = app.get_webview_window(DESKTOP_UPDATE_LABEL) {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+/// 显示 DSH 更新的居中询问弹窗：发现新版本时询问是否更新，更新完成后询问
+/// 是否重启。与 show_desktop_update_window 一样，必须在主线程之外调用
+/// （否则与 WebView2 环境初始化的消息泵互相等待而死锁）。
+fn show_dsh_update_prompt(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(DSH_UPDATE_PROMPT_LABEL) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
         return;
     }
     let _ = WebviewWindowBuilder::new(
+        app,
+        DSH_UPDATE_PROMPT_LABEL,
+        WebviewUrl::App("dsh-update-prompt.html".into()),
+    )
+    .title("DSH 更新")
+    .inner_size(460.0, 320.0)
+    .min_inner_size(460.0, 320.0)
+    .max_inner_size(460.0, 320.0)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .always_on_top(true)
+    .center()
+    .data_directory(auxiliary_webview_data_directory(app, DSH_UPDATE_PROMPT_LABEL))
+    .build();
+}
+
+#[tauri::command]
+fn dismiss_dsh_update_prompt(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(DSH_UPDATE_PROMPT_LABEL) {
+        let _ = window.close();
+    }
+}
+
+const DESKTOP_UPDATE_LABEL: &str = "desktop-update";
+const DSH_UPDATE_PROMPT_LABEL: &str = "dsh-update-prompt";
+
+/// 显示 DSH Desktop 软件自身更新的独立对话框窗口。进入 DSH 页面后弹出，
+/// 用户选择更新时锁定主窗口并在本窗口中下载、安装。
+///
+/// 注意：本函数必须在主线程之外的线程运行。Tauri 在同步命令/事件回调的主线程
+/// 内联创建 WebView 时会与 WebView2 环境初始化的消息泵互相等待而死锁；
+/// 从后台线程创建则通过事件循环代理到主线程，可正常完成。
+fn show_desktop_update_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(DESKTOP_UPDATE_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+    let window = WebviewWindowBuilder::new(
         app,
         DESKTOP_UPDATE_LABEL,
         WebviewUrl::App("desktop-update.html".into()),
     )
     .title("DSH Desktop 更新")
-    .inner_size(480.0, 330.0)
-    .min_inner_size(480.0, 330.0)
-    .max_inner_size(480.0, 330.0)
+    .inner_size(480.0, 370.0)
+    .min_inner_size(480.0, 370.0)
+    .max_inner_size(480.0, 370.0)
     .resizable(false)
     .maximizable(false)
     .minimizable(false)
+    .always_on_top(true)
     .center()
     .data_directory(auxiliary_webview_data_directory(app, DESKTOP_UPDATE_LABEL))
     .build();
+    let Ok(window) = window else {
+        return;
+    };
+    // 窗口关闭（“暂不更新”/检查失败/直接点标题栏 X）时恢复主窗口操作并
+    // 继续检查 DSH 更新；安装成功路径会直接重启应用，不受影响。
+    let app_handle = app.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Some(main) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+                let _ = main.set_enabled(true);
+            }
+            resolve_desktop_update(&app_handle);
+        }
+    });
 }
 
 #[tauri::command]
-fn show_desktop_update(app: AppHandle) {
+async fn show_desktop_update(app: AppHandle) {
     show_desktop_update_window(&app);
+}
+
+/// 桌面更新窗口通知：没有更新 / 用户选择暂不更新 / 更新失败 → 继续检查 DSH 更新。
+#[tauri::command]
+fn desktop_update_done(app: AppHandle) {
+    resolve_desktop_update(&app);
+}
+
+/// 桌面更新下载/安装期间锁定主窗口，禁止操作 DSH 页面。
+#[tauri::command]
+fn set_main_window_locked(app: AppHandle, locked: bool) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.set_enabled(!locked);
+    }
+}
+
+/// 桌面更新的结果收敛点：本会话内只触发一次 DSH 更新检查。
+fn resolve_desktop_update(app: &AppHandle) {
+    let Some(lifecycle) = app.try_state::<ManagedLifecycle>() else {
+        return;
+    };
+    {
+        let Ok(mut state) = lifecycle.lock() else {
+            return;
+        };
+        if state.desktop_update_resolved {
+            return;
+        }
+        state.desktop_update_resolved = true;
+    }
+    let Some(service) = app.try_state::<ManagedService>() else {
+        return;
+    };
+    let service = Arc::clone(service.inner());
+    let app = app.clone();
+    thread::spawn(move || match check_for_dsh_update(&service) {
+        // 发现新版本：弹出居中的询问弹窗，由用户决定是否更新。
+        Ok(true) => show_dsh_update_prompt(&app),
+        Ok(false) => {}
+        Err(error) => set_update_status(
+            &service,
+            DshUpdateStatus {
+                phase: "checkFailed",
+                message: format!("无法检查 DSH 更新：{error}"),
+                current_version: None,
+                latest_version: None,
+                update_tag: None,
+            },
+        ),
+    });
 }
 
 #[tauri::command]
@@ -933,8 +1058,16 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_SHOW_ID => show_main_window(app),
-            TRAY_SETTINGS_ID => show_settings_window(app),
-            TRAY_ABOUT_ID => show_about_window(app),
+            // 托盘事件也在主线程回调；建窗口移到后台线程，避免与 WebView2
+            // 环境初始化的消息泵互相等待（见 show_desktop_update_window 注释）。
+            TRAY_SETTINGS_ID => {
+                let app = app.clone();
+                thread::spawn(move || show_settings_window(&app));
+            }
+            TRAY_ABOUT_ID => {
+                let app = app.clone();
+                thread::spawn(move || show_about_window(&app));
+            }
             TRAY_QUIT_ID => quit_application(app),
             _ => {}
         })
@@ -1016,12 +1149,13 @@ fn update_close_behavior(
 }
 
 #[tauri::command]
-fn show_shell_settings(app: AppHandle) {
+async fn show_shell_settings(app: AppHandle) {
+    // 与 show_desktop_update_window 相同的理由：在主线程之外创建辅助窗口。
     show_settings_window(&app);
 }
 
 #[tauri::command]
-fn show_about(app: AppHandle) {
+async fn show_about(app: AppHandle) {
     show_about_window(&app);
 }
 
@@ -1068,72 +1202,73 @@ fn start_dsh_web(app: AppHandle, service: State<'_, ManagedService>) -> Result<(
 }
 
 #[tauri::command]
-fn update_dsh_in_background(
+async fn update_dsh_in_background(
     app: AppHandle,
     service: State<'_, ManagedService>,
 ) -> Result<(), String> {
-    {
+    let update_tag = {
         let mut instance = service
             .lock()
             .map_err(|_| "DSH 服务状态锁已损坏".to_string())?;
         // `skipped` 表示用户选择“暂不更新，继续启动”或自动跳过；此时仍保留
-        // 已知的最新版本与发布标签，允许用户稍后从右下角浮层发起后台更新。
+        // 已知的最新版本与发布标签，允许用户稍后发起后台更新。
         if !matches!(instance.update.phase, "updateAvailable" | "skipped") {
             return Err("当前没有可安装的 DSH 更新。".to_string());
         }
-        if instance.update.update_tag.is_none() {
-            return Err("缺少可用的 DSH 更新版本信息。".to_string());
-        }
+        let update_tag = instance
+            .update
+            .update_tag
+            .clone()
+            .ok_or_else(|| "缺少可用的 DSH 更新版本信息。".to_string())?;
         instance.update = DshUpdateStatus {
             phase: "updating",
             message: "正在后台下载并安装 DSH 更新…".to_string(),
             current_version: instance.update.current_version.clone(),
             latest_version: instance.update.latest_version.clone(),
-            update_tag: instance.update.update_tag.clone(),
+            update_tag: Some(update_tag.clone()),
         };
-    }
+        update_tag
+    };
 
-    show_update_overlay(&app);
+    // 关掉居中询问弹窗，变成右下角进度浮层；窗口创建统一放在后台线程
+    // （主线程内联创建 WebView 会与 WebView2 消息泵死锁）。
     let service = Arc::clone(service.inner());
     thread::spawn(move || {
-        let update_tag = service
-            .lock()
-            .ok()
-            .and_then(|instance| instance.update.update_tag.clone())
-            .unwrap_or_else(|| "latest".to_string());
+        dismiss_dsh_update_prompt(app.clone());
+        show_update_overlay(&app);
+
         let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
         let mut update = Command::new(npm);
         let package_spec = format!("@deepseek-ai/dsh@{update_tag}");
         update.args(["install", "--global", &package_spec]);
-        let result = run_command_output(&mut update, "更新 DSH");
-        match result.and_then(|_| installed_dsh_version()) {
-            Ok(installed_version) => {
-                let latest_version = service
-                    .lock()
-                    .ok()
-                    .and_then(|instance| instance.update.latest_version.clone());
-                set_update_status(
-                    &service,
-                    DshUpdateStatus {
-                        phase: "updateComplete",
-                        message: format!("DSH 已更新至 {installed_version}，可以启动新版本。"),
-                        current_version: Some(installed_version),
-                        latest_version,
-                        update_tag: Some(update_tag),
-                    },
-                );
-            }
-            Err(error) => set_update_status(
-                &service,
-                DshUpdateStatus {
+        let result = run_command_output(&mut update, "更新 DSH").and_then(|_| installed_dsh_version());
+
+        set_update_status(
+            &service,
+            match result {
+                Ok(installed_version) => DshUpdateStatus {
+                    phase: "updateComplete",
+                    message: format!("DSH 已更新至 {installed_version}。重启后将使用新版本。"),
+                    current_version: Some(installed_version),
+                    latest_version: service
+                        .lock()
+                        .ok()
+                        .and_then(|instance| instance.update.latest_version.clone()),
+                    update_tag: Some(update_tag),
+                },
+                Err(error) => DshUpdateStatus {
                     phase: "updateFailed",
                     message: format!("DSH 更新失败：{error}"),
                     current_version: None,
                     latest_version: None,
                     update_tag: None,
                 },
-            ),
-        }
+            },
+        );
+
+        // 更新完成/失败：收起右下角进度，回到居中弹窗让用户选择重启或查看错误。
+        dismiss_update_overlay(app.clone());
+        show_dsh_update_prompt(&app);
     });
     Ok(())
 }
@@ -1164,28 +1299,21 @@ pub fn run() {
                 }
             }
             create_tray(app.handle())?;
-            // Check the installed DSH against npm before starting DSH Web. The
-            // launcher remains responsive while this runs in the background.
-            let update_service = Arc::clone(&service_for_setup);
-            let update_app = app.handle().clone();
-            thread::spawn(move || {
-                match check_for_dsh_update(&update_service) {
-                    // 发现新版本：弹出独立更新浮层（导航到 DSH 页面后依然
-                    // 可见、可点“后台更新”），DSH 启动不被阻塞。
-                    Ok(true) => show_update_overlay(&update_app),
-                    Err(error) => set_update_status(
-                        &update_service,
-                        DshUpdateStatus {
-                            phase: "checkFailed",
-                            message: format!("无法检查 DSH 更新：{error}"),
-                            current_version: None,
-                            latest_version: None,
-                            update_tag: None,
-                        },
-                    ),
-                    Ok(false) => {}
-                }
-            });
+            // 打开即先启动 DSH Web 服务；桌面更新与 DSH 更新的检查都推迟到
+            // 用户进入 DSH 页面之后（见 desktop_update_done / resolve_desktop_update）。
+            start_dsh_web_in_background(app.handle().clone(), Arc::clone(&service_for_setup));
+            // 右下角更新浮层跟随主窗口移动/缩放。
+            if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                let app_handle = app.handle().clone();
+                main_window.on_window_event(move |event| {
+                    if matches!(
+                        event,
+                        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+                    ) {
+                        position_update_overlay(&app_handle);
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1193,9 +1321,10 @@ pub fn run() {
             start_dsh_web,
             update_dsh_in_background,
             dismiss_update_overlay,
+            dismiss_dsh_update_prompt,
             show_desktop_update,
-            restart_desktop_app,
-            show_desktop_update,
+            desktop_update_done,
+            set_main_window_locked,
             restart_desktop_app,
             restart_dsh_web,
             show_launcher,

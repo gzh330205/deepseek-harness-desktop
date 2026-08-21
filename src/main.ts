@@ -1,22 +1,12 @@
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { check as checkDesktopUpdate } from "@tauri-apps/plugin-updater";
-
-interface DshUpdateStatus {
-  phase: "checking" | "upToDate" | "updateAvailable" | "updating" | "updateComplete" | "updateFailed" | "checkFailed" | "skipped";
-  message: string;
-  currentVersion?: string;
-  latestVersion?: string;
-  updateTag?: string;
-}
 
 interface DshWebStatus {
   state: "starting" | "ready" | "failed";
   url?: string;
   message: string;
   logs: string[];
-  update: DshUpdateStatus;
 }
 
 interface ShellSettings {
@@ -34,20 +24,9 @@ const aboutPanel = requiredElement<HTMLElement>("about-panel");
 const closeBehavior = requiredElement<HTMLSelectElement>("close-behavior");
 const settingsStatus = requiredElement<HTMLParagraphElement>("settings-status");
 const version = requiredElement<HTMLElement>("version");
-const updateIndicator = requiredElement<HTMLElement>("update-indicator");
-const updateIndicatorText = requiredElement<HTMLElement>("update-indicator-text");
-const updateSpinner = requiredElement<HTMLElement>("update-spinner");
-const updateDialog = requiredElement<HTMLElement>("update-dialog");
-const updateDialogTitle = requiredElement<HTMLHeadingElement>("update-dialog-title");
-const updateDialogMessage = requiredElement<HTMLParagraphElement>("update-dialog-message");
-const updateDialogActions = requiredElement<HTMLElement>("update-dialog-actions");
 
 let navigating = false;
 let settings: ShellSettings | undefined;
-let lastUpdatePhase: DshUpdateStatus["phase"] | undefined;
-let activeUpdate: DshUpdateStatus | undefined;
-let dshStartRequested = false;
-let desktopUpdateCheckStarted = false;
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -63,101 +42,10 @@ function isAuxiliaryWindow(): boolean {
   return windowLabel() === "about" || windowLabel() === "settings";
 }
 
-async function checkForDesktopUpdate(): Promise<void> {
-  if (isAuxiliaryWindow() || desktopUpdateCheckStarted) return;
-  desktopUpdateCheckStarted = true;
-  try {
-    const update = await checkDesktopUpdate({ timeout: 10_000 });
-    if (!update) return;
-    // 发现桌面壳新版本：由独立的 desktop-update 窗口承载提示与下载安装，
-    // 主窗口导航到 DSH 后依然可见可操作。
-    void invoke("show_desktop_update");
-  } catch {
-    // A network or release-metadata failure must never interrupt DSH startup.
-  }
-}
-
-function renderUpdate(update: DshUpdateStatus): void {
-  activeUpdate = update;
-  // Settings and About share this launcher document, but update controls belong
-  // exclusively to the main DSH window.
-  if (isAuxiliaryWindow()) {
-    updateIndicator.hidden = true;
-    updateDialog.hidden = true;
-    return;
-  }
-  if (update.phase === lastUpdatePhase) return;
-  lastUpdatePhase = update.phase;
-
-  const showIndicator = (message: string, complete = false): void => {
-    updateIndicatorText.textContent = message;
-    updateSpinner.classList.toggle("done", complete);
-    updateIndicator.hidden = false;
-  };
-  const clearActions = (): void => { updateDialogActions.replaceChildren(); };
-  const addAction = (label: string, onClick: () => void, secondary = false): void => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    button.classList.toggle("secondary", secondary);
-    button.addEventListener("click", onClick);
-    updateDialogActions.append(button);
-  };
-  const showDialog = (titleText: string, message: string): void => {
-    updateDialogTitle.textContent = titleText;
-    updateDialogMessage.textContent = message;
-    updateDialog.hidden = false;
-  };
-  const hideDialog = (): void => { updateDialog.hidden = true; };
-
-  switch (update.phase) {
-    case "checking":
-      updateIndicator.hidden = true;
-      break;
-    case "upToDate":
-    case "skipped":
-    case "checkFailed":
-      updateIndicator.hidden = true;
-      if (!dshStartRequested) void startDsh();
-      break;
-    case "updateAvailable":
-      // 不阻塞启动：自动启动 DSH；“发现新版本”提示由独立的 update-overlay
-      // 窗口承载（导航到 DSH 页面后依然可见、可点“后台更新”）。
-      updateIndicator.hidden = true;
-      if (!dshStartRequested) void startDsh();
-      break;
-    case "updating":
-      showIndicator("正在后台更新 DSH…");
-      break;
-    case "updateComplete":
-      showIndicator("DSH 更新已完成", true);
-      clearActions();
-      showDialog("DSH 已更新", "更新已完成。DSH 正在以当前版本运行；是否立即重启 DSH Web 以使用新版本？");
-      addAction("立即重启", () => {
-        hideDialog();
-        void restartDsh();
-      });
-      addAction("继续使用当前版本", () => {
-        hideDialog();
-        void openDsh();
-      }, true);
-      break;
-    case "updateFailed":
-      showIndicator("DSH 更新失败", true);
-      clearActions();
-      showDialog("DSH 更新失败", update.message);
-      addAction("使用当前版本继续启动", () => {
-        hideDialog();
-        void startDsh();
-      });
-      break;
-  }
-}
-
-async function startDsh(): Promise<void> {
-  if (dshStartRequested) return;
-  dshStartRequested = true;
-  await invoke("start_dsh_web");
+// 启动流程：桌面壳打开时 Rust 已在后台启动 DSH Web 服务，启动页只负责
+// 等待服务就绪并导航进入 DSH；桌面更新与 DSH 更新的检查都在进入 DSH 后
+// 由 Rust/独立窗口负责，不阻塞这里的启动。
+async function start(): Promise<void> {
   await waitForReady();
 }
 
@@ -165,13 +53,11 @@ async function restartDsh(): Promise<void> {
   retry.hidden = true;
   logs.hidden = true;
   address.textContent = "";
-  dshStartRequested = true;
   await invoke("restart_dsh_web");
   await waitForReady();
 }
 
 function render(status: DshWebStatus): void {
-  renderUpdate(status.update);
   if (status.state === "ready" && status.url) {
     title.textContent = "正在打开 DeepSeek Harness";
     detail.textContent = "DSH Web 服务已经就绪。";
@@ -193,6 +79,23 @@ function render(status: DshWebStatus): void {
   detail.textContent = status.message;
 }
 
+async function openDsh(): Promise<void> {
+  const status = await invoke<DshWebStatus>("dsh_status");
+  render(status);
+
+  if (status.state === "ready" && status.url && !navigating) {
+    navigating = true;
+    // 进入 DSH 后立即弹出桌面更新检测窗口（无更新时窗口自动关闭并继续
+    // DSH 更新检查）；失败不影响导航。
+    try {
+      await invoke("show_desktop_update");
+    } catch {
+      // 忽略：桌面更新窗口打开失败不阻塞进入 DSH。
+    }
+    window.location.replace(status.url);
+  }
+}
+
 async function loadSettings(): Promise<void> {
   settings = await invoke<ShellSettings>("shell_settings");
   closeBehavior.value = settings.closeBehavior;
@@ -202,29 +105,6 @@ async function loadSettings(): Promise<void> {
 function showPanel(panel: HTMLElement): void {
   settingsPanel.hidden = panel !== settingsPanel;
   aboutPanel.hidden = panel !== aboutPanel;
-}
-
-async function openDsh(): Promise<void> {
-  const status = await invoke<DshWebStatus>("dsh_status");
-  render(status);
-
-  if (status.state === "ready" && status.url && !navigating) {
-    navigating = true;
-    window.location.replace(status.url);
-  }
-}
-
-async function start(): Promise<void> {
-  await restartDsh();
-}
-
-async function waitForUpdateCheck(): Promise<void> {
-  while (true) {
-    const status = await invoke<DshWebStatus>("dsh_status");
-    render(status);
-    if (status.update.phase !== "checking") return;
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
-  }
 }
 
 async function waitForReady(): Promise<void> {
@@ -243,10 +123,6 @@ async function waitForReady(): Promise<void> {
     state: "failed",
     message: "等待 DSH Web 服务超时（35 秒）。",
     logs: [],
-    update: activeUpdate ?? {
-      phase: "skipped",
-      message: "DSH 更新状态不变。",
-    },
   });
 }
 
@@ -274,15 +150,11 @@ closeBehavior.addEventListener("change", () => {
 });
 
 retry.addEventListener("click", () => {
-  void start().catch((error: unknown) => {
+  void restartDsh().catch((error: unknown) => {
     render({
       state: "failed",
       message: `重启请求失败：${String(error)}`,
       logs: [],
-      update: activeUpdate ?? {
-        phase: "skipped",
-        message: "DSH 更新状态不变。",
-      },
     });
   });
 });
@@ -308,25 +180,15 @@ if (windowLabel() === "about") {
         state: "failed",
         message: `无法显示启动窗口：${String(error)}`,
         logs: [],
-        update: activeUpdate ?? {
-          phase: "skipped",
-          message: "DSH 更新状态不变。",
-        },
       });
     });
   });
 
-  void checkForDesktopUpdate();
-  void waitForUpdateCheck().catch((error: unknown) => {
+  void start().catch((error: unknown) => {
     render({
       state: "failed",
-      message: `无法读取 DSH 更新状态：${String(error)}`,
+      message: `无法启动 DSH Web 服务：${String(error)}`,
       logs: [],
-      update: {
-        phase: "checkFailed",
-        message: "无法检查 DSH 更新。",
-      },
     });
-    void startDsh();
   });
 }
