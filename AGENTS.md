@@ -14,7 +14,7 @@
 - 应用图标使用 `src-tauri/icons/whale-original.png` 及其派生资产，不要替换。
 - 主窗口 `dragDropEnabled` 必须保持 `false`（Windows 下 Tauri 原生拖拽会拦截前端 HTML5 drag/drop）。
 - 设置/关于为固定尺寸、不可最大化的原生辅助窗口，只保留标题栏原生关闭按钮；不要重新加入页面内关闭按钮。
-- 更新顺序固定为：打开应用先启动 DSH Web 服务 → 进入 DSH 页面后先检查桌面更新（有更新则弹出居中的 `desktop-update` 窗口，下载安装期间锁定主窗口）→ 桌面无更新或用户选择“暂不更新”后才检查 DSH 更新（有更新则弹出居中的 `dsh-update-prompt` 窗口询问是否更新；用户选择更新后，右下角 `update-overlay` 无边框小窗口显示更新进度，更新完成后再回到居中弹窗询问立即重启或稍后重启；更新期间不阻塞 DSH 使用）；不要在设置/关于窗口内显示更新内容。
+- 更新顺序固定为：打开应用先启动 DSH Web 服务 → 进入 DSH 页面后先静默检查桌面更新（检查期间不弹窗，仅发现新版本时弹出居中的 `desktop-update` 窗口，下载安装期间锁定主窗口）→ 桌面无更新或用户选择“暂不更新”后才检查 DSH 更新（同样静默检查，有更新则弹出居中的 `dsh-update-prompt` 窗口询问是否更新；用户选择更新后，右下角 `update-overlay` 无边框小窗口显示更新进度，更新完成后再回到居中弹窗询问立即重启或稍后重启；更新期间不阻塞 DSH 使用）；不要在设置/关于窗口内显示更新内容。
 - 启动时主窗口保持 `visible: false`，由前端 `show_launcher` 命令在首帧绘制后显示，避免空白窗口。
 - Windows 下所有子进程（dsh.cmd、netstat、taskkill 等）必须使用 `CREATE_NO_WINDOW` 隐藏控制台窗口。
 

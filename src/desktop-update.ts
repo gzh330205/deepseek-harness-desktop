@@ -33,7 +33,7 @@ function addButton(label: string, onClick: () => void, secondary = false): HTMLB
 }
 
 // 结果通知 Rust 并关闭窗口：Rust 继续检查 DSH 更新（有桌面更新的成功路径
-// 会直接重启应用，不会走到这里）。
+// 会直接重启应用，不会走到这里）。本窗口默认隐藏，仅“发现新版本”时显示。
 function notifyAndClose(): void {
   const currentWindow = getCurrentWebviewWindow();
   void invoke("desktop_update_done").finally(() => {
@@ -42,36 +42,29 @@ function notifyAndClose(): void {
 }
 
 async function main(): Promise<void> {
+  // 检查期间窗口保持隐藏，完全不打扰用户。
   let update: Update | null;
   try {
     update = await check({ timeout: 10_000 });
   } catch {
-    // 检查失败（网络/服务器不可用）与“无更新”必须区分：失败时提示重试。
-    title.textContent = "无法检查更新";
-    message.textContent = "无法连接更新服务器（网络或服务器不可用）。请重试。";
-    status.textContent = "";
-    progress.hidden = true;
-    addButton("重试", () => {
-      clearActions();
-      void main();
-    });
-    addButton("关闭", notifyAndClose, true);
+    // 检查失败（网络/服务器不可用）：静默继续检查 DSH 更新。
+    notifyAndClose();
     return;
   }
   if (!update) {
-    // 桌面没有更新：短暂提示后自动关闭，继续检查 DSH 更新。
-    title.textContent = "当前已是最新版本";
-    message.textContent = "没有发现 DSH Desktop 新版本，正在检查 DSH 更新…";
-    window.setTimeout(notifyAndClose, 900);
+    // 没有新版本：静默关闭窗口并继续检查 DSH 更新。
+    notifyAndClose();
     return;
   }
 
+  // 发现新版本：渲染提示后再显示窗口，让用户选择是否更新。
   title.textContent = "发现 DSH Desktop 新版本";
   message.textContent = `当前版本 ${update.currentVersion}，最新版本 ${update.version}。是否立即下载并更新？`;
   addButton("更新", () => {
     void startUpdate(update);
   });
   addButton("暂不更新", notifyAndClose, true);
+  void invoke("reveal_desktop_update").catch(() => {});
 }
 
 async function startUpdate(update: Update): Promise<void> {

@@ -860,10 +860,16 @@ const DSH_UPDATE_PROMPT_LABEL: &str = "dsh-update-prompt";
 /// 注意：本函数必须在主线程之外的线程运行。Tauri 在同步命令/事件回调的主线程
 /// 内联创建 WebView 时会与 WebView2 环境初始化的消息泵互相等待而死锁；
 /// 从后台线程创建则通过事件循环代理到主线程，可正常完成。
-fn show_desktop_update_window(app: &AppHandle) {
+///
+/// `reveal` 控制是否显示已存在的窗口：只有前端确认“发现新版本”时才允许
+/// 显示（reveal=true）；启动后的重复调用（如服务抖动导致重新进入 DSH）
+/// 不得把正在静默检查的窗口提前弹出来。
+fn show_desktop_update_window(app: &AppHandle, reveal: bool) {
     if let Some(window) = app.get_webview_window(DESKTOP_UPDATE_LABEL) {
-        let _ = window.show();
-        let _ = window.set_focus();
+        if reveal {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
         return;
     }
     let window = WebviewWindowBuilder::new(
@@ -879,12 +885,15 @@ fn show_desktop_update_window(app: &AppHandle) {
     .maximizable(false)
     .minimizable(false)
     .always_on_top(true)
+    .visible(false)
     .center()
     .data_directory(auxiliary_webview_data_directory(app, DESKTOP_UPDATE_LABEL))
     .build();
     let Ok(window) = window else {
         return;
     };
+    // 窗口默认隐藏：检查更新期间完全不打扰用户，只有真正发现新版本时
+    // 前端才会调用 reveal_desktop_update 显示本窗口。
     // 窗口关闭（“暂不更新”/检查失败/直接点标题栏 X）时恢复主窗口操作并
     // 继续检查 DSH 更新；安装成功路径会直接重启应用，不受影响。
     let app_handle = app.clone();
@@ -898,9 +907,16 @@ fn show_desktop_update_window(app: &AppHandle) {
     });
 }
 
+/// 创建（隐藏的）桌面更新检查窗口；重复调用不会显示窗口。
 #[tauri::command]
 async fn show_desktop_update(app: AppHandle) {
-    show_desktop_update_window(&app);
+    show_desktop_update_window(&app, false);
+}
+
+/// 前端发现新版本后调用：显示桌面更新询问窗口。
+#[tauri::command]
+fn reveal_desktop_update(app: AppHandle) {
+    show_desktop_update_window(&app, true);
 }
 
 /// 桌面更新窗口通知：没有更新 / 用户选择暂不更新 / 更新失败 → 继续检查 DSH 更新。
@@ -1286,7 +1302,17 @@ pub fn run() {
         .manage(service)
         .manage(Arc::new(Mutex::new(AppLifecycle::default())) as ManagedLifecycle)
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 不恢复窗口可见性：桌面更新等窗口在启动时按需隐藏（visible:false），
+        // 若插件把上次的“可见”状态还原回来，检查更新期间就会弹出窗口。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // A second launch must reuse the first instance and its already-running
             // DSH connection rather than starting another desktop process/service.
@@ -1323,6 +1349,7 @@ pub fn run() {
             dismiss_update_overlay,
             dismiss_dsh_update_prompt,
             show_desktop_update,
+            reveal_desktop_update,
             desktop_update_done,
             set_main_window_locked,
             restart_desktop_app,
