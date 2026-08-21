@@ -606,15 +606,51 @@ fn connect_or_start_dsh_web(app: AppHandle, service: ManagedService) -> Result<(
     spawn_dsh_web(app, service)
 }
 
+/// `dsh web` 默认会用系统默认浏览器打开 Web UI。新版 DSH 支持 `--no-open`
+/// 关闭该行为；老版本不认识此参数（commander 会报错退出），因此先通过
+/// `dsh web --help` 探测，支持才追加。
+fn dsh_web_supports_no_open(command: &str) -> bool {
+    let mut probe = Command::new(command);
+    probe
+        .args(["web", "--help"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    probe.creation_flags(CREATE_NO_WINDOW);
+    let Ok(output) = probe.output() else {
+        return false;
+    };
+    let help = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    help.contains("--no-open")
+}
+
 fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> {
     let port = reserve_loopback_port()?;
     let url = Url::parse(&format!("http://{LOOPBACK}:{port}"))
         .map_err(|error| format!("无法构造本地 DSH 地址：{error}"))?;
     let command = dsh_command();
 
+    // `dsh web` 默认会在系统默认浏览器打开 Web UI；桌面壳自己承载页面，
+    // 必须传 --no-open 关闭该行为（老版本 DSH 不认识该参数，先探测再决定）。
+    let no_open_supported = dsh_web_supports_no_open(&command);
+
     let mut dsh_process = Command::new(&command);
+    let mut args = vec![
+        "web".to_string(),
+        "--host".to_string(),
+        LOOPBACK.to_string(),
+        "--port".to_string(),
+        port.to_string(),
+    ];
+    if no_open_supported {
+        args.push("--no-open".to_string());
+    }
     dsh_process
-        .args(["web", "--host", LOOPBACK, "--port", &port.to_string()])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -641,7 +677,8 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
         instance.origin = ServiceOrigin::ManagedChild;
         instance.state = ServiceState::Starting;
         instance.push_log(format!(
-            "未发现可复用的 DSH 服务；启动 `{command} web --host {LOOPBACK} --port {port}`"
+            "未发现可复用的 DSH 服务；启动 `{command} web --host {LOOPBACK} --port {port}{}`",
+            if no_open_supported { " --no-open" } else { "" }
         ));
         instance.generation
     };
