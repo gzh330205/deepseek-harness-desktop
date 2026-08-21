@@ -24,11 +24,9 @@ const spinner = requiredElement<HTMLElement>("#spinner");
 const actions = requiredElement<HTMLElement>("#actions");
 
 function render(update: DshUpdateStatus): void {
-  // DSH 已自动启动（updateAvailable → skipped）：保持“发现新版本”提示，
-  // 用户仍可随时点“后台更新”。
-  if (update.phase === "skipped") return;
-
-  if (update.phase === "updateAvailable") {
+  // updateAvailable 与 skipped（DSH 已自动启动，Rust 标记为 skipped）都要
+  // 展示“发现新版本”提示，用户仍可随时点“后台更新”。
+  if (update.phase === "updateAvailable" || update.phase === "skipped") {
     message.textContent = `发现 DSH 新版本（${update.updateTag ?? "next"}）：${update.currentVersion ?? "?"} → ${update.latestVersion ?? "?"}`;
     spinner.classList.remove("done");
     actions.replaceChildren();
