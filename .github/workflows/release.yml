@@ -36,6 +36,13 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Require signing secret
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw 'TAURI_SIGNING_PRIVATE_KEY is not configured in GitHub Actions secrets.'
+          }
+
       - name: Build signed NSIS updater artifact
         run: pnpm tauri build --bundles nsis
 
