@@ -52,6 +52,9 @@ jobs:
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $bundle = Get-ChildItem 'src-tauri/target/release/bundle/nsis/*-setup.exe' | Select-Object -First 1
           $signature = Get-Content "$($bundle.FullName).sig" -Raw
+          # GitHub replaces spaces in uploaded asset names with dots, so the
+          # manifest URL must use the normalized name or downloads 404.
+          $assetName = $bundle.Name -replace ' ', '.'
           $manifest = @{
             version = $version
             notes = "DSH Desktop $version"
@@ -59,7 +62,7 @@ jobs:
             platforms = @{
               'windows-x86_64-nsis' = @{
                 signature = $signature.Trim()
-                url = "https://github.com/${{ github.repository }}/releases/download/v$version/$($bundle.Name)"
+                url = "https://github.com/${{ github.repository }}/releases/download/v$version/$assetName"
               }
             }
           } | ConvertTo-Json -Depth 5
