@@ -66,26 +66,31 @@ pnpm tauri build
 
 ## GitHub 发布与桌面自动更新
 
-推送 `v<版本号>` 标签会触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：它在 Windows runner 上构建 NSIS 安装包、生成签名和 `latest.json`，随后创建同名 GitHub Release。桌面程序从 GitHub Releases 的 `latest/download/latest.json` 检查新版本，下载后由 Tauri 验证签名并调用 NSIS 更新安装包。
+使用本地一键发布脚本（参考 `md-editor` 的发布流程）：本机打包（NSIS + MSI，含 updater 签名）→ 生成 `latest.json` → 用 GitHub CLI 创建 Release 并上传资产。桌面程序从 GitHub Releases 的 `latest/download/latest.json` 检查新版本，下载后由 Tauri 验证签名并调用 NSIS 更新安装包。
 
 > 注意：桌面程序在用户机器上以匿名方式读取 Release 文件，因此**仓库必须保持公开**，否则更新检查会因 GitHub 返回 404 而静默失败。
 
-首次启用前，请在 GitHub 仓库 **Settings → Secrets and variables → Actions** 设置以下 Actions secrets：
+### 首次准备（已完成）
 
-- `TAURI_SIGNING_PRIVATE_KEY`：本机 `src-tauri/keys/dsh-desktop.key` 的完整内容；严禁提交到 Git。
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码；当前生成的私钥未设置密码时可留空，建议后续重新生成有密码的密钥后再设置。
+1. 签名密钥对位于 `src-tauri/keys/dsh-desktop.key`（私钥请妥善备份，**严禁提交到 Git**；公钥已写入 `src-tauri/tauri.conf.json`，后续发布必须持续使用同一个私钥，遗失后已安装版本将无法信任新签名）。
+2. 安装并登录 [GitHub CLI](https://cli.github.com/)：`winget install GitHub.cli`，然后 `gh auth login`。
 
-公钥已经写入 `src-tauri/tauri.conf.json`，因此后续发布必须持续使用同一个私钥。私钥遗失后，已安装版本将无法信任用新密钥签名的自动更新。
+### 每次发版
 
-发布示例：
+```bash
+# 1. 修改版本号（三处保持一致）：
+#    src-tauri/tauri.conf.json  ->  version
+#    package.json               ->  version
+#    src-tauri/Cargo.toml       ->  version
 
-```powershell
-# 将三个 version 字段同步更新至下一版本后：
-git add .
-git commit -m "release: v0.2.6"
-git tag v0.2.6
-git push origin master --tags
+# 2. 一键发布（打包 → 签名 → latest.json → GitHub Release）
+bash scripts/release.sh 0.2.8
+
+# 3. 提交推送代码
+git add -A && git commit -m "chore: release v0.2.8" && git push
 ```
+
+发布后，已安装用户打开应用即会收到更新提示。
 
 产品化发布前建议：
 
