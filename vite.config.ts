@@ -20,6 +20,7 @@ export default defineConfig({
       input: {
         main: "index.html",
         updateOverlay: "update-overlay.html",
+        desktopUpdate: "desktop-update.html",
       },
     },
     target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",

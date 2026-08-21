@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DSH Desktop 更新</title>
+  </head>
+  <body>
+    <main class="desktop-update" aria-live="polite">
+      <p class="eyebrow">DESKTOP UPDATE</p>
+      <h2 id="title">检查更新中…</h2>
+      <p id="message">正在从 GitHub Releases 检查 DSH Desktop 新版本。</p>
+      <div class="progress" aria-hidden="true" hidden><span></span></div>
+      <p id="status" class="status" role="status"></p>
+      <div id="actions" class="actions" hidden></div>
+    </main>
+    <script type="module" src="/src/desktop-update.ts"></script>
+  </body>
+</html>

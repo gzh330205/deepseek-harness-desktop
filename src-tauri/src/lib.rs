@@ -213,7 +213,20 @@ impl DshWebService {
     }
 }
 
+/// DSH 页面 localStorage 按 origin（含端口）隔离，随机端口会让每次启动的
+/// 存储互相不可见。优先固定使用 3080（DSH 默认端口）保持 origin 稳定；
+/// 仅当 3080 被其他程序占用时才退回随机空闲端口。
+const PREFERRED_DSH_PORT: u16 = 3080;
+
 fn reserve_loopback_port() -> Result<u16, String> {
+    if TcpListener::bind(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        PREFERRED_DSH_PORT,
+    ))
+    .is_ok()
+    {
+        return Ok(PREFERRED_DSH_PORT);
+    }
     let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
         .map_err(|error| format!("无法选择本地监听端口：{error}"))?;
     listener
@@ -334,8 +347,6 @@ fn set_update_status(service: &ManagedService, update: DshUpdateStatus) {
 fn check_for_dsh_update(service: &ManagedService) -> Result<bool, String> {
     set_update_status(service, DshUpdateStatus::checking());
     let current_version = installed_dsh_version()?;
-    // DSH publishes release candidates on `next` before promoting them to npm's
-    // `latest` tag. Check `next` first so desktop users are notified promptly.
     let (latest_version, update_tag) = latest_dsh_release()?;
     let older_than_minimum = compare_dsh_versions(&current_version, MINIMUM_DSH_VERSION)
         .is_some_and(|order| order.is_lt());
@@ -783,6 +794,45 @@ fn dismiss_update_overlay(app: AppHandle) {
     }
 }
 
+const DESKTOP_UPDATE_LABEL: &str = "desktop-update";
+
+/// 显示 DSH Desktop 软件自身更新的独立对话框窗口。与主窗口导航无关，
+/// DSH 页面加载后依然可见、可下载安装。
+fn show_desktop_update_window(app: &AppHandle) {
+    if app.get_webview_window(DESKTOP_UPDATE_LABEL).is_some() {
+        if let Some(window) = app.get_webview_window(DESKTOP_UPDATE_LABEL) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return;
+    }
+    let _ = WebviewWindowBuilder::new(
+        app,
+        DESKTOP_UPDATE_LABEL,
+        WebviewUrl::App("desktop-update.html".into()),
+    )
+    .title("DSH Desktop 更新")
+    .inner_size(480.0, 330.0)
+    .min_inner_size(480.0, 330.0)
+    .max_inner_size(480.0, 330.0)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .center()
+    .data_directory(auxiliary_webview_data_directory(app, DESKTOP_UPDATE_LABEL))
+    .build();
+}
+
+#[tauri::command]
+fn show_desktop_update(app: AppHandle) {
+    show_desktop_update_window(&app);
+}
+
+#[tauri::command]
+fn restart_desktop_app(app: AppHandle) {
+    let _ = app.restart();
+}
+
 #[tauri::command]
 fn show_launcher(app: AppHandle) {
     show_main_window(&app);
@@ -1117,9 +1167,13 @@ pub fn run() {
             // Check the installed DSH against npm before starting DSH Web. The
             // launcher remains responsive while this runs in the background.
             let update_service = Arc::clone(&service_for_setup);
+            let update_app = app.handle().clone();
             thread::spawn(move || {
-                if let Err(error) = check_for_dsh_update(&update_service) {
-                    set_update_status(
+                match check_for_dsh_update(&update_service) {
+                    // 发现新版本：弹出独立更新浮层（导航到 DSH 页面后依然
+                    // 可见、可点“后台更新”），DSH 启动不被阻塞。
+                    Ok(true) => show_update_overlay(&update_app),
+                    Err(error) => set_update_status(
                         &update_service,
                         DshUpdateStatus {
                             phase: "checkFailed",
@@ -1128,7 +1182,8 @@ pub fn run() {
                             latest_version: None,
                             update_tag: None,
                         },
-                    );
+                    ),
+                    Ok(false) => {}
                 }
             });
             Ok(())
@@ -1138,6 +1193,10 @@ pub fn run() {
             start_dsh_web,
             update_dsh_in_background,
             dismiss_update_overlay,
+            show_desktop_update,
+            restart_desktop_app,
+            show_desktop_update,
+            restart_desktop_app,
             restart_dsh_web,
             show_launcher,
             shell_settings,

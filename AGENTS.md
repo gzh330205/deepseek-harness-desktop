@@ -10,6 +10,7 @@
 - **每次功能或构建变更必须递增 patch 版本**（如 `0.2.7 → 0.2.8`），**禁止重复使用已发布过的版本号**（GitHub Release 按标签唯一）。
 - **签名私钥 `src-tauri/keys/dsh-desktop.key` 严禁提交到 Git**（已写入 `.gitignore`）；公钥已写入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。私钥遗失后，已安装版本将无法信任新签名，更新将不可用。
 - **只连接/绑定 loopback（127.0.0.1 / ::1）**，不得改为局域网绑定，除非用户明确要求。
+- **优先固定 3080 端口启动 DSH**（`PREFERRED_DSH_PORT`），仅在占用时回退随机端口：DSH 页面 localStorage 按 origin（含端口）隔离，固定端口保证其跨启动复用。
 - 应用图标使用 `src-tauri/icons/whale-original.png` 及其派生资产，不要替换。
 - 主窗口 `dragDropEnabled` 必须保持 `false`（Windows 下 Tauri 原生拖拽会拦截前端 HTML5 drag/drop）。
 - 设置/关于为固定尺寸、不可最大化的原生辅助窗口，只保留标题栏原生关闭按钮；不要重新加入页面内关闭按钮。

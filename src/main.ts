@@ -37,7 +37,6 @@ const version = requiredElement<HTMLElement>("version");
 const updateIndicator = requiredElement<HTMLElement>("update-indicator");
 const updateIndicatorText = requiredElement<HTMLElement>("update-indicator-text");
 const updateSpinner = requiredElement<HTMLElement>("update-spinner");
-const updateIndicatorAction = requiredElement<HTMLButtonElement>("update-indicator-action");
 const updateDialog = requiredElement<HTMLElement>("update-dialog");
 const updateDialogTitle = requiredElement<HTMLHeadingElement>("update-dialog-title");
 const updateDialogMessage = requiredElement<HTMLParagraphElement>("update-dialog-message");
@@ -49,7 +48,6 @@ let lastUpdatePhase: DshUpdateStatus["phase"] | undefined;
 let activeUpdate: DshUpdateStatus | undefined;
 let dshStartRequested = false;
 let desktopUpdateCheckStarted = false;
-let updatePrompted = false;
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -71,43 +69,9 @@ async function checkForDesktopUpdate(): Promise<void> {
   try {
     const update = await checkDesktopUpdate({ timeout: 10_000 });
     if (!update) return;
-
-    updateIndicator.hidden = true;
-    updateDialogTitle.textContent = "发现 DSH Desktop 新版本";
-    updateDialogMessage.textContent = `当前版本 ${update.currentVersion}，最新版本 ${update.version}。是否下载并安装更新？`;
-    updateDialogActions.replaceChildren();
-    const install = document.createElement("button");
-    install.type = "button";
-    install.textContent = "下载并安装";
-    install.addEventListener("click", async () => {
-      install.disabled = true;
-      updateIndicatorText.textContent = "正在下载 DSH Desktop 更新…";
-      updateSpinner.classList.remove("done");
-      updateIndicator.hidden = false;
-      updateDialog.hidden = true;
-      try {
-        await update.downloadAndInstall();
-        updateIndicatorText.textContent = "更新已安装，程序即将重启…";
-      } catch (error) {
-        updateIndicator.hidden = true;
-        updateDialogTitle.textContent = "DSH Desktop 更新失败";
-        updateDialogMessage.textContent = String(error);
-        updateDialogActions.replaceChildren();
-        const close = document.createElement("button");
-        close.type = "button";
-        close.textContent = "关闭";
-        close.addEventListener("click", () => { updateDialog.hidden = true; });
-        updateDialogActions.append(close);
-        updateDialog.hidden = false;
-      }
-    });
-    const later = document.createElement("button");
-    later.type = "button";
-    later.classList.add("secondary");
-    later.textContent = "暂不更新";
-    later.addEventListener("click", () => { updateDialog.hidden = true; });
-    updateDialogActions.append(install, later);
-    updateDialog.hidden = false;
+    // 发现桌面壳新版本：由独立的 desktop-update 窗口承载提示与下载安装，
+    // 主窗口导航到 DSH 后依然可见可操作。
+    void invoke("show_desktop_update");
   } catch {
     // A network or release-metadata failure must never interrupt DSH startup.
   }
@@ -128,7 +92,6 @@ function renderUpdate(update: DshUpdateStatus): void {
   const showIndicator = (message: string, complete = false): void => {
     updateIndicatorText.textContent = message;
     updateSpinner.classList.toggle("done", complete);
-    updateIndicatorAction.hidden = true;
     updateIndicator.hidden = false;
   };
   const clearActions = (): void => { updateDialogActions.replaceChildren(); };
@@ -152,23 +115,15 @@ function renderUpdate(update: DshUpdateStatus): void {
       updateIndicator.hidden = true;
       break;
     case "upToDate":
+    case "skipped":
     case "checkFailed":
       updateIndicator.hidden = true;
       if (!dshStartRequested) void startDsh();
       break;
-    case "skipped":
-      // startDsh() 会把 updateAvailable 置为 skipped；此时保留已提示的浮层，
-      // 用户仍可点击“后台更新”，直到导航离开启动页。
-      if (!updatePrompted) updateIndicator.hidden = true;
-      if (!dshStartRequested) void startDsh();
-      break;
     case "updateAvailable":
-      // 不阻塞启动：右下角浮层提示可更新，同时自动启动 DSH。
-      updatePrompted = true;
-      updateIndicatorText.textContent = `发现 DSH 新版本（${update.updateTag ?? "next"}）：${update.currentVersion ?? "?"} → ${update.latestVersion ?? "?"}`;
-      updateSpinner.classList.remove("done");
-      updateIndicatorAction.hidden = false;
-      updateIndicator.hidden = false;
+      // 不阻塞启动：自动启动 DSH；“发现新版本”提示由独立的 update-overlay
+      // 窗口承载（导航到 DSH 页面后依然可见、可点“后台更新”）。
+      updateIndicator.hidden = true;
       if (!dshStartRequested) void startDsh();
       break;
     case "updating":
@@ -199,22 +154,6 @@ function renderUpdate(update: DshUpdateStatus): void {
   }
 }
 
-function showUpdateActionError(error: unknown): void {
-  updateIndicator.hidden = true;
-  updateDialogTitle.textContent = "更新操作失败";
-  updateDialogMessage.textContent = String(error);
-  updateDialogActions.replaceChildren();
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = "使用当前版本继续启动";
-  button.addEventListener("click", () => {
-    updateDialog.hidden = true;
-    void startDsh();
-  });
-  updateDialogActions.append(button);
-  updateDialog.hidden = false;
-}
-
 async function startDsh(): Promise<void> {
   if (dshStartRequested) return;
   dshStartRequested = true;
@@ -229,19 +168,6 @@ async function restartDsh(): Promise<void> {
   dshStartRequested = true;
   await invoke("restart_dsh_web");
   await waitForReady();
-}
-
-async function beginBackgroundUpdate(): Promise<void> {
-  try {
-    // Mark the updater active first, then start the installed DSH in parallel.
-    // This ordering keeps the Rust state from treating the chosen update as
-    // skipped, while the launcher retains the progress UI until completion.
-    await invoke("update_dsh_in_background");
-    void startDsh().catch(showUpdateActionError);
-    await waitForUpdateCompletion();
-  } catch (error: unknown) {
-    showUpdateActionError(error);
-  }
 }
 
 function render(status: DshWebStatus): void {
@@ -290,15 +216,6 @@ async function openDsh(): Promise<void> {
 
 async function start(): Promise<void> {
   await restartDsh();
-}
-
-async function waitForUpdateCompletion(): Promise<void> {
-  while (true) {
-    const status = await invoke<DshWebStatus>("dsh_status");
-    render(status);
-    if (status.update.phase !== "updating") return;
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
-  }
 }
 
 async function waitForUpdateCheck(): Promise<void> {
@@ -354,11 +271,6 @@ closeBehavior.addEventListener("change", () => {
       closeBehavior.value = settings?.closeBehavior ?? "minimizeToTray";
       settingsStatus.textContent = `保存失败：${String(error)}`;
     });
-});
-
-updateIndicatorAction.addEventListener("click", () => {
-  updateIndicatorAction.hidden = true;
-  void beginBackgroundUpdate();
 });
 
 retry.addEventListener("click", () => {

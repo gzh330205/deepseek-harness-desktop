@@ -1,0 +1,24 @@
+html, body { margin: 0; background: transparent; }
+* { box-sizing: border-box; }
+.desktop-update {
+  min-height: 100vh;
+  padding: 24px 28px;
+  color: #d7e9f8;
+  background: #101d30;
+  font: 14px/1.6 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.eyebrow { margin: 0; font-size: 11px; letter-spacing: .14em; color: #6f8bad; }
+h2 { margin: 8px 0 0; font-size: 18px; color: #e8edf4; }
+#message { margin: 12px 0 0; color: #c3d0df; line-height: 1.65; }
+.progress { height: 6px; margin: 18px 0 0; overflow: hidden; border-radius: 999px; background: #16243a; }
+.progress[hidden] { display: none; }
+.progress span { display: block; width: 40%; height: 100%; border-radius: 999px; background: #8ad8ff; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
+.status { min-height: 20px; margin: 12px 0 0; color: #8ad8ff; font-size: 13px; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.actions[hidden] { display: none; }
+button { padding: 8px 14px; border: 0; border-radius: 8px; color: #062031; background: #8ad8ff; font-weight: 700; cursor: pointer; }
+button:hover { background: #b0e7ff; }
+button:disabled { opacity: .55; cursor: default; }
+button.secondary { border: 1px solid rgba(175, 202, 237, .28); color: #d9e8f4; background: #1a2c45; }
+button.secondary:hover { color: #06111e; background: #b0e7ff; }
