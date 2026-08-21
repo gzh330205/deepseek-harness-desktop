@@ -1024,8 +1024,13 @@ fn update_dsh_in_background(
         let mut instance = service
             .lock()
             .map_err(|_| "DSH 服务状态锁已损坏".to_string())?;
-        if instance.update.phase != "updateAvailable" {
+        // `skipped` 表示用户选择“暂不更新，继续启动”或自动跳过；此时仍保留
+        // 已知的最新版本与发布标签，允许用户稍后从右下角浮层发起后台更新。
+        if !matches!(instance.update.phase, "updateAvailable" | "skipped") {
             return Err("当前没有可安装的 DSH 更新。".to_string());
+        }
+        if instance.update.update_tag.is_none() {
+            return Err("缺少可用的 DSH 更新版本信息。".to_string());
         }
         instance.update = DshUpdateStatus {
             phase: "updating",

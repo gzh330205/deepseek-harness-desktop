@@ -97,6 +97,19 @@ button:not(.icon-button):hover { background: #b0e7ff; }
 .update-spinner { width: 15px; height: 15px; flex: 0 0 auto; border: 2px solid rgba(138, 216, 255, 0.24); border-top-color: #8ad8ff; border-radius: 50%; animation: spin .8s linear infinite; }
 .update-spinner.done { border-color: #7fe5b7; animation: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.update-indicator #update-indicator-action {
+  margin: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  color: #062031;
+  background: #8ad8ff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.update-indicator #update-indicator-action:hover { background: #b0e7ff; }
+.update-indicator #update-indicator-action[hidden] { display: none; }
 
 .update-dialog { position: fixed; z-index: 8; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(2, 7, 14, 0.62); }
 .update-dialog[hidden] { display: none; }

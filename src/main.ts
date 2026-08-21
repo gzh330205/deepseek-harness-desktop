@@ -8,6 +8,7 @@ interface DshUpdateStatus {
   message: string;
   currentVersion?: string;
   latestVersion?: string;
+  updateTag?: string;
 }
 
 interface DshWebStatus {
@@ -36,6 +37,7 @@ const version = requiredElement<HTMLElement>("version");
 const updateIndicator = requiredElement<HTMLElement>("update-indicator");
 const updateIndicatorText = requiredElement<HTMLElement>("update-indicator-text");
 const updateSpinner = requiredElement<HTMLElement>("update-spinner");
+const updateIndicatorAction = requiredElement<HTMLButtonElement>("update-indicator-action");
 const updateDialog = requiredElement<HTMLElement>("update-dialog");
 const updateDialogTitle = requiredElement<HTMLHeadingElement>("update-dialog-title");
 const updateDialogMessage = requiredElement<HTMLParagraphElement>("update-dialog-message");
@@ -47,6 +49,7 @@ let lastUpdatePhase: DshUpdateStatus["phase"] | undefined;
 let activeUpdate: DshUpdateStatus | undefined;
 let dshStartRequested = false;
 let desktopUpdateCheckStarted = false;
+let updatePrompted = false;
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -125,6 +128,7 @@ function renderUpdate(update: DshUpdateStatus): void {
   const showIndicator = (message: string, complete = false): void => {
     updateIndicatorText.textContent = message;
     updateSpinner.classList.toggle("done", complete);
+    updateIndicatorAction.hidden = true;
     updateIndicator.hidden = false;
   };
   const clearActions = (): void => { updateDialogActions.replaceChildren(); };
@@ -148,23 +152,24 @@ function renderUpdate(update: DshUpdateStatus): void {
       updateIndicator.hidden = true;
       break;
     case "upToDate":
-    case "skipped":
     case "checkFailed":
       updateIndicator.hidden = true;
       if (!dshStartRequested) void startDsh();
       break;
+    case "skipped":
+      // startDsh() 会把 updateAvailable 置为 skipped；此时保留已提示的浮层，
+      // 用户仍可点击“后台更新”，直到导航离开启动页。
+      if (!updatePrompted) updateIndicator.hidden = true;
+      if (!dshStartRequested) void startDsh();
+      break;
     case "updateAvailable":
-      updateIndicator.hidden = true;
-      clearActions();
-      showDialog("发现 DSH 新版本", update.message);
-      addAction("后台更新", () => {
-        hideDialog();
-        void beginBackgroundUpdate();
-      });
-      addAction("暂不更新，继续启动", () => {
-        hideDialog();
-        void startDsh();
-      }, true);
+      // 不阻塞启动：右下角浮层提示可更新，同时自动启动 DSH。
+      updatePrompted = true;
+      updateIndicatorText.textContent = `发现 DSH 新版本（${update.updateTag ?? "next"}）：${update.currentVersion ?? "?"} → ${update.latestVersion ?? "?"}`;
+      updateSpinner.classList.remove("done");
+      updateIndicatorAction.hidden = false;
+      updateIndicator.hidden = false;
+      if (!dshStartRequested) void startDsh();
       break;
     case "updating":
       showIndicator("正在后台更新 DSH…");
@@ -349,6 +354,11 @@ closeBehavior.addEventListener("change", () => {
       closeBehavior.value = settings?.closeBehavior ?? "minimizeToTray";
       settingsStatus.textContent = `保存失败：${String(error)}`;
     });
+});
+
+updateIndicatorAction.addEventListener("click", () => {
+  updateIndicatorAction.hidden = true;
+  void beginBackgroundUpdate();
 });
 
 retry.addEventListener("click", () => {
