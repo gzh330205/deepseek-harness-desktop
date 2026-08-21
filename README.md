@@ -68,6 +68,8 @@ pnpm tauri build
 
 推送 `v<版本号>` 标签会触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：它在 Windows runner 上构建 NSIS 安装包、生成签名和 `latest.json`，随后创建同名 GitHub Release。桌面程序从 GitHub Releases 的 `latest/download/latest.json` 检查新版本，下载后由 Tauri 验证签名并调用 NSIS 更新安装包。
 
+> 注意：桌面程序在用户机器上以匿名方式读取 Release 文件，因此**仓库必须保持公开**，否则更新检查会因 GitHub 返回 404 而静默失败。
+
 首次启用前，请在 GitHub 仓库 **Settings → Secrets and variables → Actions** 设置以下 Actions secrets：
 
 - `TAURI_SIGNING_PRIVATE_KEY`：本机 `src-tauri/keys/dsh-desktop.key` 的完整内容；严禁提交到 Git。
