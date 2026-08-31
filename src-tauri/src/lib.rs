@@ -96,6 +96,8 @@ struct DshWebStatus {
     message: String,
     logs: Vec<String>,
     update: DshUpdateStatus,
+    /// DSH 0.1.2-alpha.2+ 的一次性认证地址（带 token）。
+    auth_url: Option<String>,
 }
 
 #[derive(Default)]
@@ -104,6 +106,7 @@ struct DshWebService {
     // An externally discovered DSH service deliberately has no Child here.
     child: Option<Child>,
     url: Option<Url>,
+    auth_url: Option<Url>,
     origin: ServiceOrigin,
     state: ServiceState,
     generation: u64,
@@ -189,6 +192,7 @@ impl DshWebService {
             message,
             logs: self.logs.iter().cloned().collect(),
             update: self.update.clone(),
+            auth_url: self.auth_url.as_ref().map(ToString::to_string),
         }
     }
 
@@ -215,6 +219,7 @@ impl DshWebService {
             }
         }
         self.url = None;
+        self.auth_url = None;
         self.origin = ServiceOrigin::None;
         self.generation = self.generation.wrapping_add(1);
     }
@@ -784,15 +789,16 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
         collect_logs(stderr, Arc::clone(&service), "stderr");
     }
 
-    monitor_managed_dsh_web(app, Arc::clone(&service), generation);
+    monitor_managed_dsh_web(app.clone(), Arc::clone(&service), generation);
 
+    // 就绪判定以 DSH 自己的 CLI 输出为准（用户确认的判定方式）：新版 DSH 在
+    // 服务器绑定完成后打印 `dsh web: http://127.0.0.1:PORT/?token=...`，打印即
+    // 视为服务就绪；后续页面是否能打开属于页面层问题，由页面自行呈现。
+    // 旧版 DSH（无认证）仍用匿名页面探针兜底。
     thread::spawn(move || {
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         while Instant::now() < deadline {
-            // DSH 0.1.2-alpha.2+ 的 web 服务带一次性认证：启动时会在 stdout
-            // 打印 `dsh web: http://127.0.0.1:PORT/?token=...`。未认证请求返回
-            // 401，因此就绪探针与 WebView 导航地址都必须使用带 token 的 URL。
-            let (probe_url, auth_url) = {
+            let (auth_url, bare_url) = {
                 let Ok(instance) = service.lock() else {
                     return;
                 };
@@ -804,21 +810,48 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
                     .iter()
                     .rev()
                     .find_map(|line| parse_dsh_web_auth_url(line));
-                let probe_url = auth_url.clone().or_else(|| instance.url.clone());
-                (probe_url, auth_url)
+                (auth_url, instance.url.clone())
             };
-            if let Some(probe_url) = probe_url {
-                if is_dsh_web_endpoint(&probe_url) {
+            if let Some(auth_url) = auth_url {
+                let Some(bare_url) = bare_url.clone() else {
+                    thread::sleep(Duration::from_millis(250));
+                    continue;
+                };
+                {
+                    let Ok(mut instance) = service.lock() else {
+                        return;
+                    };
+                    if instance.generation == generation {
+                        instance.state = ServiceState::Ready;
+                        instance.auth_url = Some(auth_url.clone());
+                        instance
+                            .push_log("DSH Web 已启动（带一次性认证），正在自动认证并打开页面…");
+                    }
+                }
+                // 两步导航：先访问认证地址（浏览器写入 dsh-auth cookie），再
+                // 导航到裸地址——此时与当前页面同站（127.0.0.1），SameSite=Strict
+                // 的 cookie 才会被携带，避免安装版启动页(tauri.localhost)跨站
+                // 场景下 303 跳转后 401。
+                let app_handle = app.clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(600));
+                    if let Some(main) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+                        let _ = main.navigate(auth_url.clone());
+                    }
+                    thread::sleep(Duration::from_millis(1500));
+                    if let Some(main) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+                        let _ = main.navigate(bare_url.clone());
+                    }
+                });
+                return;
+            }
+            // 旧版无认证 DSH：匿名页面探针。
+            if let Some(bare_url) = bare_url {
+                if is_dsh_web_endpoint(&bare_url) {
                     if let Ok(mut instance) = service.lock() {
                         if instance.generation == generation {
                             instance.state = ServiceState::Ready;
-                            if let Some(auth_url) = auth_url {
-                                // 导航到认证地址：WebView 设置 dsh-auth cookie 后即可正常使用。
-                                instance.url = Some(auth_url.clone());
-                                instance.push_log(format!("DSH Web 已在 {auth_url} 就绪（已自动认证）"));
-                            } else {
-                                instance.push_log(format!("DSH Web 已在 {probe_url} 就绪"));
-                            }
+                            instance.push_log(format!("DSH Web 已在 {bare_url} 就绪"));
                         }
                     }
                     return;

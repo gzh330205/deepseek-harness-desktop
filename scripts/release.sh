@@ -80,9 +80,16 @@ gh release create "v$VERSION" \
   --title "v$VERSION" \
   --notes "**DSH Desktop v$VERSION**
 
-下载 **$ASSET_NAME** 安装，应用内支持自动更新（含 DSH 后台更新与重启）。
+## 本次更新
 
-包含：DSH Web 桌面壳、系统托盘、设置/关于、GitHub Release 自动更新。"
+- **适配新版 DSH 认证**：DSH 0.1.2-alpha.2+ 的 \`dsh web\` 引入浏览器一次性认证（匿名访问返回 401）。桌面端改为以 CLI 输出的带 token 认证地址判定服务就绪，并自动完成认证（两步导航写入会话 cookie），安装版与开发版均可正常打开 DSH 页面。
+- **更新检测升级**：遍历 npm 全部 dist-tags 取 semver 最大版本，不再只查 next/latest——alpha/beta 等新版本也能检出。
+- **更新交互优化**：桌面更新与 DSH 更新检查全程静默，仅在发现新版本时居中弹窗询问；DSH 更新期间右下角显示进度条，完成后弹窗询问立即/稍后重启，更新不阻塞正常使用。
+- **问题修复**：主线程创建辅助窗口死锁、窗口状态插件误恢复可见性、缺失窗口关闭权限导致弹窗无法关闭等。
+
+## 使用
+
+下载 **$ASSET_NAME** 安装；已安装用户重启应用即可收到自动更新（含 DSH 后台更新与重启）。"
 # gh release create 会覆盖同名标签/资产的旧 Release（--clobber 语义由 GitHub 自动处理）
 
 echo ""

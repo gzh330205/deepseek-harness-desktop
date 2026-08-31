@@ -5,6 +5,8 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 interface DshWebStatus {
   state: "starting" | "ready" | "failed";
   url?: string;
+  /** DSH 0.1.2-alpha.2+ 的一次性认证地址（带 token）；存在时由 Rust 负责两步导航。 */
+  authUrl?: string;
   message: string;
   logs: string[];
 }
@@ -91,6 +93,11 @@ async function openDsh(): Promise<void> {
       await invoke("show_desktop_update");
     } catch {
       // 忽略：桌面更新窗口打开失败不阻塞进入 DSH。
+    }
+    if (status.authUrl) {
+      // 新版 DSH 带一次性认证：不在此处直接导航裸地址（会 401），
+      // 由 Rust 依次导航认证地址（写 cookie）与裸地址（同站携带 cookie）。
+      return;
     }
     window.location.replace(status.url);
   }
