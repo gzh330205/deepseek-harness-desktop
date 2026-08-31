@@ -327,22 +327,30 @@ fn latest_dsh_release() -> Result<(String, String), String> {
     let output = run_command_output(&mut release, "从 npm 查询 DSH 发布版本")?;
     let tags: serde_json::Value = serde_json::from_str(&output)
         .map_err(|error| format!("无法解析 npm 返回的 DSH 发布标签：{error}"))?;
-    let tag = if tags
-        .get("next")
-        .and_then(serde_json::Value::as_str)
-        .is_some()
-    {
-        "next"
-    } else {
-        "latest"
-    };
-    let version = tags
-        .get(tag)
-        .and_then(serde_json::Value::as_str)
-        .filter(|version| compare_dsh_versions(version, "0.0.0").is_some_and(|order| order.is_gt()))
-        .map(ToString::to_string)
-        .ok_or_else(|| format!("npm 未返回有效的 DSH {tag} 版本号。"))?;
-    Ok((version, tag.to_string()))
+    // 遍历全部 dist-tag，取 semver 最大的版本作为“最新发布”。
+    // 发布方可能把更新放到 alpha/beta 等任意 tag（例如 latest 仍停留在旧版
+    // 本而 alpha 已发布 0.1.2-alpha.2），只认 next/latest 会漏报更新。
+    let mut best: Option<(String, String)> = None;
+    if let Some(tag_map) = tags.as_object() {
+        for (tag, value) in tag_map {
+            let Some(version) = value.as_str() else {
+                continue;
+            };
+            if !compare_dsh_versions(version, "0.0.0").is_some_and(|order| order.is_gt()) {
+                continue;
+            }
+            let is_better = match &best {
+                None => true,
+                Some((best_version, _)) => {
+                    compare_dsh_versions(version, best_version).is_some_and(|order| order.is_gt())
+                }
+            };
+            if is_better {
+                best = Some((version.to_string(), tag.clone()));
+            }
+        }
+    }
+    best.ok_or_else(|| "npm 未返回有效的 DSH 版本号。".to_string())
 }
 
 fn set_update_status(service: &ManagedService, update: DshUpdateStatus) {
