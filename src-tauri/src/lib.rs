@@ -832,14 +832,22 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
                 // 导航到裸地址——此时与当前页面同站（127.0.0.1），SameSite=Strict
                 // 的 cookie 才会被携带，避免安装版启动页(tauri.localhost)跨站
                 // 场景下 303 跳转后 401。
+                // 注意：启动页本身在 127.0.0.1（开发版）时同站，第一步的 303
+                // 跳转就会携带 cookie 并直接加载页面，此时不再执行第二步，
+                // 避免“页面刚加载又刷新一次”。
                 let app_handle = app.clone();
                 thread::spawn(move || {
                     thread::sleep(Duration::from_millis(600));
-                    if let Some(main) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
-                        let _ = main.navigate(auth_url.clone());
-                    }
-                    thread::sleep(Duration::from_millis(1500));
-                    if let Some(main) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+                    let Some(main) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) else {
+                        return;
+                    };
+                    let needs_second_navigation = main
+                        .url()
+                        .ok()
+                        .map_or(true, |launcher_url| loopback_socket(&launcher_url).is_none());
+                    let _ = main.navigate(auth_url.clone());
+                    if needs_second_navigation {
+                        thread::sleep(Duration::from_millis(1500));
                         let _ = main.navigate(bare_url.clone());
                     }
                 });
