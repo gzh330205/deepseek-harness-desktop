@@ -4,7 +4,7 @@ use std::os::windows::process::CommandExt;
 use std::{
     collections::{BTreeSet, VecDeque},
     env, fs,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
@@ -1164,17 +1164,90 @@ fn show_about_window(app: &AppHandle) {
         .build();
 }
 
-fn return_to_launcher_if_viewing_dsh(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+/// 发布版启动页的本地回环地址（开发版为 None，使用 Vite devUrl）。
+type ManagedLauncherUrl = Arc<Mutex<Option<Url>>>;
+
+/// 发布版把启动页托管到 127.0.0.1 随机回环端口：主窗口启动页与 DSH 页面
+/// 同站（同为 127.0.0.1），浏览器访问带 token 的认证地址后，303 跳转会携带
+/// `SameSite=Strict` 的 dsh-auth cookie 自动完成登录——单次导航、无闪烁、
+/// 无二次刷新。开发版启动页已在 127.0.0.1:1420（Vite），无需本服务器。
+fn start_launcher_server(app: &AppHandle) -> Option<Url> {
+    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).ok()?;
+    let port = listener.local_addr().ok()?.port();
+    let resolver = app.asset_resolver();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            launcher_respond(&resolver, &mut stream);
+        }
+    });
+    Url::parse(&format!("http://{LOOPBACK}:{port}/")).ok()
+}
+
+fn launcher_respond<R: tauri::Runtime>(resolver: &tauri::AssetResolver<R>, stream: &mut TcpStream) {
+    let Ok(clone) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(clone);
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).is_err() {
+        return;
+    }
+    // 读完请求头，避免与仍在发送的请求体竞争。
+    let mut header_bytes = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() {
+            return;
+        }
+        header_bytes += line.len();
+        if line == "\r\n" || line.is_empty() || header_bytes > 16 * 1024 {
+            break;
+        }
+    }
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("/")
+        .split('?')
+        .next()
+        .unwrap_or("/");
+    let relative = if path == "/" {
+        "index.html".to_string()
+    } else {
+        path.trim_start_matches('/').to_string()
+    };
+    let response = resolver.get(relative).map_or_else(
+        || b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+        |asset| {
+            let mut response =
+                format!("HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n", asset.mime_type, asset.bytes.len())
+                    .into_bytes();
+            response.extend_from_slice(&asset.bytes);
+            response
+        },
+    );
+    let _ = stream.write_all(&response);
+}
+
+fn return_to_launcher_if_viewing_dsh(app: &AppHandle) {    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
     };
     let Ok(current_url) = window.url() else {
         return;
     };
-    // The frontend's retry action is only available on the Tauri-owned launcher page.
+    // The frontend's retry action is only available on the launcher page.
     // Do not navigate away from an unrelated page unless it is the failed DSH endpoint.
     if loopback_socket(&current_url).is_some() {
-        let _ = window.navigate(Url::parse("tauri://localhost/").expect("valid launcher URL"));
+        // 发布版启动页由 start_launcher_server 托管在 127.0.0.1 回环端口；
+        // 回退为 tauri://localhost（开发版解析为 Vite devUrl）。
+        let destination = app
+            .try_state::<ManagedLauncherUrl>()
+            .and_then(|state| state.lock().ok().and_then(|url| url.clone()))
+            .unwrap_or_else(|| Url::parse("tauri://localhost/").expect("valid launcher URL"));
+        let _ = window.navigate(destination);
     }
 }
 
@@ -1433,6 +1506,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(service)
         .manage(Arc::new(Mutex::new(AppLifecycle::default())) as ManagedLifecycle)
+        .manage(Arc::new(Mutex::new(None::<Url>)) as ManagedLauncherUrl)
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 不恢复窗口可见性：桌面更新等窗口在启动时按需隐藏（visible:false），
         // 若插件把上次的“可见”状态还原回来，检查更新期间就会弹出窗口。
@@ -1460,6 +1534,20 @@ pub fn run() {
             // 打开即先启动 DSH Web 服务；桌面更新与 DSH 更新的检查都推迟到
             // 用户进入 DSH 页面之后（见 desktop_update_done / resolve_desktop_update）。
             start_dsh_web_in_background(app.handle().clone(), Arc::clone(&service_for_setup));
+            // 发布版：把启动页托管到 127.0.0.1 回环端口，使主窗口与 DSH 同站，
+            // 认证导航单次完成（见 start_launcher_server）。开发版沿用 Vite devUrl。
+            if !tauri::is_dev() {
+                if let Some(launcher_url) = start_launcher_server(app.handle()) {
+                    if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                        let _ = main_window.navigate(launcher_url.clone());
+                    }
+                    if let Some(state) = app.try_state::<ManagedLauncherUrl>() {
+                        if let Ok(mut launcher) = state.lock() {
+                            *launcher = Some(launcher_url);
+                        }
+                    }
+                }
+            }
             // 右下角更新浮层跟随主窗口移动/缩放。
             if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 let app_handle = app.handle().clone();
