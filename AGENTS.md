@@ -30,17 +30,29 @@
 
 ### 3.2 每次发版步骤（严格按序）
 
+> **每次发布必须附上改动内容**：在 `scripts/release.sh` 的 `--notes` 中写明本次新增功能、修复的 bug、交互调整等（用户可见的说明），模板见 3.2 第 2 步。禁止发布"仅版本号"的空说明。
+
 ```bash
 # 1. 同步修改三处版本号（必须一致，且高于上一个已发布版本）：
 #    package.json               ->  "version": "0.2.8"
 #    src-tauri/Cargo.toml       ->  version = "0.2.8"
 #    src-tauri/tauri.conf.json  ->  "version": "0.2.8"
 
-# 2. 一键发布（脚本内部：版本一致性检查 → pnpm tauri build（NSIS+MSI 签名产物）
-#    → 生成 latest.json → gh release create v0.2.8 并上传 4 个资产）
+# 2. 更新 scripts/release.sh 中 gh release create 的 --notes 内容：
+#    格式固定为「## 本次更新」+ 分条列出改动（- **功能**：… / - **修复**：…）
+#    + 「## 使用」+ 下载/更新提示。示例：
+#      **DSH Desktop v$VERSION**
+#      ## 本次更新
+#      - **新增**：xxx
+#      - **修复**：xxx
+#      ## 使用
+#      下载 **$ASSET_NAME** 安装；已安装用户重启应用即可收到自动更新。
+
+# 3. 一键发布（脚本内部：版本一致性检查 → pnpm tauri build（NSIS+MSI 签名产物）
+#    → 生成 latest.json → gh release create v0.2.8 并上传 4 个资产，notes 取第 2 步内容）
 bash scripts/release.sh 0.2.8
 
-# 3. 提交并推送代码
+# 4. 提交并推送代码（注意 git add -A 前清理测试残留文件，避免把日志等误提交）
 git add -A && git commit -m "chore: release v0.2.8" && git push
 ```
 
@@ -49,7 +61,7 @@ git add -A && git commit -m "chore: release v0.2.8" && git push
 1. **版本一致性检查**：`tauri.conf.json`、`package.json`、`Cargo.toml` 三处版本必须等于传入参数，否则退出。
 2. **打包**：`pnpm tauri build`（`bundle.targets = "all"`），产出 NSIS `DSH Desktop_<版本>_x64-setup.exe` 与 MSI `DSH Desktop_<版本>_x64_en-US.msi` 及各自 `.sig` 签名文件。
 3. **生成 `latest.json`**：写入版本、Release 页 notes、签名与安装包 URL。注意 GitHub 上传资产时会把文件名中的空格替换为点号（`DSH Desktop_…` → `DSH.Desktop_…`），清单 URL 必须用规范化后的名字，否则下载 404。
-4. **发布**：`gh release create v<版本>` 上传 NSIS、NSIS.sig、MSI、latest.json 四个资产，标题 `v<版本>`，附中文说明。
+4. **发布**：`gh release create v<版本>` 上传 NSIS、NSIS.sig、MSI、latest.json 四个资产，标题 `v<版本>`，附 `--notes` 中的改动说明。
 
 ### 3.4 发布后必做验证
 
@@ -63,10 +75,13 @@ curl -sIL "<清单中的 url>"
 
 - 确认 Release 页存在且资产完整：`gh release view v0.2.8 --repo gzh330205/deepseek-harness-desktop`。
 - 确认 `latest.json` 中的 `signature` 与 `url` 配套（同一构建产物），否则用户端验签失败。
+- 确认 Release 页 notes 已包含本次改动内容；若描述有误可用 `gh release edit v<版本> --notes "…"` 修正（仅改说明元数据，不动资产）。
 
 ### 3.5 注意事项
 
+- **发布必须使用 `scripts/release.sh` 一键脚本**（它会配置签名环境并产出签名产物 + latest.json + Release）；不要单独执行 `pnpm tauri build` 或 `cargo build --release` 手动拼装——缺少签名环境变量会失败，且不会走发布流程。
 - **禁止**手动修改已发布 Release 的资产后重新上传同名文件；如需修复请递增版本重新发布。
+- **禁止发布重复版本号**（GitHub Release 按标签唯一）；每版必带改动说明。
 - 自动更新仅对 NSIS 安装包生效；MSI 安装的用户需手动下载新版。
 - 若密钥文件被删除或更换，`tauri.conf.json` 中的公钥必须同步更换，且所有已安装用户将收不到更新（旧密钥验签失败）。
 - `.github/workflows/ci.yml` 仅做构建校验（pnpm build + cargo check），不负责发布；发布通道只有 `scripts/release.sh`。
