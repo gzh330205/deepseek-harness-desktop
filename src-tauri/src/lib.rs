@@ -813,10 +813,6 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
                 (auth_url, instance.url.clone())
             };
             if let Some(auth_url) = auth_url {
-                let Some(bare_url) = bare_url.clone() else {
-                    thread::sleep(Duration::from_millis(250));
-                    continue;
-                };
                 {
                     let Ok(mut instance) = service.lock() else {
                         return;
@@ -825,32 +821,13 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
                         instance.state = ServiceState::Ready;
                         instance.auth_url = Some(auth_url.clone());
                         instance
-                            .push_log("DSH Web 已启动（带一次性认证），正在自动认证并打开页面…");
+                            .push_log("DSH Web 已启动（带一次性认证），正在自动打开页面…");
                     }
                 }
-                // 两步导航：先访问认证地址（浏览器写入 dsh-auth cookie），再
-                // 导航到裸地址——此时与当前页面同站（127.0.0.1），SameSite=Strict
-                // 的 cookie 才会被携带，避免安装版启动页(tauri.localhost)跨站
-                // 场景下 303 跳转后 401。
-                // 注意：启动页本身在 127.0.0.1（开发版）时同站，第一步的 303
-                // 跳转就会携带 cookie 并直接加载页面，此时不再执行第二步，
-                // 避免“页面刚加载又刷新一次”。
-                let app_handle = app.clone();
-                thread::spawn(move || {
-                    thread::sleep(Duration::from_millis(600));
-                    let Some(main) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) else {
-                        return;
-                    };
-                    let needs_second_navigation = main
-                        .url()
-                        .ok()
-                        .map_or(true, |launcher_url| loopback_socket(&launcher_url).is_none());
-                    let _ = main.navigate(auth_url.clone());
-                    if needs_second_navigation {
-                        thread::sleep(Duration::from_millis(1500));
-                        let _ = main.navigate(bare_url.clone());
-                    }
-                });
+                // 页面导航由启动页直接执行：`location.replace(认证地址)`。
+                // 浏览器收到 303 + Set-Cookie（SameSite=Strict）后会携带
+                // cookie 跟随跳转，一次加载完成；无需第二轮导航（多余的第二
+                // 次导航会让已加载的 DSH 页面再刷新一次）。
                 return;
             }
             // 旧版无认证 DSH：匿名页面探针。
