@@ -420,44 +420,63 @@ fn loopback_socket(url: &Url) -> Option<SocketAddr> {
     Some(SocketAddr::new(address, url.port_or_known_default()?))
 }
 
-/// Make a bounded HTTP request and verify markers injected by a genuine DSH web host.
-/// A generic 200 response is never enough to reuse a local port.
-fn is_dsh_web_endpoint(url: &Url) -> bool {
-    let Some(address) = loopback_socket(url) else {
-        return false;
-    };
-    let Ok(mut stream) = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) else {
-        return false;
-    };
-
+/// 发送一次有界 HTTP/1.1 请求并返回状态行、响应头与响应体。
+/// cookie 为可选：DSH 0.1.2-alpha.2+ 的认证流程需要带 dsh-auth cookie 再请求。
+fn probe_http(
+    address: SocketAddr,
+    host: &str,
+    path_and_query: &str,
+    cookie: Option<&str>,
+) -> Option<(String, String, Vec<u8>)> {
     use std::io::Write;
-    let host = url.host_str().unwrap_or(LOOPBACK);
-    let request =
-        format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nAccept: text/html\r\n\r\n");
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) else {
+        return None;
+    };
+    let cookie_header = cookie
+        .map(|value| format!("Cookie: {value}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "GET {path_and_query} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nAccept: text/html\r\n{cookie_header}\r\n"
+    );
     if stream.write_all(request.as_bytes()).is_err() {
-        return false;
+        return None;
     }
 
     let _ = stream.set_read_timeout(Some(RESPONSE_TIMEOUT));
     let mut reader = BufReader::new(stream);
     let mut status_line = String::new();
-    if reader.read_line(&mut status_line).is_err() || !status_line.contains(" 200 ") {
-        return false;
+    if reader.read_line(&mut status_line).is_err() {
+        return None;
     }
-
     let mut headers = String::new();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).is_err() {
-            return false;
+            return None;
         }
         if line == "\r\n" || line.is_empty() {
             break;
         }
         headers.push_str(&line);
         if headers.len() > 16 * 1024 {
-            return false;
+            return None;
         }
+    }
+    let mut body = Vec::new();
+    if reader
+        .take(MAX_PROBE_BODY_BYTES)
+        .read_to_end(&mut body)
+        .is_err()
+    {
+        return None;
+    }
+    Some((status_line, headers, body))
+}
+
+/// 检查一次响应是否为真正的 DSH Web 页面（200 + text/html + 注入标记）。
+fn is_dsh_page(status_line: &str, headers: &str, body: &[u8]) -> bool {
+    if !status_line.contains(" 200 ") {
+        return false;
     }
     if !headers
         .to_ascii_lowercase()
@@ -465,21 +484,68 @@ fn is_dsh_web_endpoint(url: &Url) -> bool {
     {
         return false;
     }
-
-    let mut body = Vec::new();
-    if reader
-        .take(MAX_PROBE_BODY_BYTES)
-        .read_to_end(&mut body)
-        .is_err()
-    {
-        return false;
-    }
-    let body = String::from_utf8_lossy(&body);
+    let body = String::from_utf8_lossy(body);
     // DSH 0.1.1-rc.1 起注入形式由 `window.__DSH_BOOT__` 变为
     // `globalThis["__DSH_BOOT__"]`，因此按标记名子串匹配以兼容两种格式。
     body.contains("__DSH_BOOT__")
         && body.contains("@deepseek-ai/dsh-client-connection")
         && body.contains("/plugins/")
+}
+
+/// 从一个响应头中提取 Set-Cookie 的 `name=value`（忽略属性）。
+fn extract_set_cookie(headers: &str) -> Option<String> {
+    for line in headers.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("set-cookie:") {
+            let value = line["set-cookie:".len()..].trim();
+            let end = value.find(';').unwrap_or(value.len());
+            return Some(value[..end].trim().to_string());
+        }
+    }
+    None
+}
+
+/// Make a bounded HTTP request and verify markers injected by a genuine DSH web host.
+/// A generic 200 response is never enough to reuse a local port.
+///
+/// DSH 0.1.2-alpha.2+ 的 web 服务带一次性认证：`GET /?token=…` 返回 303 +
+/// Set-Cookie，需携带该 cookie 再请求（响应 200 + 页面标记）；旧版 DSH 直接
+/// 匿名 200。这里两种流程都支持。
+fn is_dsh_web_endpoint(url: &Url) -> bool {
+    let Some(address) = loopback_socket(url) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or(LOOPBACK);
+    let path_and_query = match url.query() {
+        Some(query) => format!("{}?{}", url.path(), query),
+        None => url.path().to_string(),
+    };
+
+    let Some((status, headers, body)) = probe_http(address, host, &path_and_query, None) else {
+        return false;
+    };
+    if status.contains(" 303 ") {
+        // 认证交换：读 cookie 与跳转目标，再验证真实页面。
+        let Some(cookie) = extract_set_cookie(&headers) else {
+            return false;
+        };
+        let location = headers
+            .lines()
+            .find_map(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower
+                    .starts_with("location:")
+                    .then(|| line["location:".len()..].trim().to_string())
+            })
+            .unwrap_or_else(|| "/".to_string());
+        let (status, headers, body) = match probe_http(address, host, &location, Some(&cookie)) {
+            Some(response) => response,
+            None => return false,
+        };
+        is_dsh_page(&status, &headers, &body)
+    } else {
+        is_dsh_page(&status, &headers, &body)
+    }
 }
 
 fn port_from_listener_address(address: &str) -> Option<u16> {
@@ -723,14 +789,40 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
     thread::spawn(move || {
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         while Instant::now() < deadline {
-            if is_dsh_web_endpoint(&url) {
-                if let Ok(mut instance) = service.lock() {
-                    if instance.generation == generation {
-                        instance.state = ServiceState::Ready;
-                        instance.push_log(format!("DSH Web 已在 {url} 就绪"));
-                    }
+            // DSH 0.1.2-alpha.2+ 的 web 服务带一次性认证：启动时会在 stdout
+            // 打印 `dsh web: http://127.0.0.1:PORT/?token=...`。未认证请求返回
+            // 401，因此就绪探针与 WebView 导航地址都必须使用带 token 的 URL。
+            let (probe_url, auth_url) = {
+                let Ok(instance) = service.lock() else {
+                    return;
+                };
+                if instance.generation != generation {
+                    return;
                 }
-                return;
+                let auth_url = instance
+                    .logs
+                    .iter()
+                    .rev()
+                    .find_map(|line| parse_dsh_web_auth_url(line));
+                let probe_url = auth_url.clone().or_else(|| instance.url.clone());
+                (probe_url, auth_url)
+            };
+            if let Some(probe_url) = probe_url {
+                if is_dsh_web_endpoint(&probe_url) {
+                    if let Ok(mut instance) = service.lock() {
+                        if instance.generation == generation {
+                            instance.state = ServiceState::Ready;
+                            if let Some(auth_url) = auth_url {
+                                // 导航到认证地址：WebView 设置 dsh-auth cookie 后即可正常使用。
+                                instance.url = Some(auth_url.clone());
+                                instance.push_log(format!("DSH Web 已在 {auth_url} 就绪（已自动认证）"));
+                            } else {
+                                instance.push_log(format!("DSH Web 已在 {probe_url} 就绪"));
+                            }
+                        }
+                    }
+                    return;
+                }
             }
             thread::sleep(Duration::from_millis(250));
         }
@@ -748,6 +840,20 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
     });
 
     Ok(())
+}
+
+/// 从 DSH 启动日志中解析一次性认证地址（`dsh web: http://127.0.0.1:PORT/?token=…`）。
+/// 仅接受带 token 查询参数的回环地址。
+fn parse_dsh_web_auth_url(line: &str) -> Option<Url> {
+    let start = line.find("http://")?;
+    let rest = &line[start..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let url = Url::parse(&rest[..end]).ok()?;
+    if loopback_socket(&url).is_none() {
+        return None;
+    }
+    let has_token = url.query_pairs().any(|(key, _)| key == "token");
+    has_token.then_some(url)
 }
 
 fn show_main_window(app: &AppHandle) {
