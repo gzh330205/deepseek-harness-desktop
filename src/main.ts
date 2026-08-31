@@ -95,9 +95,8 @@ async function openDsh(): Promise<void> {
       // 忽略：桌面更新窗口打开失败不阻塞进入 DSH。
     }
     if (status.authUrl) {
-      // 新版 DSH 带一次性认证：直接导航认证地址——浏览器 303 跳转会携带
-      // SameSite=Strict cookie，一次加载完成（额外导航会导致页面二次刷新）。
-      window.location.replace(status.authUrl);
+      // 新版 DSH 带一次性认证：导航由 Rust 负责（先认证地址写入 cookie，
+      // 跨站时再导航裸地址，均不会提前触发未认证请求）。
       return;
     }
     window.location.replace(status.url);
