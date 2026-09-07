@@ -82,7 +82,7 @@ gh release create "v$VERSION" \
 
 ## 本次更新
 
-- **新增：通知身份显示为本应用**：桌面壳启动时向 Windows 注册自己的 AUMID（DisplayName = DSH Desktop、图标 = 程序本身）。系统通知头部从此显示「DSH Desktop」与本程序图标，不再出现回退身份（如 PowerShell）。对 dsh-win-notify 插件两条路线都生效：壳内原生通知直接使用该标识；插件宿主路线将其配置 `appId` 设为 `ai.deepseek.dsh-desktop` 即可。
+- **修复：通知图标不显示**：通知的 toast 现在显式携带鲸鱼图标（打包进安装包资源目录），并在 AUMID 注册表 IconUri 中优先指向该图标——通知头部显示 DSH Desktop 名称与鲸鱼图标，不再出现回退身份或无图标。
 - **会话完成系统通知（配合 dsh-win-notify 插件）**：DSH 页面（插件 client 路线）在会话执行完成时经 Tauri 事件（dsh-notify，载荷含 title / body / sessionId）由壳弹出 Windows 原生通知；DSH 运行在本机回环任意端口均可工作，无壳时插件自动回退浏览器通知。
 - **修复新版 DSH 认证页 401**：以 CLI 输出的带 token 认证地址判定服务就绪并自动完成认证（启动页同站一次即达；安装版跨站自动二次导航，约 400ms 内完成）。
 - **更新检测升级**：遍历 npm 全部 dist-tags 取 semver 最大版本——alpha/beta 等新版本也能检出。

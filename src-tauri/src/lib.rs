@@ -1215,6 +1215,13 @@ struct DshNotify {
 /// `window.__TAURI__.event.emit` 发出的事件，并弹出系统通知。
 fn register_session_notifications(app: &AppHandle) {
     let handle = app.clone();
+    // 通知 appLogoOverride 图标：捆绑进安装包的鲸鱼图标（资源目录）。
+    let icon_path = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("whale-original.png"))
+        .filter(|path| path.exists());
     app.listen("dsh-notify", move |event| {
         let notify: DshNotify = serde_json::from_str(event.payload()).unwrap_or_else(|_| DshNotify {
             title: "DSH".into(),
@@ -1226,12 +1233,11 @@ fn register_session_notifications(app: &AppHandle) {
         } else {
             notify.title
         };
-        let _ = handle
-            .notification()
-            .builder()
-            .title(title)
-            .body(notify.body)
-            .show();
+        let mut builder = handle.notification().builder().title(title).body(notify.body);
+        if let Some(icon_path) = &icon_path {
+            builder = builder.icon(icon_path.to_string_lossy().to_string());
+        }
+        let _ = builder.show();
     });
 }
 
@@ -1246,9 +1252,18 @@ fn register_notification_identity(app: &AppHandle) {
     let exe = env::current_exe()
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
+    // 优先使用捆绑的 PNG 图标（部分系统版本对 exe 作为 IconUri 不解析图标）。
+    let icon_uri = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("whale-original.png"))
+        .filter(|path| path.exists())
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| exe.clone());
     for (value, data) in [
         ("DisplayName", app.config().product_name.clone().unwrap_or_else(|| "DSH Desktop".into())),
-        ("IconUri", exe),
+        ("IconUri", icon_uri),
         ("IconUriBackgroundColor", "#1E2A44".to_string()),
     ] {
         let mut reg = Command::new("reg");
