@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dsh-page",
+  "description": "DSH Web 页面（本机回环服务）允许发起事件，供 dsh-win-notify 插件经 Tauri 桥弹系统通知",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://127.0.0.1:3080/"]
+  },
+  "permissions": ["core:event:default"]
+}

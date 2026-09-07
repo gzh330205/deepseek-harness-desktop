@@ -82,14 +82,14 @@ gh release create "v$VERSION" \
 
 ## 本次更新
 
-- **修复新版 DSH 认证页 401**：DSH 0.1.2-alpha.2+ 的 \`dsh web\` 带浏览器一次性认证（匿名访问返回 401）。桌面端以 CLI 输出的带 token 认证地址判定服务就绪，并自动完成认证：启动页与 DSH 同站（开发模式）时一次导航即达；安装版（启动页跨站，`SameSite=Strict` 登录 cookie 不会随重定向发送）自动执行二次导航（约 400ms 内完成），可靠打开 DSH 页面。
-- **更新检测升级**：遍历 npm 全部 dist-tags 取 semver 最大版本，不再只查 next/latest——alpha/beta 等新版本也能检出。
-- **更新交互优化**：桌面更新与 DSH 更新检查全程静默，仅在发现新版本时居中弹窗询问；DSH 更新期间右下角显示进度条，完成后弹窗询问立即/稍后重启，更新不阻塞正常使用。
-- **问题修复**：主线程创建辅助窗口死锁、窗口状态插件误恢复可见性、缺失窗口关闭权限导致弹窗无法关闭等。
+- **新增：会话完成系统通知（配合 dsh-win-notify 插件）**：桌面壳开启 Tauri 全局 API 并内置系统通知监听——DSH 页面（dsh-win-notify 插件的 client 路线）在会话执行完成时经 Tauri 事件（事件名 dsh-notify，载荷含 title / body / sessionId）发出通知，由壳弹出 Windows 原生通知。DSH 运行在本机回环任意端口均可工作；无壳时插件自动回退浏览器通知。
+- **修复新版 DSH 认证页 401**：以 CLI 输出的带 token 认证地址判定服务就绪并自动完成认证（启动页同站一次即达；安装版跨站自动二次导航，约 400ms 内完成）。
+- **更新检测升级**：遍历 npm 全部 dist-tags 取 semver 最大版本——alpha/beta 等新版本也能检出。
+- **更新交互优化**：桌面/DSH 更新检查全程静默，仅发现新版本时居中弹窗询问；DSH 更新期间右下角进度条，完成后弹窗询问立即/稍后重启，不阻塞使用。
 
 ## 使用
 
-下载 **$ASSET_NAME** 安装；已安装用户重启应用即可收到自动更新（含 DSH 后台更新与重启）。"
+下载 **$ASSET_NAME** 安装；已安装用户重启应用即可收到自动更新（含 DSH 后台更新与重启）。新通知能力需要 DSH 侧安装 dsh-win-notify 插件（\`dsh plugin --profile web add ./dsh-win-notify\`，route 保持默认 client）。"
 # gh release create 会覆盖同名标签/资产的旧 Release（--clobber 语义由 GitHub 自动处理）
 
 echo ""

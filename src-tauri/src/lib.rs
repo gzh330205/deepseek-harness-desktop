@@ -19,9 +19,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, PhysicalPosition, RunEvent, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Listener, Manager, PhysicalPosition, RunEvent, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
+use tauri_plugin_notification::NotificationExt;
 use url::Url;
 
 const LOOPBACK: &str = "127.0.0.1";
@@ -1200,6 +1201,40 @@ fn return_to_launcher_if_viewing_dsh(app: &AppHandle) {
     }
 }
 
+/// dsh-win-notify 插件经 Tauri 事件桥接的系统通知载荷（`{ title, body, sessionId }`）。
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct DshNotify {
+    title: String,
+    body: String,
+    #[allow(dead_code)] // sessionId 预留：后续可点击通知聚焦对应会话
+    session_id: Option<String>,
+}
+
+/// 监听 dsh-win-notify 插件从 DSH Web 页面（client 路线）经
+/// `window.__TAURI__.event.emit` 发出的事件，并弹出系统通知。
+fn register_session_notifications(app: &AppHandle) {
+    let handle = app.clone();
+    app.listen("dsh-notify", move |event| {
+        let notify: DshNotify = serde_json::from_str(event.payload()).unwrap_or_else(|_| DshNotify {
+            title: "DSH".into(),
+            body: event.payload().to_string(),
+            session_id: None,
+        });
+        let title = if notify.title.trim().is_empty() {
+            "DSH".to_string()
+        } else {
+            notify.title
+        };
+        let _ = handle
+            .notification()
+            .builder()
+            .title(title)
+            .body(notify.body)
+            .show();
+    });
+}
+
 fn quit_application(app: &AppHandle) {
     if let Some(lifecycle) = app.try_state::<ManagedLifecycle>() {
         if let Ok(mut state) = lifecycle.lock() {
@@ -1456,6 +1491,8 @@ pub fn run() {
         .manage(service)
         .manage(Arc::new(Mutex::new(AppLifecycle::default())) as ManagedLifecycle)
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 系统通知：供 dsh-win-notify 插件（client 路线）经事件桥接到壳后弹出。
+        .plugin(tauri_plugin_notification::init())
         // 不恢复窗口可见性：桌面更新等窗口在启动时按需隐藏（visible:false），
         // 若插件把上次的“可见”状态还原回来，检查更新期间就会弹出窗口。
         .plugin(
@@ -1482,6 +1519,8 @@ pub fn run() {
             // 打开即先启动 DSH Web 服务；桌面更新与 DSH 更新的检查都推迟到
             // 用户进入 DSH 页面之后（见 desktop_update_done / resolve_desktop_update）。
             start_dsh_web_in_background(app.handle().clone(), Arc::clone(&service_for_setup));
+            // 监听 dsh-win-notify 插件的会话完成通知事件（client 路线）。
+            register_session_notifications(app.handle());
             // 右下角更新浮层跟随主窗口移动/缩放。
             if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 let app_handle = app.handle().clone();
