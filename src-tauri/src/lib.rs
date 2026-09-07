@@ -1235,6 +1235,39 @@ fn register_session_notifications(app: &AppHandle) {
     });
 }
 
+/// 注册应用自己的 AUMID（`HKCU\Software\Classes\AppUserModelId\<identifier>`），
+/// 使 Windows 通知在 toast 头部显示「DSH Desktop」名称与本程序图标，而不是
+/// 未注册时的回退身份（如 PowerShell）。对两条路线都生效：壳内原生通知
+/// （tauri-plugin-notification 使用 identifier 作为 AppId）与 dsh-win-notify
+/// 宿主路线（其 `appId` 配置为同一 identifier 时）。
+#[cfg(windows)]
+fn register_notification_identity(app: &AppHandle) {
+    let aumid = app.config().identifier.clone();
+    let exe = env::current_exe()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    for (value, data) in [
+        ("DisplayName", app.config().product_name.clone().unwrap_or_else(|| "DSH Desktop".into())),
+        ("IconUri", exe),
+        ("IconUriBackgroundColor", "#1E2A44".to_string()),
+    ] {
+        let mut reg = Command::new("reg");
+        reg.args([
+            "add",
+            &format!(r"HKCU\Software\Classes\AppUserModelId\{aumid}"),
+            "/v",
+            value,
+            "/d",
+            &data,
+            "/f",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+        configure_hidden_command(&mut reg);
+        let _ = reg.status();
+    }
+}
+
 fn quit_application(app: &AppHandle) {
     if let Some(lifecycle) = app.try_state::<ManagedLifecycle>() {
         if let Ok(mut state) = lifecycle.lock() {
@@ -1521,6 +1554,9 @@ pub fn run() {
             start_dsh_web_in_background(app.handle().clone(), Arc::clone(&service_for_setup));
             // 监听 dsh-win-notify 插件的会话完成通知事件（client 路线）。
             register_session_notifications(app.handle());
+            // 注册通知 AUMID：让系统通知显示“DSH Desktop”名称与本程序图标。
+            #[cfg(windows)]
+            register_notification_identity(app.handle());
             // 右下角更新浮层跟随主窗口移动/缩放。
             if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 let app_handle = app.handle().clone();
