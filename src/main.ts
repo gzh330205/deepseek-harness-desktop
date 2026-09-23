@@ -11,9 +11,27 @@ interface DshWebStatus {
   logs: string[];
 }
 
+interface ProxySettings {
+  enabled: boolean;
+  httpsProxy: string;
+  httpProxy: string;
+  noProxy: string;
+}
+
 interface ShellSettings {
   closeBehavior: "minimizeToTray" | "exit";
+  proxy: ProxySettings;
   version: string;
+}
+
+const emptyProxy: ProxySettings = { enabled: false, httpsProxy: "", httpProxy: "", noProxy: "" };
+
+/** 手动检查更新的结果；`failed` 是业务状态而非异常，因此页面内展示原因。 */
+interface UpdateCheckResult {
+  status: "upToDate" | "available" | "failed";
+  currentVersion: string;
+  latestVersion?: string;
+  message: string;
 }
 
 const title = requiredElement<HTMLHeadingElement>("title");
@@ -26,6 +44,15 @@ const aboutPanel = requiredElement<HTMLElement>("about-panel");
 const closeBehavior = requiredElement<HTMLSelectElement>("close-behavior");
 const settingsStatus = requiredElement<HTMLParagraphElement>("settings-status");
 const version = requiredElement<HTMLElement>("version");
+const proxyEnabled = requiredElement<HTMLInputElement>("proxy-enabled");
+const proxyHttps = requiredElement<HTMLInputElement>("proxy-https");
+const proxyHttp = requiredElement<HTMLInputElement>("proxy-http");
+const proxyNo = requiredElement<HTMLInputElement>("proxy-no");
+const proxySave = requiredElement<HTMLButtonElement>("proxy-save");
+const proxySaveRestart = requiredElement<HTMLButtonElement>("proxy-save-restart");
+const proxyStatus = requiredElement<HTMLParagraphElement>("proxy-status");
+const updateCheck = requiredElement<HTMLButtonElement>("update-check");
+const updateStatus = requiredElement<HTMLParagraphElement>("update-status");
 
 let navigating = false;
 let settings: ShellSettings | undefined;
@@ -103,9 +130,70 @@ async function openDsh(): Promise<void> {
   }
 }
 
+function applyProxy(proxy: ProxySettings): void {
+  proxyEnabled.checked = proxy.enabled;
+  proxyHttps.value = proxy.httpsProxy;
+  proxyHttp.value = proxy.httpProxy;
+  proxyNo.value = proxy.noProxy;
+  syncProxyInputs();
+}
+
+/** 未启用代理时锁住地址输入框，让“开关”成为唯一权威。 */
+function syncProxyInputs(): void {
+  const disabled = !proxyEnabled.checked;
+  for (const input of [proxyHttps, proxyHttp, proxyNo]) {
+    input.disabled = disabled;
+  }
+}
+
+/** 保存代理设置；`restart` 为真时让托管的 DSH 服务按新环境变量重启。 */
+async function saveProxy(restart: boolean): Promise<void> {
+  const proxy: ProxySettings = {
+    enabled: proxyEnabled.checked,
+    httpsProxy: proxyHttps.value,
+    httpProxy: proxyHttp.value,
+    noProxy: proxyNo.value,
+  };
+  const button = restart ? proxySaveRestart : proxySave;
+  button.disabled = true;
+  proxyStatus.textContent = restart ? "正在保存并重启 DSH 服务…" : "正在保存…";
+  try {
+    const updated = await invoke<ShellSettings>("update_proxy_settings", { proxy, restart });
+    settings = updated;
+    applyProxy(updated.proxy);
+    proxyStatus.textContent = restart
+      ? "已保存，已请求重启 DSH 服务；若当前复用的是外部 DSH 服务，代理不会注入。"
+      : "已保存。将在下次启动或重启 DSH 服务后生效。";
+  } catch (error) {
+    proxyStatus.textContent = `保存失败：${String(error)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/**
+ * 手动检查桌面端更新。发现新版本时 Rust 会打开既有的更新窗口接管下载与安装，
+ * 这里只负责给出「已是最新 / 发现新版本 / 检查失败」的明确反馈。
+ */
+async function checkDesktopUpdate(): Promise<void> {
+  updateCheck.disabled = true;
+  updateStatus.textContent = "正在检查更新…";
+  try {
+    const result = await invoke<UpdateCheckResult>("check_desktop_update_now");
+    updateStatus.textContent = result.message;
+    updateStatus.dataset.status = result.status;
+  } catch (error) {
+    updateStatus.dataset.status = "failed";
+    updateStatus.textContent = `检查更新失败：${String(error)}`;
+  } finally {
+    updateCheck.disabled = false;
+  }
+}
+
 async function loadSettings(): Promise<void> {
   settings = await invoke<ShellSettings>("shell_settings");
   closeBehavior.value = settings.closeBehavior;
+  applyProxy(settings.proxy ?? emptyProxy);
   version.textContent = settings.version;
 }
 
@@ -154,6 +242,17 @@ closeBehavior.addEventListener("change", () => {
       closeBehavior.value = settings?.closeBehavior ?? "minimizeToTray";
       settingsStatus.textContent = `保存失败：${String(error)}`;
     });
+});
+
+proxyEnabled.addEventListener("change", syncProxyInputs);
+proxySave.addEventListener("click", () => {
+  void saveProxy(false);
+});
+proxySaveRestart.addEventListener("click", () => {
+  void saveProxy(true);
+});
+updateCheck.addEventListener("click", () => {
+  void checkDesktopUpdate();
 });
 
 retry.addEventListener("click", () => {

@@ -95,8 +95,40 @@ select { min-width: 150px; padding: 9px 10px; border: 1px solid #405874; border-
 .about-details div { display: grid; grid-template-columns: 100px 1fr; gap: 16px; padding: 13px 0; border-top: 1px solid rgba(175, 202, 237, 0.14); }
 dt { color: #91a7bf; } dd { margin: 0; color: #e8edf4; }
 
+.settings-group { margin-top: 34px; }
+.settings-group-title { margin: 0; color: #8ad8ff; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; }
+.settings-group .setting-row { margin-top: 12px; }
+.settings-group .settings-group-title + .setting-row { margin-top: 14px; }
+.setting-row code { padding: 1px 4px; border-radius: 4px; background: #16243a; font-size: 11px; }
+input[type="text"] {
+  min-width: 230px;
+  padding: 9px 10px;
+  border: 1px solid #405874;
+  border-radius: 8px;
+  color: #e8edf4;
+  background: #16243a;
+}
+input[type="text"]:disabled, input[type="checkbox"]:disabled { opacity: 0.45; }
+input[type="checkbox"] { width: 20px; height: 20px; accent-color: #8ad8ff; }
+.settings-actions { display: flex; gap: 10px; }
+.settings-actions button { margin-top: 16px; }
+.setting-row button { margin-top: 0; white-space: nowrap; }
+button:disabled { opacity: 0.55; cursor: default; }
+
+/* 状态色：失败为红、发现新版本为绿，避免用户误读。 */
+.settings-status[data-status="failed"] { color: #ffb3b3; }
+.settings-status[data-status="available"] { color: #78debe; }
+
+/* 设置窗口是固定尺寸的辅助窗口，内容超出时由面板自身滚动而不是被裁掉。 */
+.auxiliary-window .panel {
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
 @media (max-width: 520px) {
   .card, .panel { padding: 28px; }
   .setting-row { align-items: stretch; flex-direction: column; gap: 14px; }
   select { width: 100%; }
+  input[type="text"] { width: 100%; min-width: 0; }
+  .settings-actions { flex-direction: column; }
 }

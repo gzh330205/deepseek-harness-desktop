@@ -41,6 +41,55 @@
             <option value="exit">退出应用</option>
           </select>
         </label>
+
+        <div class="settings-group">
+          <p class="settings-group-title">代理</p>
+          <label class="setting-row" for="proxy-enabled">
+            <span>
+              <strong>为 DSH 启用代理</strong>
+              <small>写入 DSH 子进程的 <code>HTTPS_PROXY</code> / <code>HTTP_PROXY</code> 环境变量；只对桌面端启动的 DSH 服务生效，复用外部 DSH 时不生效。</small>
+            </span>
+            <input id="proxy-enabled" type="checkbox" />
+          </label>
+          <label class="setting-row" for="proxy-https">
+            <span>
+              <strong>HTTPS 代理</strong>
+              <small>https 请求走这条（联网搜索与网页抓取）。可省略 <code>http://</code> 前缀。</small>
+            </span>
+            <input id="proxy-https" type="text" placeholder="http://127.0.0.1:7890" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="setting-row" for="proxy-http">
+            <span>
+              <strong>HTTP 代理（可选）</strong>
+              <small>http 请求走这条；公司内网地址建议写进下方例外，否则可能被代理拦走。</small>
+            </span>
+            <input id="proxy-http" type="text" placeholder="留空则 http 请求直连" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="setting-row" for="proxy-no">
+            <span>
+              <strong>例外列表（可选）</strong>
+              <small>逗号分隔的直连地址；<code>localhost</code> / <code>127.0.0.1</code> / <code>::1</code> 由 DSH 自动排除。</small>
+            </span>
+            <input id="proxy-no" type="text" placeholder="10.1.20.160, *.internal" spellcheck="false" autocomplete="off" />
+          </label>
+          <div class="settings-actions">
+            <button id="proxy-save" type="button">保存</button>
+            <button id="proxy-save-restart" type="button">保存并重启 DSH</button>
+          </div>
+          <p id="proxy-status" class="settings-status" role="status"></p>
+        </div>
+
+        <div class="settings-group">
+          <p class="settings-group-title">更新</p>
+          <div class="setting-row">
+            <span>
+              <strong>桌面端更新</strong>
+              <small>自动检查只在应用启动时静默执行一次；网络异常或被跳过时可在这里立即重查。发现新版本会打开更新窗口。</small>
+            </span>
+            <button id="update-check" type="button">检查更新</button>
+          </div>
+          <p id="update-status" class="settings-status" role="status"></p>
+        </div>
         <p id="settings-status" class="settings-status" role="status"></p>
       </section>
 

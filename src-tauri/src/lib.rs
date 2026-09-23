@@ -131,17 +131,146 @@ enum CloseBehavior {
     Exit,
 }
 
+/// 桌面壳为 DSH 子进程注入的代理配置。
+///
+/// DSH 只在进程启动时读取一次 `*_proxy` 环境变量，因此修改后需要重启托管的
+/// DSH 服务才会生效；这些字段只是“代填环境变量”，不改变 DSH 自身的网络策略。
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ProxySettings {
+    enabled: bool,
+    /// HTTPS_PROXY：https 请求（`web_fetch` 抓网页走这条）。
+    https_proxy: String,
+    /// HTTP_PROXY：http 请求；内网端点需要写进 `no_proxy` 例外，否则可能被代理拦走。
+    http_proxy: String,
+    /// NO_PROXY：额外的直连例外，逗号分隔。
+    no_proxy: String,
+}
+
+/// 代理地址支持的协议；DSH 侧同样只接受这几种。
+const PROXY_SCHEMES: [&str; 4] = ["http", "https", "socks5", "socks5h"];
+
+/// 本壳管理的代理环境变量（大小写两种写法都要处理：DSH 优先读小写）。
+const MANAGED_PROXY_ENV: [&str; 6] = [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+fn normalize_proxy_url(raw: &str, label: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    // 允许用户只写 `127.0.0.1:7890`，自动补全协议。
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    let parsed =
+        Url::parse(&candidate).map_err(|error| format!("{label}不是有效的代理地址：{error}"))?;
+    if !PROXY_SCHEMES.contains(&parsed.scheme()) {
+        return Err(format!(
+            "{label}只支持 http / https / socks5 / socks5h，当前为 {}。",
+            parsed.scheme()
+        ));
+    }
+    if parsed.host_str().is_none() {
+        return Err(format!("{label}缺少主机名。"));
+    }
+    Ok(candidate)
+}
+
+impl ProxySettings {
+    /// 校验并规范化用户输入：补全协议、去空格、整理例外列表。
+    fn normalized(&self) -> Result<Self, String> {
+        let normalized = Self {
+            enabled: self.enabled,
+            https_proxy: normalize_proxy_url(&self.https_proxy, "HTTPS 代理地址")?,
+            http_proxy: normalize_proxy_url(&self.http_proxy, "HTTP 代理地址")?,
+            no_proxy: self
+                .no_proxy
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .collect::<Vec<_>>()
+                .join(","),
+        };
+        if normalized.enabled
+            && normalized.https_proxy.is_empty()
+            && normalized.http_proxy.is_empty()
+        {
+            return Err("已启用代理，但至少需要填写一个代理地址。".to_string());
+        }
+        Ok(normalized)
+    }
+
+    /// 映射为子进程环境变量；未启用时返回空表（调用方会显式清除这些变量）。
+    fn child_env(&self) -> Vec<(&'static str, String)> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        let mut envs = Vec::new();
+        if !self.https_proxy.is_empty() {
+            envs.push(("HTTPS_PROXY", self.https_proxy.clone()));
+            envs.push(("https_proxy", self.https_proxy.clone()));
+        }
+        if !self.http_proxy.is_empty() {
+            envs.push(("HTTP_PROXY", self.http_proxy.clone()));
+            envs.push(("http_proxy", self.http_proxy.clone()));
+        }
+        if !self.no_proxy.is_empty() {
+            envs.push(("NO_PROXY", self.no_proxy.clone()));
+            envs.push(("no_proxy", self.no_proxy.clone()));
+        }
+        envs
+    }
+
+    /// 供日志展示：只暴露实际启用的项。
+    fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.https_proxy.is_empty() {
+            parts.push(format!("HTTPS_PROXY={}", self.https_proxy));
+        }
+        if !self.http_proxy.is_empty() {
+            parts.push(format!("HTTP_PROXY={}", self.http_proxy));
+        }
+        if !self.no_proxy.is_empty() {
+            parts.push(format!("NO_PROXY={}", self.no_proxy));
+        }
+        parts.join("，")
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ShellSettings {
     close_behavior: CloseBehavior,
+    /// 旧版本设置文件没有该字段，缺失时回落到默认（不启用代理）。
+    #[serde(default)]
+    proxy: ProxySettings,
     version: String,
+}
+
+impl ShellSettings {
+    fn snapshot(close_behavior: CloseBehavior, proxy: ProxySettings) -> Self {
+        Self {
+            close_behavior,
+            proxy,
+            version: APP_VERSION.to_string(),
+        }
+    }
 }
 
 #[derive(Default)]
 struct AppLifecycle {
     explicit_exit_requested: bool,
     close_behavior: CloseBehavior,
+    proxy: ProxySettings,
     /// 桌面更新检测只在本会话内收敛一次：窗口显式通知与窗口关闭事件可能同时
     /// 到达，需要去重后再进入 DSH 更新检查。
     desktop_update_resolved: bool,
@@ -738,6 +867,13 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
     // 必须传 --no-open 关闭该行为（老版本 DSH 不认识该参数，先探测再决定）。
     let no_open_supported = dsh_web_supports_no_open(&command);
 
+    // 代理设置只作用于由本壳托管的 DSH 子进程。DSH 在启动时读取一次环境变量，
+    // 因此设置变更后需要重启服务；复用外部已有服务时无法注入（设置页已提示）。
+    let proxy = app
+        .try_state::<ManagedLifecycle>()
+        .and_then(|state| state.lock().ok().map(|lifecycle| lifecycle.proxy.clone()))
+        .unwrap_or_default();
+
     let mut dsh_process = Command::new(&command);
     let mut args = vec![
         "web".to_string(),
@@ -754,6 +890,16 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if proxy.enabled {
+        for (key, value) in proxy.child_env() {
+            dsh_process.env(key, value);
+        }
+    } else {
+        // 明确清除，避免关闭开关后父进程遗留的代理变量仍然悄悄生效。
+        for key in MANAGED_PROXY_ENV {
+            dsh_process.env_remove(key);
+        }
+    }
     #[cfg(windows)]
     dsh_process.creation_flags(CREATE_NO_WINDOW);
 
@@ -780,6 +926,9 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
             "未发现可复用的 DSH 服务；启动 `{command} web --host {LOOPBACK} --port {port}{}`",
             if no_open_supported { " --no-open" } else { "" }
         ));
+        if proxy.enabled {
+            instance.push_log(format!("已为 DSH 子进程注入代理：{}", proxy.describe()));
+        }
         instance.generation
     };
 
@@ -1068,6 +1217,64 @@ async fn show_desktop_update(app: AppHandle) {
     show_desktop_update_window(&app, false);
 }
 
+/// 手动检查更新的结果，供设置窗口直接展示。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheckResult {
+    /// `upToDate` | `available` | `failed`
+    status: &'static str,
+    current_version: String,
+    latest_version: Option<String>,
+    message: String,
+}
+
+/// 设置窗口的「检查更新」按钮：立即查询一次桌面端更新。
+///
+/// 与启动时的静默检查相互独立——这里只负责查询与反馈，发现新版本时复用既有的
+/// 桌面更新窗口完成下载与安装；本命令不触碰 `desktop_update_resolved`，
+/// 因此不会打乱「桌面更新 → DSH 更新」的一次性顺序。
+#[tauri::command]
+async fn check_desktop_update_now(app: AppHandle) -> Result<UpdateCheckResult, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let current_version = APP_VERSION.to_string();
+    // 与启动时的静默检查保持一致（10 秒）：网络挂起时不要一直转，直接给出失败反馈。
+    let updater = app
+        .updater_builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| format!("无法初始化更新器：{error}"))?;
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let latest_version = update.version.clone();
+            // 复用既有窗口：它在自身检查成功后显示自己并承载下载/安装流程。
+            // async 命令运行在工作线程上，满足“不得在主线程内联创建 WebView”的约束。
+            show_desktop_update_window(&app, false);
+            Ok(UpdateCheckResult {
+                status: "available",
+                message: format!(
+                    "发现新版本 {latest_version}（当前 {current_version}），已打开更新窗口。"
+                ),
+                current_version,
+                latest_version: Some(latest_version),
+            })
+        }
+        Ok(None) => Ok(UpdateCheckResult {
+            status: "upToDate",
+            message: format!("已是最新版本（{current_version}）。"),
+            current_version,
+            latest_version: None,
+        }),
+        // 检查失败不返回 Err：设置窗口需要把失败原因展示在行内，而不是当异常抛出。
+        Err(error) => Ok(UpdateCheckResult {
+            status: "failed",
+            message: format!("检查更新失败：{error}"),
+            current_version,
+            latest_version: None,
+        }),
+    }
+}
+
 /// 前端发现新版本后调用：显示桌面更新询问窗口。
 #[tauri::command]
 fn reveal_desktop_update(app: AppHandle) {
@@ -1147,9 +1354,11 @@ fn show_settings_window(app: &AppHandle) {
 
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("DSH Desktop 设置")
-        .inner_size(560.0, 330.0)
-        .min_inner_size(560.0, 330.0)
-        .max_inner_size(560.0, 330.0)
+        // 设置项（关闭行为 / 代理 / 更新）已超过原 330 高度，按内容加高；
+        // 仍是固定尺寸、不可最大化的辅助窗口，内容超出时由面板自身滚动。
+        .inner_size(620.0, 720.0)
+        .min_inner_size(620.0, 720.0)
+        .max_inner_size(620.0, 720.0)
         .resizable(false)
         .maximizable(false)
         .center()
@@ -1346,16 +1555,12 @@ fn shell_settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .map_err(|error| format!("无法确定桌面设置目录：{error}"))
 }
 
-fn load_close_behavior(app: &AppHandle) -> CloseBehavior {
-    let Ok(path) = shell_settings_path(app) else {
-        return CloseBehavior::default();
-    };
-    let Ok(contents) = fs::read_to_string(path) else {
-        return CloseBehavior::default();
-    };
-    serde_json::from_str::<ShellSettings>(&contents)
-        .map(|settings| settings.close_behavior)
-        .unwrap_or_default()
+/// 读取桌面设置文件；文件缺失或损坏时按“未配置”处理。
+/// 旧版本只写了 `closeBehavior` / `version`，缺失的 `proxy` 由 serde 默认值补齐。
+fn load_shell_settings(app: &AppHandle) -> Option<ShellSettings> {
+    let path = shell_settings_path(app).ok()?;
+    let contents = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<ShellSettings>(&contents).ok()
 }
 
 fn save_shell_settings(app: &AppHandle, settings: &ShellSettings) -> Result<(), String> {
@@ -1371,14 +1576,11 @@ fn save_shell_settings(app: &AppHandle, settings: &ShellSettings) -> Result<(), 
 
 #[tauri::command]
 fn shell_settings(lifecycle: State<'_, ManagedLifecycle>) -> Result<ShellSettings, String> {
-    let close_behavior = lifecycle
+    let (close_behavior, proxy) = lifecycle
         .lock()
-        .map(|state| state.close_behavior)
+        .map(|state| (state.close_behavior, state.proxy.clone()))
         .map_err(|_| "桌面生命周期状态锁已损坏".to_string())?;
-    Ok(ShellSettings {
-        close_behavior,
-        version: APP_VERSION.to_string(),
-    })
+    Ok(ShellSettings::snapshot(close_behavior, proxy))
 }
 
 #[tauri::command]
@@ -1387,18 +1589,67 @@ fn update_close_behavior(
     close_behavior: CloseBehavior,
     lifecycle: State<'_, ManagedLifecycle>,
 ) -> Result<ShellSettings, String> {
-    {
+    let settings = {
         let mut state = lifecycle
             .lock()
             .map_err(|_| "桌面生命周期状态锁已损坏".to_string())?;
         state.close_behavior = close_behavior;
-    }
-    let settings = ShellSettings {
-        close_behavior,
-        version: APP_VERSION.to_string(),
+        ShellSettings::snapshot(state.close_behavior, state.proxy.clone())
     };
     save_shell_settings(&app, &settings)?;
     Ok(settings)
+}
+
+/// 保存代理设置；`restart` 为真时顺带重启托管的 DSH 服务，让新环境变量立即生效。
+#[tauri::command]
+fn update_proxy_settings(
+    app: AppHandle,
+    proxy: ProxySettings,
+    restart: bool,
+    lifecycle: State<'_, ManagedLifecycle>,
+    service: State<'_, ManagedService>,
+) -> Result<ShellSettings, String> {
+    let normalized = proxy.normalized()?;
+    let settings = {
+        let mut state = lifecycle
+            .lock()
+            .map_err(|_| "桌面生命周期状态锁已损坏".to_string())?;
+        state.proxy = normalized;
+        ShellSettings::snapshot(state.close_behavior, state.proxy.clone())
+    };
+    save_shell_settings(&app, &settings)?;
+    if restart {
+        restart_managed_dsh_web(app, Arc::clone(service.inner()))?;
+    }
+    Ok(settings)
+}
+
+/// 停掉托管子进程并把状态置回启动中；调用方随后触发后台启动。
+/// `start_dsh_web`、`restart_dsh_web` 与代理设置保存共用这段逻辑。
+fn prepare_dsh_restart(service: &ManagedService) -> Result<(), String> {
+    let mut instance = service
+        .lock()
+        .map_err(|_| "DSH 服务状态锁已损坏".to_string())?;
+    instance.stop();
+    instance.state = ServiceState::Starting;
+    instance.logs.clear();
+    if instance.update.phase == "updateAvailable" || instance.update.phase == "checkFailed" {
+        instance.update = DshUpdateStatus {
+            phase: "skipped",
+            message: "已跳过更新，本次将使用当前安装的 DSH。".to_string(),
+            current_version: instance.update.current_version.clone(),
+            latest_version: instance.update.latest_version.clone(),
+            update_tag: instance.update.update_tag.clone(),
+        };
+    }
+    Ok(())
+}
+
+/// 同步重启入口：重置状态后交给后台线程按**当前**代理设置重新拉起 DSH。
+fn restart_managed_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> {
+    prepare_dsh_restart(&service)?;
+    start_dsh_web_in_background(app, service);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1433,23 +1684,7 @@ fn start_dsh_web_in_background(app: AppHandle, service: ManagedService) {
 
 #[tauri::command]
 fn start_dsh_web(app: AppHandle, service: State<'_, ManagedService>) -> Result<(), String> {
-    {
-        let mut instance = service
-            .lock()
-            .map_err(|_| "DSH 服务状态锁已损坏".to_string())?;
-        instance.stop();
-        instance.state = ServiceState::Starting;
-        instance.logs.clear();
-        if instance.update.phase == "updateAvailable" || instance.update.phase == "checkFailed" {
-            instance.update = DshUpdateStatus {
-                phase: "skipped",
-                message: "已跳过更新，本次将使用当前安装的 DSH。".to_string(),
-                current_version: instance.update.current_version.clone(),
-                latest_version: instance.update.latest_version.clone(),
-                update_tag: instance.update.update_tag.clone(),
-            };
-        }
-    }
+    prepare_dsh_restart(service.inner())?;
     start_dsh_web_in_background(app, Arc::clone(service.inner()));
     Ok(())
 }
@@ -1558,9 +1793,12 @@ pub fn run() {
             show_main_window(app);
         }))
         .setup(move |app| {
-            if let Some(lifecycle) = app.handle().try_state::<ManagedLifecycle>() {
-                if let Ok(mut state) = lifecycle.lock() {
-                    state.close_behavior = load_close_behavior(app.handle());
+            if let Some(settings) = load_shell_settings(app.handle()) {
+                if let Some(lifecycle) = app.handle().try_state::<ManagedLifecycle>() {
+                    if let Ok(mut state) = lifecycle.lock() {
+                        state.close_behavior = settings.close_behavior;
+                        state.proxy = settings.proxy;
+                    }
                 }
             }
             create_tray(app.handle())?;
@@ -1593,6 +1831,7 @@ pub fn run() {
             dismiss_update_overlay,
             dismiss_dsh_update_prompt,
             show_desktop_update,
+            check_desktop_update_now,
             reveal_desktop_update,
             desktop_update_done,
             set_main_window_locked,
@@ -1601,6 +1840,7 @@ pub fn run() {
             show_launcher,
             shell_settings,
             update_close_behavior,
+            update_proxy_settings,
             show_shell_settings,
             show_about
         ])
@@ -1640,4 +1880,98 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod proxy_settings_tests {
+    use super::*;
+
+    fn settings(enabled: bool, https: &str, http: &str, no_proxy: &str) -> ProxySettings {
+        ProxySettings {
+            enabled,
+            https_proxy: https.to_string(),
+            http_proxy: http.to_string(),
+            no_proxy: no_proxy.to_string(),
+        }
+    }
+
+    #[test]
+    fn bare_host_port_gets_http_scheme() {
+        let normalized = settings(true, "127.0.0.1:7890", "", "")
+            .normalized()
+            .expect("应接受省略协议的地址");
+        assert_eq!(normalized.https_proxy, "http://127.0.0.1:7890");
+    }
+
+    #[test]
+    fn socks_scheme_is_accepted() {
+        let normalized = settings(true, "socks5://127.0.0.1:7891", "", "")
+            .normalized()
+            .expect("应接受 socks5");
+        assert_eq!(normalized.https_proxy, "socks5://127.0.0.1:7891");
+    }
+
+    #[test]
+    fn unsupported_scheme_is_rejected() {
+        let error = settings(true, "ftp://127.0.0.1:21", "", "")
+            .normalized()
+            .expect_err("ftp 应被拒绝");
+        assert!(error.contains("只支持"), "错误信息应说明支持的协议：{error}");
+    }
+
+    #[test]
+    fn enabled_without_any_address_is_rejected() {
+        let error = settings(true, "  ", "", "")
+            .normalized()
+            .expect_err("启用但没有地址应被拒绝");
+        assert!(error.contains("至少需要填写一个代理地址"));
+    }
+
+    #[test]
+    fn disabled_settings_never_emit_env() {
+        let envs = settings(false, "http://127.0.0.1:7890", "", "10.1.20.160").child_env();
+        assert!(envs.is_empty(), "未启用时不应注入任何变量");
+    }
+
+    #[test]
+    fn enabled_settings_emit_both_casings_and_trim_no_proxy() {        let normalized = settings(true, "http://127.0.0.1:7890", "", " 10.1.20.160 , ,*.internal ")
+            .normalized()
+            .expect("应接受合法输入");
+        assert_eq!(normalized.no_proxy, "10.1.20.160,*.internal");
+
+        let envs = normalized.child_env();
+        assert!(envs.contains(&("HTTPS_PROXY", "http://127.0.0.1:7890".to_string())));
+        assert!(envs.contains(&("https_proxy", "http://127.0.0.1:7890".to_string())));
+        assert!(envs.contains(&("NO_PROXY", "10.1.20.160,*.internal".to_string())));
+        // 只填了 HTTPS 代理时不应凭空生成 HTTP 代理，否则 http 请求会被意外代理。
+        assert!(!envs.iter().any(|(key, _)| *key == "HTTP_PROXY"));
+    }
+
+    /// 旧版本设置文件没有 `proxy` 字段，必须仍然能解析（否则老用户升级后设置会丢）。
+    #[test]
+    fn legacy_settings_file_without_proxy_still_parses() {
+        let legacy = r#"{ "closeBehavior": "exit", "version": "0.2.22" }"#;
+        let parsed: ShellSettings = serde_json::from_str(legacy).expect("旧设置文件应能解析");
+        assert!(matches!(parsed.close_behavior, CloseBehavior::Exit));
+        assert!(!parsed.proxy.enabled);
+        assert_eq!(parsed.proxy.https_proxy, "");
+    }
+
+    /// 前后端字段契约：设置文件必须是前端 `ShellSettings.proxy` 期待的 camelCase 键名。
+    #[test]
+    fn settings_round_trip_uses_camel_case_proxy_keys() {
+        let snapshot = ShellSettings::snapshot(
+            CloseBehavior::MinimizeToTray,
+            settings(true, "http://127.0.0.1:7890", "", "10.1.20.160"),
+        );
+        let json = serde_json::to_string(&snapshot).expect("应能序列化");
+        assert!(json.contains("\"closeBehavior\":\"minimizeToTray\""), "{json}");
+        assert!(json.contains("\"enabled\":true"), "{json}");
+        assert!(
+            json.contains("\"httpsProxy\":\"http://127.0.0.1:7890\""),
+            "{json}"
+        );
+        assert!(json.contains("\"httpProxy\":\"\""), "{json}");
+        assert!(json.contains("\"noProxy\":\"10.1.20.160\""), "{json}");
+    }
 }
