@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>DSH Desktop 设置</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115; --panel: #161a22; --fg: #e8ebf2; --muted: #8d97ab;
+      --line: rgba(255,255,255,.10); --field: #0b0d12; --accent: #4c6ef5; --danger: #f07a7a;
+    }
+    /* Shell chrome follows the OS theme, like the title bar. */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f3f3f3; --panel: #ffffff; --fg: #1f1f1f; --muted: #666e7a;
+        --line: rgba(0,0,0,.12); --field: #ffffff; --accent: #3b5bdb; --danger: #c0392b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 18px 20px 16px;
+      background: var(--bg); color: var(--fg);
+      font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      user-select: none;
+    }
+    h1 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    p.hint { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+    section { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; background: var(--panel); }
+    section > h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .3px; }
+    .row { display: grid; grid-template-columns: 132px 1fr; gap: 10px; align-items: center; margin-bottom: 8px; }
+    .row:last-child { margin-bottom: 0; }
+    label { color: var(--fg); }
+    input[type="text"], input[type="number"] {
+      width: 100%; padding: 6px 8px; color: var(--fg); background: var(--field);
+      border: 1px solid var(--line); border-radius: 6px; font: inherit;
+    }
+    input[type="number"] { max-width: 120px; }
+    .checks { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+    .checks label { display: flex; align-items: center; gap: 6px; }
+    .inline-hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+    dl { display: grid; grid-template-columns: 132px 1fr; gap: 4px 10px; margin: 0; font-size: 12px; }
+    dt { color: var(--muted); }
+    dd { margin: 0; word-break: break-all; }
+    footer { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+    #status { flex: 1; font-size: 12px; color: var(--muted); min-height: 18px; }
+    #status.error { color: var(--danger); }
+    button {
+      font: inherit; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--line);
+      color: var(--fg); background: transparent; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button[disabled] { opacity: .5; cursor: default; }
+  </style>
+</head>
+<body>
+  <h1>桌面端设置</h1>
+  <p class="hint">这些设置由桌面壳自己保存，不需要 DSH 页面参与。端口与代理是启动 dsh 时交给它的参数，改动后需要重启桌面端。</p>
+
+  <section>
+    <h2>服务</h2>
+    <div class="row">
+      <label for="port">服务端口</label>
+      <input id="port" type="number" min="1024" max="65535" step="1" data-testid="port" />
+    </div>
+    <p class="inline-hint" id="portHint"></p>
+  </section>
+
+  <section>
+    <h2>窗口行为</h2>
+    <div class="row">
+      <label>关闭按钮</label>
+      <div class="checks">
+        <label><input type="radio" name="close" value="minimizeToTray" data-testid="close-tray" /> 最小化到托盘</label>
+        <label><input type="radio" name="close" value="exit" data-testid="close-exit" /> 退出应用</label>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>代理（传给 dsh 子进程）</h2>
+    <div class="row">
+      <label>启用代理</label>
+      <div class="checks"><label><input type="checkbox" id="proxyEnabled" data-testid="proxy-enabled" /> 使用下面的代理</label></div>
+    </div>
+    <div class="row"><label for="httpProxy">HTTP 代理</label><input id="httpProxy" type="text" placeholder="http://127.0.0.1:7890" /></div>
+    <div class="row"><label for="httpsProxy">HTTPS 代理</label><input id="httpsProxy" type="text" placeholder="http://127.0.0.1:7890" /></div>
+    <div class="row"><label for="noProxy">不使用代理</label><input id="noProxy" type="text" placeholder="localhost,127.0.0.1" /></div>
+  </section>
+
+  <section>
+    <h2>更新检查</h2>
+    <div class="checks">
+      <label><input type="checkbox" id="checkDesktopOnStart" data-testid="check-desktop" /> 启动时检查桌面端更新</label>
+      <label><input type="checkbox" id="checkDshOnStart" /> 启动时检查 DSH 更新</label>
+    </div>
+  </section>
+
+  <section>
+    <h2>当前状态</h2>
+    <dl id="facts"></dl>
+  </section>
+
+  <footer>
+    <span id="status" data-testid="status"></span>
+    <button type="button" id="restart" data-testid="save-restart">保存并重启</button>
+    <button type="button" id="close">关闭</button>
+    <button type="button" class="primary" id="save" data-testid="save">保存</button>
+  </footer>
+
+  <script>
+    const api = window.__DSH_SETTINGS__
+    const statusEl = document.getElementById('status')
+    const factsEl = document.getElementById('facts')
+    const portEl = document.getElementById('port')
+    const portHintEl = document.getElementById('portHint')
+    const proxyEnabledEl = document.getElementById('proxyEnabled')
+    const fields = ['httpProxy', 'httpsProxy', 'noProxy'].map((id) => document.getElementById(id))
+    let snapshot
+
+    function setStatus(message, isError) {
+      statusEl.textContent = message
+      statusEl.classList.toggle('error', Boolean(isError))
+    }
+
+    function fill(state) {
+      snapshot = state
+      const v = state.values
+      portEl.value = String(v.servicePort)
+      portEl.placeholder = String(state.facts.defaultPort)
+      portHintEl.textContent = '环境变量 DSH_DESKTOP_PORT 优先于这里；留空或超出范围时使用默认端口 '
+        + state.facts.defaultPort + '。'
+      for (const radio of document.querySelectorAll('input[name="close"]')) {
+        radio.checked = radio.value === v.closeBehavior
+      }
+      proxyEnabledEl.checked = v.proxyEnabled
+      document.getElementById('httpProxy').value = v.httpProxy
+      document.getElementById('httpsProxy').value = v.httpsProxy
+      document.getElementById('noProxy').value = v.noProxy
+      document.getElementById('checkDesktopOnStart').checked = v.checkDesktopOnStart
+      document.getElementById('checkDshOnStart').checked = v.checkDshOnStart
+      const rows = [
+        ['桌面端版本', state.facts.desktopVersion],
+        ['随包 DSH', state.facts.runtimeVersion + '（' + state.facts.runtimeSource + '）'],
+        ['当前 DSH', state.facts.dshVersion || '未运行'],
+        ['实际端口', state.facts.effectivePort === null ? '未启动' : String(state.facts.effectivePort)],
+        ['profile', state.facts.profileName],
+        ['设置文件', state.facts.settingsPath],
+      ]
+      factsEl.replaceChildren()
+      for (const [key, value] of rows) {
+        const dt = document.createElement('dt'); dt.textContent = key
+        const dd = document.createElement('dd'); dd.textContent = value
+        factsEl.append(dt, dd)
+      }
+    }
+
+    function collect() {
+      const close = document.querySelector('input[name="close"]:checked')
+      return {
+        servicePort: portEl.value.trim() === '' ? undefined : Number(portEl.value),
+        closeBehavior: close ? close.value : undefined,
+        proxyEnabled: proxyEnabledEl.checked,
+        httpProxy: fields[0].value,
+        httpsProxy: fields[1].value,
+        noProxy: fields[2].value,
+        checkDesktopOnStart: document.getElementById('checkDesktopOnStart').checked,
+        checkDshOnStart: document.getElementById('checkDshOnStart').checked,
+      }
+    }
+
+    async function save() {
+      setStatus('正在保存…', false)
+      const result = await api.save(collect())
+      if (!result.ok) {
+        setStatus(result.reason || '保存失败', true)
+        return false
+      }
+      const changed = result.changed || []
+      setStatus(changed.length === 0
+        ? '没有变化'
+        : '已保存：' + changed.join('、') + (result.restartRequired ? '（重启后生效）' : ''), false)
+      const fresh = await api.get()
+      fill(fresh)
+      return true
+    }
+
+    if (!api) {
+      setStatus('设置页未获得桌面壳 API（preload 未加载）', true)
+    } else {
+      api.get().then(fill).catch((error) => { setStatus(String(error), true) })
+      document.getElementById('save').addEventListener('click', () => { void save() })
+      document.getElementById('close').addEventListener('click', () => { void api.close() })
+      document.getElementById('restart').addEventListener('click', async () => {
+        if (await save()) await api.restart()
+      })
+    }
+  </script>
+</body>
+</html>

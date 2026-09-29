@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>DSH Desktop</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115; --fg: #e8ebf2; --muted: #cfd6e6;
+      --hover: rgba(255,255,255,.08); --active: rgba(255,255,255,.14);
+    }
+    /* Window chrome follows the OS theme, like a native title bar. */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f3f3f3; --fg: #1f1f1f; --muted: #33383f;
+        --hover: rgba(0,0,0,.07); --active: rgba(0,0,0,.12);
+      }
+    }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      display: flex; align-items: center; gap: 10px;
+      padding-left: 10px;
+      /* Leave the caption buttons alone. `titlebar-area-width` is how wide the draggable
+         strip is; the rest belongs to Windows, and it changes with display scaling. */
+      padding-right: calc(100% - env(titlebar-area-width, 100%) + 6px);
+      background: var(--bg); color: var(--fg);
+      font: 12px/1 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      user-select: none;
+      /* The whole strip drags the window, double-click maximises, and Windows snap works. */
+      -webkit-app-region: drag;
+    }
+    #icon { width: 16px; height: 16px; flex: none; }
+    #name { font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+    nav { display: flex; gap: 2px; margin-left: 6px; }
+    button {
+      -webkit-app-region: no-drag;
+      font: inherit; color: var(--muted); background: transparent; border: 0;
+      padding: 4px 10px; border-radius: 5px; cursor: default;
+    }
+    button:hover { background: var(--hover); color: var(--fg); }
+    button:active, button[aria-expanded="true"] { background: var(--active); color: var(--fg); }
+  </style>
+</head>
+<body>
+  <img id="icon" src="icon.png" alt="" width="16" height="16" />
+  <span id="name">DSH Desktop</span>
+  <nav>
+    <!-- One menu only: Ctrl+C/V/X/A/Z already work in web content on Windows, so an 编辑
+         menu duplicated what the keyboard does and only added a second button. -->
+    <button type="button" data-menu="app" aria-haspopup="menu">应用</button>
+  </nav>
+  <script>
+    // The preload exposes exactly one object here: no ipcRenderer, no Node.
+    const api = window.__DSH_TITLEBAR__
+    if (api) {
+      api.state()
+        .then((state) => { if (state && state.productName) document.getElementById('name').textContent = state.productName })
+        .catch(() => {})
+      for (const button of document.querySelectorAll('button[data-menu]')) {
+        button.addEventListener('click', () => {
+          const rect = button.getBoundingClientRect()
+          button.setAttribute('aria-expanded', 'true')
+          // The main process opens a real native menu at these coordinates and tells us when
+          // it closed, so the pressed state never sticks.
+          api.menu(button.getAttribute('data-menu'), { x: rect.left, y: rect.top, height: rect.height })
+            .finally(() => { button.removeAttribute('aria-expanded') })
+        })
+      }
+    }
+  </script>
+</body>
+</html>

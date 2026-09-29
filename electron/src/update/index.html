@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>DSH Desktop 更新</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh; display: flex; flex-direction: column;
+      background: #141821; color: #e8ebf2; user-select: none;
+      font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      -webkit-app-region: drag;
+    }
+    header { padding: 18px 22px 6px; font-size: 15px; font-weight: 600; }
+    main { flex: 1; padding: 0 22px; display: flex; flex-direction: column; gap: 12px; }
+    #version { color: #6c8cff; font-weight: 600; }
+    #message { color: #cfd6e6; min-height: 44px; }
+    #detail { color: #7f8aa3; font-size: 12px; word-break: break-all; }
+    .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.09); overflow: hidden; }
+    .bar > i { display: block; height: 100%; width: 0; background: #6c8cff; transition: width .2s ease; }
+    footer {
+      padding: 14px 22px 18px; display: flex; gap: 10px; justify-content: flex-end;
+      -webkit-app-region: no-drag;
+    }
+    button {
+      font: inherit; padding: 7px 16px; border-radius: 6px; cursor: pointer;
+      border: 1px solid rgba(255,255,255,.16); background: rgba(255,255,255,.05); color: #e8ebf2;
+    }
+    button.primary { background: #3f5fe0; border-color: #3f5fe0; }
+    button:disabled { opacity: .5; cursor: default; }
+  </style>
+</head>
+<body>
+  <header>DSH Desktop 更新</header>
+  <main>
+    <div id="version"></div>
+    <div class="bar"><i id="progress"></i></div>
+    <div id="message" data-testid="update-message">正在检查更新…</div>
+    <div id="detail"></div>
+  </main>
+  <footer>
+    <button id="later">稍后</button>
+    <button id="primary" class="primary" data-testid="update-primary">立即更新</button>
+  </footer>
+  <script>
+    const messageEl = document.getElementById('message')
+    const versionEl = document.getElementById('version')
+    const detailEl = document.getElementById('detail')
+    const progressEl = document.getElementById('progress')
+    const primaryEl = document.getElementById('primary')
+    const laterEl = document.getElementById('later')
+    const api = window.__DSH_SHELL__
+
+    let state = { phase: 'idle' }
+
+    const LABELS = {
+      available: '下载并安装',
+      downloading: '正在下载…',
+      verifying: '正在校验…',
+      ready: '安装并重启',
+      error: '重试',
+      checking: '检查中…',
+      idle: '检查更新',
+    }
+
+    function actionFor(phase) {
+      if (phase === 'available') return 'download'
+      if (phase === 'ready') return 'install'
+      if (phase === 'error') return 'download'
+      return 'check'
+    }
+
+    function render(next) {
+      state = next || { phase: 'idle' }
+      messageEl.textContent = state.message || ''
+      detailEl.textContent = state.detail || ''
+      versionEl.textContent = state.version ? 'v' + state.version : ''
+      const percent = typeof state.percent === 'number' ? state.percent : 0
+      progressEl.style.width = (state.phase === 'downloading' ? percent : state.phase === 'ready' ? 100 : 0) + '%'
+      const busy = state.phase === 'checking' || state.phase === 'downloading' || state.phase === 'verifying'
+      primaryEl.textContent = LABELS[state.phase] || '检查更新'
+      primaryEl.disabled = busy || (state.phase === 'idle' && !state.version)
+      laterEl.disabled = state.phase === 'downloading' || state.phase === 'verifying'
+    }
+
+    if (!api) {
+      messageEl.textContent = '更新窗口未获得桌面壳 API（preload 未加载）'
+    } else {
+      api.updates.subscribe(render)
+      api.updates.status().then(render).catch(() => {})
+      primaryEl.addEventListener('click', () => {
+        api.updates.action(actionFor(state.phase)).then(render).catch(() => {})
+      })
+      laterEl.addEventListener('click', () => {
+        api.updates.action('dismiss').then(render).catch(() => {})
+      })
+    }
+  </script>
+</body>
+</html>

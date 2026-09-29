@@ -7,3 +7,10 @@ src-tauri/target/
 # Tauri updater private signing key: keep only the public key in Git.
 src-tauri/keys/*.key
 !src-tauri/keys/*.key.pub
+
+# Electron P0 shell: local build and smoke-test artifacts
+electron/*.log
+electron/release/
+electron/runtime/
+electron/.runtime-build/
+electron/release-debug/

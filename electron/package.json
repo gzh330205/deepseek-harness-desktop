@@ -1,0 +1,46 @@
+{
+  "name": "dsh-desktop-electron",
+  "productName": "DSH Desktop",
+  "version": "0.3.10",
+  "private": true,
+  "description": "Electron shell for DSH Desktop (migrating from the Tauri shell in src-tauri/)",
+  "license": "MIT",
+  "author": {
+    "name": "DSH Desktop contributors"
+  },
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "postinstall": "install-electron",
+    "build": "node build.mjs",
+    "dev": "node build.mjs && electron .",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-tests.mjs",
+    "minisign:check": "node scripts/minisign-roundtrip.mjs 8",
+    "package:win": "node scripts/prepare-runtime.mjs && node build.mjs && electron-builder --win nsis --publish never --config electron-builder.config.mjs && node scripts/verify-package.mjs",
+    "package:dir": "node scripts/prepare-runtime.mjs && node build.mjs && electron-builder --win --dir --publish never --config electron-builder.config.mjs && node scripts/verify-package.mjs",
+    "release:dry": "node scripts/release-electron.mjs --dry-run",
+    "release": "node scripts/release-electron.mjs",
+    "smoke": "node build.mjs && node scripts/smoke.mjs cookie",
+    "smoke:token": "node build.mjs && node scripts/smoke.mjs token",
+    "smoke:proxy": "node build.mjs && node scripts/smoke.mjs proxy",
+    "runtime:prepare": "node scripts/prepare-runtime.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "package:debug": "node scripts/package-debug.mjs",
+    "package:debug:dir": "node scripts/package-debug.mjs --dir"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "electron": "44.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "typescript": "~5.7.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  }
+}

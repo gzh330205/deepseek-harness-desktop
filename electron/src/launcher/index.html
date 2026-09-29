@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>DSH Desktop</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px;
+      background: radial-gradient(120% 80% at 50% 0%, #1b2030 0%, #0f1115 60%);
+      color: #e8ebf2; font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      user-select: none;
+    }
+    .logo { width: 76px; height: 76px; filter: drop-shadow(0 6px 18px rgba(90,140,255,.35)); }
+    h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .3px; }
+    #status { font-size: 15px; color: #cfd6e6; min-height: 24px; text-align: center; max-width: 720px; }
+    #detail { font-size: 13px; color: #8d97ab; max-width: 720px; text-align: center; white-space: pre-wrap; }
+    .spinner {
+      width: 22px; height: 22px; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,.18); border-top-color: #6c8cff;
+      animation: spin .9s linear infinite;
+    }
+    .spinner.hidden { display: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #logs {
+      max-width: 860px; width: 86%; max-height: 30vh; overflow: auto;
+      font: 11px/1.5 ui-monospace, Consolas, monospace; color: #7f8aa3;
+      background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.07);
+      border-radius: 8px; padding: 10px 12px; white-space: pre-wrap;
+    }
+    .meta { font-size: 12px; color: #6f7a90; }
+    #enter {
+      padding: 8px 18px; font: 14px/1 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      color: #fff; background: #4c6ef5; border: 0; border-radius: 8px; cursor: pointer;
+    }
+    #enter:hover { background: #5c7cfa; }
+    #enter[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <img class="logo" src="logo.png" alt="" width="76" height="76" />
+  <h1>DSH Desktop</h1>
+  <div class="spinner" id="spinner"></div>
+  <div id="status" data-testid="status">正在检查启动条件…</div>
+  <div id="detail"></div>
+  <button id="enter" type="button" hidden>进入 DSH 界面</button>
+  <div id="logs"></div>
+  <div class="meta" id="meta"></div>
+  <script>
+    const statusEl = document.getElementById('status')
+    const detailEl = document.getElementById('detail')
+    const logsEl = document.getElementById('logs')
+    const metaEl = document.getElementById('meta')
+    const spinner = document.getElementById('spinner')
+    const enterEl = document.getElementById('enter')
+    const busy = new Set(['checking', 'starting'])
+
+    function render(state) {
+      statusEl.textContent = state.message ?? ''
+      detailEl.textContent = state.detail ?? ''
+      spinner.classList.toggle('hidden', !busy.has(state.phase))
+      // The menu's 重新加载启动页 lands here; without this the only way on is the menu again.
+      enterEl.hidden = state.phase !== 'ready'
+      const parts = []
+      if (state.phase) parts.push(state.phase)
+      if (state.version) parts.push('DSH ' + state.version)
+      if (state.port) parts.push('端口 ' + state.port)
+      if (state.loadMode) parts.push('加载模式 ' + state.loadMode)
+      metaEl.textContent = parts.join(' · ')
+    }
+
+    const api = window.__DSH_SHELL__
+    if (api) {
+      enterEl.addEventListener('click', () => {
+        enterEl.disabled = true
+        api.launcher.enter().catch(() => {}).finally(() => { enterEl.disabled = false })
+      })
+      api.launcher.subscribe(render)
+      api.launcher.status().then(render).catch(() => {})
+    } else {
+      statusEl.textContent = '启动页未获得桌面壳 API（preload 未加载）'
+    }
+  </script>
+</body>
+</html>
