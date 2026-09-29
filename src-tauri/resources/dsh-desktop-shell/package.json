@@ -1,0 +1,22 @@
+{
+  "name": "dsh-desktop-shell",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH Desktop 面板插件：由桌面壳经 --patch overlay 注入，随安装包分发。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}

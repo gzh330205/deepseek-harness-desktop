@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::VecDeque,
     env, fs,
-    io::{BufRead, BufReader, Read},
-    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+    io::{BufRead, BufReader},
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -19,7 +19,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Listener, Manager, PhysicalPosition, RunEvent, State, WebviewUrl,
+    AppHandle, Emitter, Listener, Manager, PhysicalPosition, RunEvent, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_notification::NotificationExt;
@@ -27,13 +27,9 @@ use url::Url;
 
 const LOOPBACK: &str = "127.0.0.1";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(350);
-const RESPONSE_TIMEOUT: Duration = Duration::from_millis(900);
 const LOG_CAPACITY: usize = 120;
-const MAX_PROBE_BODY_BYTES: u64 = 64 * 1024;
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_SHOW_ID: &str = "show";
-const TRAY_SETTINGS_ID: &str = "settings";
 const TRAY_ABOUT_ID: &str = "about";
 const TRAY_QUIT_ID: &str = "quit";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -41,9 +37,21 @@ const UPDATE_OVERLAY_LABEL: &str = "update-overlay";
 const UPDATE_OVERLAY_WIDTH: f64 = 300.0;
 const UPDATE_OVERLAY_HEIGHT: f64 = 76.0;
 const UPDATE_OVERLAY_PADDING: f64 = 18.0;
-// The launcher will flag a DSH installation older than this baseline even when
-// the registry does not yet offer a newer release.
-const MINIMUM_DSH_VERSION: &str = "0.1.0-rc.7";
+/// Desktop 固定使用的回环端口：避开 DSH 默认的 3080 与本机常见服务端口，
+/// 可用环境变量 `DSH_DESKTOP_PORT` 覆盖。端口被占用时直接失败，不退回随机端口。
+const DEFAULT_DSH_PORT: u16 = 41729;
+const DSH_PORT_ENV: &str = "DSH_DESKTOP_PORT";
+/// 桌面壳传给 DSH 子进程的桥目录：桌面设置文件、事实文件、overlay 都在这里。
+const BRIDGE_DIR_ENV: &str = "DSH_DESKTOP_BRIDGE_DIR";
+const DSH_OVERLAY_FILENAME: &str = "dsh-overlay.yml";
+const DSH_FACTS_FILENAME: &str = "desktop-facts.json";
+/// 随安装包分发的 DSH 面板插件目录名（位于资源目录下）。
+const DSH_PLUGIN_DIR_NAME: &str = "dsh-desktop-shell";
+/// 开发时可直接指向插件入口文件，绕过资源目录查找。
+const DSH_PLUGIN_PATH_ENV: &str = "DSH_DESKTOP_PLUGIN_PATH";
+/// DSH 浏览器会话认证（一次性 token + `dsh-auth` cookie）从该版本开始提供。
+/// 低于它的实例会被拒绝启动：桌面端不允许在无认证状态下暴露 Web 服务。
+const MINIMUM_DSH_VERSION: &str = "0.1.2-alpha.2";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +107,12 @@ struct DshWebStatus {
     update: DshUpdateStatus,
     /// DSH 0.1.2-alpha.2+ 的一次性认证地址（带 token）。
     auth_url: Option<String>,
+    /// 前置门禁判定需要升级 DSH；启动页据此提供更新入口。
+    requires_dsh_update: bool,
+    /// 前置门禁读到的 DSH 版本（「关于」窗口展示）。
+    dsh_version: Option<String>,
+    /// 本次启动是否成功注入了桌面面板插件（「关于」窗口展示）。
+    panel_injected: bool,
 }
 
 #[derive(Default)]
@@ -113,6 +127,10 @@ struct DshWebService {
     generation: u64,
     logs: VecDeque<String>,
     update: DshUpdateStatus,
+    /// 前置门禁读到的 DSH 版本，供事实文件与状态展示复用。
+    dsh_version: Option<String>,
+    /// 本次启动是否成功注入了桌面面板插件。
+    panel_injected: bool,
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -120,7 +138,6 @@ enum ServiceOrigin {
     #[default]
     None,
     ManagedChild,
-    ExistingLocalService,
 }
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize)]
@@ -147,7 +164,8 @@ struct ProxySettings {
     no_proxy: String,
 }
 
-/// 代理地址支持的协议；DSH 侧同样只接受这几种。
+/// 代理地址支持的协议；设置写入与校验现在由 DSH 面板插件负责，这里只服务单元测试。
+#[cfg(test)]
 const PROXY_SCHEMES: [&str; 4] = ["http", "https", "socks5", "socks5h"];
 
 /// 本壳管理的代理环境变量（大小写两种写法都要处理：DSH 优先读小写）。
@@ -160,6 +178,7 @@ const MANAGED_PROXY_ENV: [&str; 6] = [
     "no_proxy",
 ];
 
+#[cfg(test)]
 fn normalize_proxy_url(raw: &str, label: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -187,6 +206,8 @@ fn normalize_proxy_url(raw: &str, label: &str) -> Result<String, String> {
 
 impl ProxySettings {
     /// 校验并规范化用户输入：补全协议、去空格、整理例外列表。
+    /// P5 起桌面设置统一由 DSH 面板写入（校验也在插件侧），这里保留给单元测试。
+    #[cfg(test)]
     fn normalized(&self) -> Result<Self, String> {
         let normalized = Self {
             enabled: self.enabled,
@@ -246,6 +267,47 @@ impl ProxySettings {
     }
 }
 
+/// 服务相关设置：下次启动使用的回环端口（环境变量优先）。
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceSettings {
+    #[serde(default = "default_dsh_port")]
+    port: u16,
+}
+
+impl Default for ServiceSettings {
+    fn default() -> Self {
+        Self { port: DEFAULT_DSH_PORT }
+    }
+}
+
+fn default_dsh_port() -> u16 {
+    DEFAULT_DSH_PORT
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 启动时的更新检查偏好（DSH 面板可编辑）。
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePreferences {
+    #[serde(default = "default_true")]
+    check_desktop_on_start: bool,
+    #[serde(default = "default_true")]
+    check_dsh_on_start: bool,
+}
+
+impl Default for UpdatePreferences {
+    fn default() -> Self {
+        Self {
+            check_desktop_on_start: true,
+            check_dsh_on_start: true,
+        }
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ShellSettings {
@@ -253,17 +315,18 @@ struct ShellSettings {
     /// 旧版本设置文件没有该字段，缺失时回落到默认（不启用代理）。
     #[serde(default)]
     proxy: ProxySettings,
+    /// 服务端口等；旧文件缺失时回落到默认端口。
+    #[serde(default)]
+    service: ServiceSettings,
+    /// 启动时的更新检查偏好；旧文件缺失时默认开启。
+    #[serde(default)]
+    updates: UpdatePreferences,
+    /// DSH 面板写入时递增的乐观锁版本；桌面壳只读，不参与写入。
+    #[serde(default)]
+    revision: u64,
+    /// 旧文件可能没有版本号（面板首次创建的文件为 0.0.0）。
+    #[serde(default)]
     version: String,
-}
-
-impl ShellSettings {
-    fn snapshot(close_behavior: CloseBehavior, proxy: ProxySettings) -> Self {
-        Self {
-            close_behavior,
-            proxy,
-            version: APP_VERSION.to_string(),
-        }
-    }
 }
 
 #[derive(Default)]
@@ -308,10 +371,7 @@ impl DshWebService {
         }
 
         let (state, message) = match &self.state {
-            ServiceState::Starting => ("starting", "正在寻找或启动本机 DSH Web 服务…".to_string()),
-            ServiceState::Ready if self.origin == ServiceOrigin::ExistingLocalService => {
-                ("ready", "已连接到本机已运行的 DSH Web 服务。".to_string())
-            }
+            ServiceState::Starting => ("starting", "正在启动 DSH Web 服务…".to_string()),
             ServiceState::Ready => ("ready", "DSH Web 服务已就绪。".to_string()),
             ServiceState::Failed(message) => ("failed", message.clone()),
         };
@@ -323,6 +383,9 @@ impl DshWebService {
             logs: self.logs.iter().cloned().collect(),
             update: self.update.clone(),
             auth_url: self.auth_url.as_ref().map(ToString::to_string),
+            requires_dsh_update: self.update.phase == "updateRequired",
+            dsh_version: self.dsh_version.clone(),
+            panel_injected: self.panel_injected,
         }
     }
 
@@ -358,23 +421,85 @@ impl DshWebService {
 /// DSH 页面 localStorage 按 origin（含端口）隔离，随机端口会让每次启动的
 /// 存储互相不可见。优先固定使用 3080（DSH 默认端口）保持 origin 稳定；
 /// 仅当 3080 被其他程序占用时才退回随机空闲端口。
-const PREFERRED_DSH_PORT: u16 = 3080;
-
-fn reserve_loopback_port() -> Result<u16, String> {
-    if TcpListener::bind(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        PREFERRED_DSH_PORT,
-    ))
-    .is_ok()
-    {
-        return Ok(PREFERRED_DSH_PORT);
+/// 桌面壳使用的端口，优先级：`DSH_DESKTOP_PORT` 环境变量 > 设置文件 `service.port` > 默认 41729。
+fn configured_dsh_port(app: &AppHandle) -> u16 {
+    if let Ok(raw) = env::var(DSH_PORT_ENV) {
+        if let Ok(port) = raw.trim().parse::<u16>() {
+            if port >= 1024 {
+                return port;
+            }
+        }
     }
-    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-        .map_err(|error| format!("无法选择本地监听端口：{error}"))?;
-    listener
-        .local_addr()
-        .map(|address| address.port())
-        .map_err(|error| format!("无法读取本地监听端口：{error}"))
+    load_shell_settings(app)
+        .map(|settings| settings.service.port)
+        .filter(|port| *port >= 1024)
+        .unwrap_or(DEFAULT_DSH_PORT)
+}
+
+/// 从 `netstat -ano -p tcp` 输出里找出监听指定回环端口的 PID。
+/// 只看 `LISTENING` 行与 127.0.0.1 / [::1] 两类本地地址；抽成纯函数便于单测。
+fn listening_pid(netstat_output: &str, port: u16) -> Option<u32> {
+    netstat_output.lines().find_map(|line| {
+        let columns: Vec<_> = line.split_whitespace().collect();
+        if columns.len() < 5
+            || !columns[0].eq_ignore_ascii_case("tcp")
+            || !columns[3].eq_ignore_ascii_case("listening")
+        {
+            return None;
+        }
+        let local = columns[1].trim().to_ascii_lowercase();
+        if !(local.starts_with("127.0.0.1:") || local.starts_with("[::1]:")) {
+            return None;
+        }
+        let listening_port: u16 = local.rsplit(':').next()?.parse().ok()?;
+        (listening_port == port).then(|| columns[4].parse::<u32>().ok())?
+    })
+}
+
+/// 占用指定回环端口的监听进程（PID、映像名），只用于失败诊断，绝不用于复用。
+fn port_occupant(port: u16) -> Option<(u32, String)> {
+    let mut netstat = Command::new("netstat");
+    netstat.args(["-ano", "-p", "tcp"]);
+    configure_hidden_command(&mut netstat);
+    let output = netstat.output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let pid = listening_pid(&text, port)?;
+
+    let mut tasklist = Command::new("tasklist");
+    tasklist.args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+    configure_hidden_command(&mut tasklist);
+    let name = tasklist
+        .output()
+        .ok()
+        .and_then(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .and_then(|line| line.split(',').next())
+                .map(|value| value.trim().trim_matches('"').to_string())
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "未知进程".to_string());
+    Some((pid, name))
+}
+
+/// 固定端口的可用性检查：不可用直接失败，绝不退回随机端口。
+fn require_loopback_port(port: u16) -> Result<(), String> {
+    match TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(error) => {
+            let detail = match port_occupant(port) {
+                Some((pid, name)) => format!("已被 {name}（PID {pid}）占用"),
+                None => format!("当前不可绑定（{error}）"),
+            };
+            Err(format!(
+                "固定端口 {port} {detail}。请关闭占用该端口的程序（若是另一个 DSH 实例，请先退出它）；确需换端口时可设置环境变量 {DSH_PORT_ENV}=<端口> 后重试。"
+            ))
+        }
+    }
 }
 
 fn dsh_command() -> String {
@@ -532,6 +657,7 @@ fn collect_logs<R: std::io::Read + Send + 'static>(
     reader: R,
     service: ManagedService,
     stream: &'static str,
+    generation: u64,
 ) {
     thread::spawn(move || {
         for result in BufReader::new(reader).lines() {
@@ -539,11 +665,35 @@ fn collect_logs<R: std::io::Read + Send + 'static>(
                 Ok(line) => line,
                 Err(error) => format!("读取 {stream} 日志失败：{error}"),
             };
+            // 认证地址必须在脱敏之前从**原始**行提取：导航需要真实 token，
+            // 而任何可见日志都不得携带它。这里是 0.2.29 导航 401 回归的修复点。
+            let auth_url = parse_dsh_web_auth_url(&line);
             if let Ok(mut instance) = service.lock() {
-                instance.push_log(format!("[{stream}] {line}"));
+                // 旧进程的残留输出不得污染当前实例的状态与日志。
+                if instance.generation != generation {
+                    continue;
+                }
+                if let Some(url) = auth_url {
+                    instance.auth_url = Some(url);
+                }
+                instance.push_log(format!("[{stream}] {}", redact_auth_token(&line)));
             }
         }
     });
+}
+
+/// 日志脱敏：DSH 会把一次性认证地址（`?token=…`）打印到 stdout，
+/// 该 token 能直接换取浏览器会话 cookie，任何可见日志都不得携带它。
+fn redact_auth_token(line: &str) -> String {
+    let Some(index) = line.find("token=") else {
+        return line.to_string();
+    };
+    let value_start = index + "token=".len();
+    let value_end = line[value_start..]
+        .find(|character: char| character.is_whitespace() || character == '&')
+        .map(|offset| value_start + offset)
+        .unwrap_or(line.len());
+    format!("{}token=***{}", &line[..index], &line[value_end..])
 }
 
 fn loopback_socket(url: &Url) -> Option<SocketAddr> {
@@ -555,236 +705,6 @@ fn loopback_socket(url: &Url) -> Option<SocketAddr> {
     Some(SocketAddr::new(address, url.port_or_known_default()?))
 }
 
-/// 发送一次有界 HTTP/1.1 请求并返回状态行、响应头与响应体。
-/// cookie 为可选：DSH 0.1.2-alpha.2+ 的认证流程需要带 dsh-auth cookie 再请求。
-fn probe_http(
-    address: SocketAddr,
-    host: &str,
-    path_and_query: &str,
-    cookie: Option<&str>,
-) -> Option<(String, String, Vec<u8>)> {
-    use std::io::Write;
-    let Ok(mut stream) = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) else {
-        return None;
-    };
-    let cookie_header = cookie
-        .map(|value| format!("Cookie: {value}\r\n"))
-        .unwrap_or_default();
-    let request = format!(
-        "GET {path_and_query} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nAccept: text/html\r\n{cookie_header}\r\n"
-    );
-    if stream.write_all(request.as_bytes()).is_err() {
-        return None;
-    }
-
-    let _ = stream.set_read_timeout(Some(RESPONSE_TIMEOUT));
-    let mut reader = BufReader::new(stream);
-    let mut status_line = String::new();
-    if reader.read_line(&mut status_line).is_err() {
-        return None;
-    }
-    let mut headers = String::new();
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).is_err() {
-            return None;
-        }
-        if line == "\r\n" || line.is_empty() {
-            break;
-        }
-        headers.push_str(&line);
-        if headers.len() > 16 * 1024 {
-            return None;
-        }
-    }
-    let mut body = Vec::new();
-    if reader
-        .take(MAX_PROBE_BODY_BYTES)
-        .read_to_end(&mut body)
-        .is_err()
-    {
-        return None;
-    }
-    Some((status_line, headers, body))
-}
-
-/// 检查一次响应是否为真正的 DSH Web 页面（200 + text/html + 注入标记）。
-fn is_dsh_page(status_line: &str, headers: &str, body: &[u8]) -> bool {
-    if !status_line.contains(" 200 ") {
-        return false;
-    }
-    if !headers
-        .to_ascii_lowercase()
-        .contains("content-type: text/html")
-    {
-        return false;
-    }
-    let body = String::from_utf8_lossy(body);
-    // DSH 0.1.1-rc.1 起注入形式由 `window.__DSH_BOOT__` 变为
-    // `globalThis["__DSH_BOOT__"]`，因此按标记名子串匹配以兼容两种格式。
-    body.contains("__DSH_BOOT__")
-        && body.contains("@deepseek-ai/dsh-client-connection")
-        && body.contains("/plugins/")
-}
-
-/// 从一个响应头中提取 Set-Cookie 的 `name=value`（忽略属性）。
-fn extract_set_cookie(headers: &str) -> Option<String> {
-    for line in headers.lines() {
-        let lower = line.to_ascii_lowercase();
-        if lower.starts_with("set-cookie:") {
-            let value = line["set-cookie:".len()..].trim();
-            let end = value.find(';').unwrap_or(value.len());
-            return Some(value[..end].trim().to_string());
-        }
-    }
-    None
-}
-
-/// Make a bounded HTTP request and verify markers injected by a genuine DSH web host.
-/// A generic 200 response is never enough to reuse a local port.
-///
-/// DSH 0.1.2-alpha.2+ 的 web 服务带一次性认证：`GET /?token=…` 返回 303 +
-/// Set-Cookie，需携带该 cookie 再请求（响应 200 + 页面标记）；旧版 DSH 直接
-/// 匿名 200。这里两种流程都支持。
-fn is_dsh_web_endpoint(url: &Url) -> bool {
-    let Some(address) = loopback_socket(url) else {
-        return false;
-    };
-    let host = url.host_str().unwrap_or(LOOPBACK);
-    let path_and_query = match url.query() {
-        Some(query) => format!("{}?{}", url.path(), query),
-        None => url.path().to_string(),
-    };
-
-    let Some((status, headers, body)) = probe_http(address, host, &path_and_query, None) else {
-        return false;
-    };
-    if status.contains(" 303 ") {
-        // 认证交换：读 cookie 与跳转目标，再验证真实页面。
-        let Some(cookie) = extract_set_cookie(&headers) else {
-            return false;
-        };
-        let location = headers
-            .lines()
-            .find_map(|line| {
-                let lower = line.to_ascii_lowercase();
-                lower
-                    .starts_with("location:")
-                    .then(|| line["location:".len()..].trim().to_string())
-            })
-            .unwrap_or_else(|| "/".to_string());
-        let (status, headers, body) = match probe_http(address, host, &location, Some(&cookie)) {
-            Some(response) => response,
-            None => return false,
-        };
-        is_dsh_page(&status, &headers, &body)
-    } else {
-        is_dsh_page(&status, &headers, &body)
-    }
-}
-
-fn port_from_listener_address(address: &str) -> Option<u16> {
-    // Windows netstat uses 127.0.0.1:3080, [::1]:3080, and occasionally 0.0.0.0:port.
-    // We only accept the explicit loopback forms before probing.
-    let normalized = address.trim().to_ascii_lowercase();
-    if !(normalized.starts_with("127.0.0.1:") || normalized.starts_with("[::1]:")) {
-        return None;
-    }
-    normalized.rsplit(':').next()?.parse().ok()
-}
-
-/// Enumerate local TCP listeners, never network interfaces. Failure is harmless:
-/// port 3080 remains a cheap compatibility fallback for the DSH default configuration.
-#[cfg(windows)]
-fn loopback_listening_ports() -> BTreeSet<u16> {
-    let mut ports = BTreeSet::from([3080]);
-    let mut netstat = Command::new("netstat");
-    netstat
-        .args(["-ano", "-p", "tcp"])
-        .creation_flags(CREATE_NO_WINDOW);
-    let Ok(output) = netstat.output() else {
-        return ports;
-    };
-    let text = String::from_utf8_lossy(&output.stdout);
-    for line in text.lines() {
-        let columns: Vec<_> = line.split_whitespace().collect();
-        if columns.len() >= 4
-            && columns[0].eq_ignore_ascii_case("tcp")
-            && columns[3].eq_ignore_ascii_case("listening")
-        {
-            if let Some(port) = port_from_listener_address(columns[1]) {
-                ports.insert(port);
-            }
-        }
-    }
-    ports
-}
-
-#[cfg(not(windows))]
-fn loopback_listening_ports() -> BTreeSet<u16> {
-    // DSH defaults to 3080. Platform-specific listener enumeration can be added
-    // with native APIs before packaging for macOS/Linux.
-    BTreeSet::from([3080])
-}
-
-fn configured_dsh_url() -> Option<Url> {
-    let raw = env::var("DSH_DESKTOP_URL").ok()?;
-    let url = Url::parse(&raw).ok()?;
-    loopback_socket(&url).map(|_| url)
-}
-
-fn find_existing_dsh_web() -> Option<Url> {
-    // An explicit URL wins, but is still fingerprinted and restricted to loopback.
-    if let Some(url) = configured_dsh_url() {
-        if is_dsh_web_endpoint(&url) {
-            return Some(url);
-        }
-    }
-
-    for port in loopback_listening_ports() {
-        for url in [
-            Url::parse(&format!("http://127.0.0.1:{port}")).ok(),
-            Url::parse(&format!("http://[::1]:{port}")).ok(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if is_dsh_web_endpoint(&url) {
-                return Some(url);
-            }
-        }
-    }
-    None
-}
-
-fn monitor_external_dsh_web(app: AppHandle, service: ManagedService, url: Url, generation: u64) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(2));
-        let healthy = is_dsh_web_endpoint(&url);
-        let failed = {
-            let Ok(mut instance) = service.lock() else {
-                return;
-            };
-            if instance.generation != generation
-                || instance.origin != ServiceOrigin::ExistingLocalService
-            {
-                return;
-            }
-            if healthy {
-                false
-            } else {
-                let message = format!("已复用的 DSH Web 服务不可访问：{url}");
-                instance.push_log(&message);
-                instance.state = ServiceState::Failed(message);
-                true
-            }
-        };
-        if failed {
-            return_to_launcher_if_viewing_dsh(&app);
-            return;
-        }
-    });
-}
 
 fn monitor_managed_dsh_web(app: AppHandle, service: ManagedService, generation: u64) {
     thread::spawn(move || loop {
@@ -816,23 +736,196 @@ fn monitor_managed_dsh_web(app: AppHandle, service: ManagedService, generation: 
     });
 }
 
-fn connect_or_start_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> {
-    if let Some(url) = find_existing_dsh_web() {
-        let generation = {
-            let mut instance = service
-                .lock()
-                .map_err(|_| "DSH 服务状态锁已损坏".to_string())?;
-            instance.stop();
-            instance.url = Some(url.clone());
-            instance.origin = ServiceOrigin::ExistingLocalService;
-            instance.state = ServiceState::Ready;
-            instance.push_log(format!("复用已验证的本机 DSH Web 服务：{url}"));
-            instance.generation
-        };
-        monitor_external_dsh_web(app, Arc::clone(&service), url, generation);
-        return Ok(());
+/// 启动前置门禁：版本、能力、端口三项全部通过才拉起 DSH；任一不通过都不启动服务，
+/// 把原因写进服务状态（启动页据此提示并可引导更新 DSH）。
+fn preflight_and_start_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> {
+    let command = dsh_command();
+
+    // 闸门 1：DSH 必须提供浏览器会话认证，否则本机其它浏览器可直接访问该服务。
+    let version = installed_dsh_version()?;
+    if let Ok(mut instance) = service.lock() {
+        instance.dsh_version = Some(version.clone());
     }
-    spawn_dsh_web(app, service)
+    if compare_dsh_versions(&version, MINIMUM_DSH_VERSION).is_some_and(|order| order.is_lt()) {
+        let reason = format!(
+            "当前 DSH {version} 低于桌面版要求的最低版本 {MINIMUM_DSH_VERSION}：该版本不提供浏览器会话认证，桌面端拒绝在无认证状态下暴露 Web 服务。请先更新 DSH。"
+        );
+        record_upgrade_required(&service, &version, &reason);
+        return Err(reason);
+    }
+
+    // 闸门 2：设置面板经 `--patch` overlay 注入，没有该能力就不启动。
+    if !dsh_supports_patch(&command) {
+        let reason =
+            "当前 DSH 不支持 `--patch` 叠加层，桌面端无法注入设置面板。请更新 DSH 后重试。"
+                .to_string();
+        record_upgrade_required(&service, &version, &reason);
+        return Err(reason);
+    }
+
+    // 闸门 3：固定端口必须可用。
+    let port = configured_dsh_port(&app);
+    require_loopback_port(port)?;
+    spawn_dsh_web(app, service, port)
+}
+
+/// 记录「需要升级 DSH」状态：启动页据此给出更新入口，并尽力取到最新发布版本。
+fn record_upgrade_required(service: &ManagedService, current_version: &str, reason: &str) {
+    let latest = latest_dsh_release().ok();
+    set_update_status(
+        service,
+        DshUpdateStatus {
+            phase: "updateRequired",
+            message: reason.to_string(),
+            current_version: Some(current_version.to_string()),
+            latest_version: latest.as_ref().map(|(version, _)| version.clone()),
+            update_tag: latest.map(|(_, tag)| tag),
+        },
+    );
+}
+
+/// `--patch` 是启动器级选项（`dsh --help` 可见；web app 自己的 help 不列）。
+fn dsh_supports_patch(command: &str) -> bool {
+    let mut probe = Command::new(command);
+    probe.args(["--help"]);
+    configure_hidden_command(&mut probe);
+    let Ok(output) = probe.output() else {
+        return false;
+    };
+    let help = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    help.contains("--patch")
+}
+
+fn app_config_path(app: &AppHandle, file: &str) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|directory| directory.join(file))
+        .map_err(|error| format!("无法确定桌面配置目录：{error}"))
+}
+
+/// 随安装包分发的面板插件入口；开发时可用 `DSH_DESKTOP_PLUGIN_PATH` 覆盖。
+fn dsh_plugin_entry_path(app: &AppHandle) -> Option<std::path::PathBuf> {
+    if let Ok(raw) = env::var(DSH_PLUGIN_PATH_ENV) {
+        let path = std::path::PathBuf::from(raw);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    // 与 `tauri.conf.json > bundle.resources` 使用同一套路径语法解析，
+    // 避免手工拼接在不同平台/打包器版本上产生偏差。
+    let candidate = app
+        .path()
+        .resolve(
+            format!("resources/{DSH_PLUGIN_DIR_NAME}/index.js"),
+            tauri::path::BaseDirectory::Resource,
+        )
+        .ok()?;
+    candidate.is_file().then_some(candidate)
+}
+
+/// 每次启动重写 overlay：
+/// 1) 覆盖 bundle 行 `web-runtime`，强制打印认证地址、不开系统浏览器、不带 LAN trust；
+/// 2) 插入随安装包分发的面板插件（资源缺失时只保留第 1 条）。
+fn write_dsh_overlay(app: &AppHandle) -> Result<(std::path::PathBuf, bool), String> {
+    let mut body = String::from(
+        r#"# 由 DSH Desktop 每次启动生成，请勿手工编辑。
+- id: web-runtime
+  config:
+    openBrowser: false
+    printUrl: true
+    surfaceContext: true
+    trustedHosts: []
+"#,
+    );
+    let injected = match dsh_plugin_entry_path(app) {
+        Some(entry) => {
+            let escaped = entry.to_string_lossy().replace('\'', "''");
+            body.push_str(&format!(
+                "- insert:
+    - id: dsh-desktop-shell
+      name: '{escaped}'
+"
+            ));
+            true
+        }
+        None => false,
+    };
+    let path = app_config_path(app, DSH_OVERLAY_FILENAME)?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| "无法确定桌面配置目录".to_string())?;
+    fs::create_dir_all(directory).map_err(|error| format!("无法创建桌面配置目录：{error}"))?;
+    fs::write(&path, body).map_err(|error| format!("无法写入 DSH overlay：{error}"))?;
+    Ok((path, injected))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopFacts {
+    schema: u32,
+    generated_at_unix_ms: u64,
+    desktop_version: String,
+    settings_path: Option<String>,
+    bridge_dir: String,
+    panel_injected: bool,
+    dsh_url: Option<String>,
+    dsh_port: u16,
+    dsh_version: Option<String>,
+    dsh_managed: bool,
+    dsh_browser_auth: bool,
+}
+
+/// 写桌面事实文件（只读信息，供插件 host 半与诊断使用）。写入失败不影响启动。
+fn write_desktop_facts(
+    app: &AppHandle,
+    service: &ManagedService,
+    port: u16,
+    browser_auth: bool,
+) {
+    let Ok(bridge) = app
+        .path()
+        .app_config_dir()
+        .map(|directory| directory.to_string_lossy().to_string())
+    else {
+        return;
+    };
+    let settings_path = shell_settings_path(app)
+        .ok()
+        .map(|path| path.to_string_lossy().to_string());
+    let (url, version) = service
+        .lock()
+        .map(|instance| {
+            (
+                instance.url.as_ref().map(ToString::to_string),
+                instance.dsh_version.clone(),
+            )
+        })
+        .unwrap_or((None, None));
+    let facts = DesktopFacts {
+        schema: 1,
+        generated_at_unix_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as u64)
+            .unwrap_or(0),
+        desktop_version: APP_VERSION.to_string(),
+        settings_path,
+        bridge_dir: bridge,
+        panel_injected: dsh_plugin_entry_path(app).is_some(),
+        dsh_url: url,
+        dsh_port: port,
+        dsh_version: version,
+        dsh_managed: true,
+        dsh_browser_auth: browser_auth,
+    };
+    if let Ok(path) = app_config_path(app, DSH_FACTS_FILENAME) {
+        if let Ok(contents) = serde_json::to_vec_pretty(&facts) {
+            let _ = fs::write(path, contents);
+        }
+    }
 }
 
 /// `dsh web` 默认会用系统默认浏览器打开 Web UI。新版 DSH 支持 `--no-open`
@@ -857,26 +950,38 @@ fn dsh_web_supports_no_open(command: &str) -> bool {
     help.contains("--no-open")
 }
 
-fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> {
-    let port = reserve_loopback_port()?;
+fn spawn_dsh_web(app: AppHandle, service: ManagedService, port: u16) -> Result<(), String> {
     let url = Url::parse(&format!("http://{LOOPBACK}:{port}"))
         .map_err(|error| format!("无法构造本地 DSH 地址：{error}"))?;
     let command = dsh_command();
 
     // `dsh web` 默认会在系统默认浏览器打开 Web UI；桌面壳自己承载页面，
-    // 必须传 --no-open 关闭该行为（老版本 DSH 不认识该参数，先探测再决定）。
+    // 必须传 --no-open（老版本 DSH 不认识该参数，先探测再决定）。
     let no_open_supported = dsh_web_supports_no_open(&command);
 
+    // 每次启动重写 overlay：资源路径可能随版本变化；插件本体随安装包分发。
+    let (overlay, panel_injected) = write_dsh_overlay(&app)?;
+
     // 代理设置只作用于由本壳托管的 DSH 子进程。DSH 在启动时读取一次环境变量，
-    // 因此设置变更后需要重启服务；复用外部已有服务时无法注入（设置页已提示）。
+    // 因此设置变更后需要重启服务。
     let proxy = app
         .try_state::<ManagedLifecycle>()
         .and_then(|state| state.lock().ok().map(|lifecycle| lifecycle.proxy.clone()))
         .unwrap_or_default();
 
+    let bridge = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法确定桌面配置目录：{error}"))?;
+
     let mut dsh_process = Command::new(&command);
+    // 启动器选项必须排在 web app 自己的参数之前：commander 的 passThroughOptions
+    // 会把 launcher 不认识的选项之后的参数整体透传，--patch 放在 --host 之后会被
+    // 当成 web app 的选项并报 `unknown option '--patch'`（P0 实测）。
     let mut args = vec![
         "web".to_string(),
+        "--patch".to_string(),
+        overlay.to_string_lossy().to_string(),
         "--host".to_string(),
         LOOPBACK.to_string(),
         "--port".to_string(),
@@ -889,7 +994,8 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .env(BRIDGE_DIR_ENV, &bridge);
     if proxy.enabled {
         for (key, value) in proxy.child_env() {
             dsh_process.env(key, value);
@@ -903,13 +1009,11 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
     #[cfg(windows)]
     dsh_process.creation_flags(CREATE_NO_WINDOW);
 
-    let mut child = dsh_process
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "无法运行 `{command}`：{error}。请安装 DSH，或设置 DSH_DESKTOP_DSH_COMMAND 指向 dsh 可执行文件。"
-            )
-        })?;
+    let mut child = dsh_process.spawn().map_err(|error| {
+        format!(
+            "无法运行 `{command}`：{error}。请安装 DSH，或设置 DSH_DESKTOP_DSH_COMMAND 指向 dsh 可执行文件。"
+        )
+    })?;
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -922,29 +1026,34 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
         instance.url = Some(url.clone());
         instance.origin = ServiceOrigin::ManagedChild;
         instance.state = ServiceState::Starting;
+        instance.panel_injected = panel_injected;
         instance.push_log(format!(
-            "未发现可复用的 DSH 服务；启动 `{command} web --host {LOOPBACK} --port {port}{}`",
+            "启动 `{command} web --patch <overlay> --host {LOOPBACK} --port {port}{}`",
             if no_open_supported { " --no-open" } else { "" }
         ));
         if proxy.enabled {
             instance.push_log(format!("已为 DSH 子进程注入代理：{}", proxy.describe()));
         }
+        if !panel_injected {
+            instance.push_log(format!(
+                "未找到桌面面板插件资源（{DSH_PLUGIN_DIR_NAME}），本次启动不注入面板；开发模式可设置 {DSH_PLUGIN_PATH_ENV} 指向插件入口。"
+            ));
+        }
         instance.generation
     };
 
     if let Some(stdout) = stdout {
-        collect_logs(stdout, Arc::clone(&service), "stdout");
+        collect_logs(stdout, Arc::clone(&service), "stdout", generation);
     }
     if let Some(stderr) = stderr {
-        collect_logs(stderr, Arc::clone(&service), "stderr");
+        collect_logs(stderr, Arc::clone(&service), "stderr", generation);
     }
 
     monitor_managed_dsh_web(app.clone(), Arc::clone(&service), generation);
+    write_desktop_facts(&app, &service, port, false);
 
-    // 就绪判定以 DSH 自己的 CLI 输出为准（用户确认的判定方式）：新版 DSH 在
-    // 服务器绑定完成后打印 `dsh web: http://127.0.0.1:PORT/?token=...`，打印即
-    // 视为服务就绪；后续页面是否能打开属于页面层问题，由页面自行呈现。
-    // 旧版 DSH（无认证）仍用匿名页面探针兜底。
+    // 就绪判定只看 DSH 自己打印的一次性认证地址：无认证的实例已被前置门禁拒绝，
+    // 因此不再保留匿名探针兜底。
     thread::spawn(move || {
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         while Instant::now() < deadline {
@@ -955,12 +1064,9 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
                 if instance.generation != generation {
                     return;
                 }
-                let auth_url = instance
-                    .logs
-                    .iter()
-                    .rev()
-                    .find_map(|line| parse_dsh_web_auth_url(line));
-                (auth_url, instance.url.clone())
+                // 只认 collect_logs 从原始行提取并保存的真实认证地址；
+                // 不再扫描（已脱敏的）日志。
+                (instance.auth_url.clone(), instance.url.clone())
             };
             if let Some(auth_url) = auth_url {
                 let Some(bare_url) = bare_url.clone() else {
@@ -978,6 +1084,7 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
                             .push_log("DSH Web 已启动（带一次性认证），正在自动认证并打开页面…");
                     }
                 }
+                write_desktop_facts(&app, &service, port, true);
                 // 认证导航：先访问带 token 的认证地址（浏览器存储 dsh-auth
                 // cookie），重定向回裸地址后若启动页与 DSH 跨站（发布版启动页
                 // 在 tauri.localhost），`SameSite=Strict` cookie 不会随 303 跳转
@@ -1002,25 +1109,12 @@ fn spawn_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> 
                 });
                 return;
             }
-            // 旧版无认证 DSH：匿名页面探针。
-            if let Some(bare_url) = bare_url {
-                if is_dsh_web_endpoint(&bare_url) {
-                    if let Ok(mut instance) = service.lock() {
-                        if instance.generation == generation {
-                            instance.state = ServiceState::Ready;
-                            instance.push_log(format!("DSH Web 已在 {bare_url} 就绪"));
-                        }
-                    }
-                    return;
-                }
-            }
             thread::sleep(Duration::from_millis(250));
         }
         if let Ok(mut instance) = service.lock() {
-            if instance.generation == generation && matches!(instance.state, ServiceState::Starting)
-            {
+            if instance.generation == generation && matches!(instance.state, ServiceState::Starting) {
                 let message = format!(
-                    "等待 DSH Web 服务就绪超时（{} 秒）。",
+                    "等待 DSH Web 认证地址超时（{} 秒）：当前 DSH 可能未启用浏览器会话认证。请更新 DSH 后重试。",
                     STARTUP_TIMEOUT.as_secs()
                 );
                 instance.push_log(&message);
@@ -1042,8 +1136,12 @@ fn parse_dsh_web_auth_url(line: &str) -> Option<Url> {
     if loopback_socket(&url).is_none() {
         return None;
     }
-    let has_token = url.query_pairs().any(|(key, _)| key == "token");
-    has_token.then_some(url)
+    // 脱敏后的占位 token（`***`）不可用于导航：曾经因为「先脱敏、后解析」
+    // 把 `?token=***` 交给 WebView，导致用户停在一个 401 页面。
+    let usable = url
+        .query_pairs()
+        .any(|(key, value)| key == "token" && !value.is_empty() && value != "***");
+    usable.then_some(url)
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -1214,6 +1312,11 @@ fn show_desktop_update_window(app: &AppHandle, reveal: bool) {
 /// 创建（隐藏的）桌面更新检查窗口；重复调用不会显示窗口。
 #[tauri::command]
 async fn show_desktop_update(app: AppHandle) {
+    // 用户在 DSH 面板关闭了「启动时检查桌面端更新」：跳过桌面检查，直接进入 DSH 更新检查。
+    if !startup_update_preferences(&app).check_desktop_on_start {
+        resolve_desktop_update(&app);
+        return;
+    }
     show_desktop_update_window(&app, false);
 }
 
@@ -1309,6 +1412,9 @@ fn resolve_desktop_update(app: &AppHandle) {
         }
         state.desktop_update_resolved = true;
     }
+    if !startup_update_preferences(app).check_dsh_on_start {
+        return;
+    }
     let Some(service) = app.try_state::<ManagedService>() else {
         return;
     };
@@ -1345,30 +1451,6 @@ fn hide_main_window(window: &WebviewWindow) {
     let _ = window.hide();
 }
 
-fn show_settings_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("settings") {
-        let _ = window.show();
-        let _ = window.set_focus();
-        return;
-    }
-
-    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
-        .title("DSH Desktop 设置")
-        // 设置项（关闭行为 / 代理 / 更新）已超过原 330 高度，按内容加高；
-        // 仍是固定尺寸、不可最大化的辅助窗口，内容超出时由面板自身滚动。
-        .inner_size(620.0, 720.0)
-        .min_inner_size(620.0, 720.0)
-        .max_inner_size(620.0, 720.0)
-        .resizable(false)
-        .maximizable(false)
-        .center()
-        // The DSH page is later loaded into the main WebView. Give auxiliary
-        // windows an independent WebView2 profile so they always retain the
-        // local launcher URL and render their own settings view.
-        .data_directory(auxiliary_webview_data_directory(app, "settings"))
-        .build();
-}
-
 fn auxiliary_webview_data_directory(app: &AppHandle, label: &str) -> std::path::PathBuf {
     app.path()
         .app_local_data_dir()
@@ -1386,9 +1468,11 @@ fn show_about_window(app: &AppHandle) {
 
     let _ = WebviewWindowBuilder::new(app, "about", WebviewUrl::App("index.html".into()))
         .title("关于 DSH Desktop")
-        .inner_size(460.0, 330.0)
-        .min_inner_size(460.0, 330.0)
-        .max_inner_size(460.0, 330.0)
+        // 关于页现在承载「检查更新」入口（原先在设置页），因此按内容加高；
+        // 仍是固定尺寸、不可最大化的辅助窗口，超出部分由面板滚动。
+        .inner_size(460.0, 470.0)
+        .min_inner_size(460.0, 470.0)
+        .max_inner_size(460.0, 470.0)
         .resizable(false)
         .maximizable(false)
         .center()
@@ -1408,6 +1492,114 @@ fn return_to_launcher_if_viewing_dsh(app: &AppHandle) {
     if loopback_socket(&current_url).is_some() {
         let _ = window.navigate(Url::parse("tauri://localhost/").expect("valid launcher URL"));
     }
+}
+
+/// DSH 面板经 Tauri 事件桥发来的动作（`{ "action": "…" }`）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopShellAction {
+    action: String,
+}
+
+/// 推送给 DSH 面板的状态快照。刻意不含认证地址：token 不进入页面数据。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopPanelState {
+    service_state: &'static str,
+    service_message: String,
+    update_phase: &'static str,
+    update_message: String,
+    dsh_version: Option<String>,
+}
+
+fn desktop_panel_state(service: &ManagedService) -> Option<DesktopPanelState> {
+    let mut instance = service.lock().ok()?;
+    let status = instance.status();
+    Some(DesktopPanelState {
+        service_state: status.state,
+        service_message: status.message,
+        update_phase: status.update.phase,
+        update_message: status.update.message,
+        dsh_version: instance.dsh_version.clone(),
+    })
+}
+
+/// 把服务/更新状态推给 DSH 面板（页面用 `event.listen("dsh-desktop-state")` 接收）。
+fn push_desktop_state(app: &AppHandle) {
+    let Some(service) = app.try_state::<ManagedService>() else {
+        return;
+    };
+    let service = Arc::clone(service.inner());
+    let Some(payload) = desktop_panel_state(&service) else {
+        return;
+    };
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, "dsh-desktop-state", payload);
+}
+
+/// 重读桌面设置并应用可即时生效的部分（关闭行为）；代理等需要重启 DSH 才生效。
+fn reload_shell_settings(app: &AppHandle) {
+    let Some(settings) = load_shell_settings(app) else {
+        return;
+    };
+    if let Some(lifecycle) = app.try_state::<ManagedLifecycle>() {
+        if let Ok(mut state) = lifecycle.lock() {
+            state.close_behavior = settings.close_behavior;
+            state.proxy = settings.proxy;
+        }
+    }
+}
+
+/// 启动时的更新检查偏好；设置文件缺失时按默认（都开启）。
+fn startup_update_preferences(app: &AppHandle) -> UpdatePreferences {
+    load_shell_settings(app)
+        .map(|settings| settings.updates)
+        .unwrap_or_default()
+}
+
+/// 监听 DSH 面板的动作：只接受白名单动作、不接受任何参数，也不新增 Tauri 命令能力
+/// （能力文件仍只授予 `core:event:default`）。
+fn register_desktop_shell_bridge(app: &AppHandle) {
+    let handle = app.clone();
+    app.listen("dsh-desktop-shell", move |event| {
+        let Ok(action) = serde_json::from_str::<DesktopShellAction>(event.payload()) else {
+            return;
+        };
+        match action.action.as_str() {
+            // 面板已写入 shell-settings.json：重读并应用可即时生效的设置。
+            "settings-changed" => reload_shell_settings(&handle),
+            // 保存并重启 DSH：新环境变量（代理）与端口变更都在重启时生效。
+            "restart-dsh" => {
+                reload_shell_settings(&handle);
+                if let Some(service) = handle.try_state::<ManagedService>() {
+                    let service = Arc::clone(service.inner());
+                    let app = handle.clone();
+                    thread::spawn(move || {
+                        if let Err(error) = restart_managed_dsh_web(app.clone(), Arc::clone(&service))
+                        {
+                            if let Ok(mut instance) = service.lock() {
+                                instance.push_log(format!("面板请求重启 DSH 失败：{error}"));
+                                instance.state = ServiceState::Failed(error);
+                            }
+                        }
+                        push_desktop_state(&app);
+                    });
+                }
+            }
+            // 面板的「检查桌面端更新」：复用既有命令，结果推回面板。
+            "check-desktop-update" => {
+                let app = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = check_desktop_update_now(app.clone()).await;
+                    push_desktop_state(&app);
+                });
+            }
+            "show-about" => show_about_window(&handle),
+            "focus-main" => show_main_window(&handle),
+            // 白名单之外一律忽略。
+            _ => {}
+        }
+        push_desktop_state(&handle);
+    });
 }
 
 /// dsh-win-notify 插件经 Tauri 事件桥接的系统通知载荷（`{ title, body, sessionId }`）。
@@ -1503,10 +1695,9 @@ fn quit_application(app: &AppHandle) {
 
 fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, TRAY_SHOW_ID, "显示", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, TRAY_SETTINGS_ID, "设置", true, None::<&str>)?;
     let about = MenuItem::with_id(app, TRAY_ABOUT_ID, "关于", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &settings, &about, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &about, &quit])?;
 
     TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().cloned().ok_or_else(|| {
@@ -1522,10 +1713,6 @@ fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             TRAY_SHOW_ID => show_main_window(app),
             // 托盘事件也在主线程回调；建窗口移到后台线程，避免与 WebView2
             // 环境初始化的消息泵互相等待（见 show_desktop_update_window 注释）。
-            TRAY_SETTINGS_ID => {
-                let app = app.clone();
-                thread::spawn(move || show_settings_window(&app));
-            }
             TRAY_ABOUT_ID => {
                 let app = app.clone();
                 thread::spawn(move || show_about_window(&app));
@@ -1563,69 +1750,8 @@ fn load_shell_settings(app: &AppHandle) -> Option<ShellSettings> {
     serde_json::from_str::<ShellSettings>(&contents).ok()
 }
 
-fn save_shell_settings(app: &AppHandle, settings: &ShellSettings) -> Result<(), String> {
-    let path = shell_settings_path(app)?;
-    let directory = path
-        .parent()
-        .ok_or_else(|| "无法确定桌面设置目录".to_string())?;
-    fs::create_dir_all(directory).map_err(|error| format!("无法创建桌面设置目录：{error}"))?;
-    let contents = serde_json::to_vec_pretty(settings)
-        .map_err(|error| format!("无法序列化桌面设置：{error}"))?;
-    fs::write(path, contents).map_err(|error| format!("无法保存桌面设置：{error}"))
-}
-
-#[tauri::command]
-fn shell_settings(lifecycle: State<'_, ManagedLifecycle>) -> Result<ShellSettings, String> {
-    let (close_behavior, proxy) = lifecycle
-        .lock()
-        .map(|state| (state.close_behavior, state.proxy.clone()))
-        .map_err(|_| "桌面生命周期状态锁已损坏".to_string())?;
-    Ok(ShellSettings::snapshot(close_behavior, proxy))
-}
-
-#[tauri::command]
-fn update_close_behavior(
-    app: AppHandle,
-    close_behavior: CloseBehavior,
-    lifecycle: State<'_, ManagedLifecycle>,
-) -> Result<ShellSettings, String> {
-    let settings = {
-        let mut state = lifecycle
-            .lock()
-            .map_err(|_| "桌面生命周期状态锁已损坏".to_string())?;
-        state.close_behavior = close_behavior;
-        ShellSettings::snapshot(state.close_behavior, state.proxy.clone())
-    };
-    save_shell_settings(&app, &settings)?;
-    Ok(settings)
-}
-
-/// 保存代理设置；`restart` 为真时顺带重启托管的 DSH 服务，让新环境变量立即生效。
-#[tauri::command]
-fn update_proxy_settings(
-    app: AppHandle,
-    proxy: ProxySettings,
-    restart: bool,
-    lifecycle: State<'_, ManagedLifecycle>,
-    service: State<'_, ManagedService>,
-) -> Result<ShellSettings, String> {
-    let normalized = proxy.normalized()?;
-    let settings = {
-        let mut state = lifecycle
-            .lock()
-            .map_err(|_| "桌面生命周期状态锁已损坏".to_string())?;
-        state.proxy = normalized;
-        ShellSettings::snapshot(state.close_behavior, state.proxy.clone())
-    };
-    save_shell_settings(&app, &settings)?;
-    if restart {
-        restart_managed_dsh_web(app, Arc::clone(service.inner()))?;
-    }
-    Ok(settings)
-}
-
 /// 停掉托管子进程并把状态置回启动中；调用方随后触发后台启动。
-/// `start_dsh_web`、`restart_dsh_web` 与代理设置保存共用这段逻辑。
+/// `start_dsh_web`、`restart_dsh_web` 与面板的「保存并重启 DSH」共用这段逻辑。
 fn prepare_dsh_restart(service: &ManagedService) -> Result<(), String> {
     let mut instance = service
         .lock()
@@ -1645,17 +1771,11 @@ fn prepare_dsh_restart(service: &ManagedService) -> Result<(), String> {
     Ok(())
 }
 
-/// 同步重启入口：重置状态后交给后台线程按**当前**代理设置重新拉起 DSH。
+/// 同步重启入口：重置状态后交给后台线程按**当前**设置重新拉起 DSH。
 fn restart_managed_dsh_web(app: AppHandle, service: ManagedService) -> Result<(), String> {
     prepare_dsh_restart(&service)?;
     start_dsh_web_in_background(app, service);
     Ok(())
-}
-
-#[tauri::command]
-async fn show_shell_settings(app: AppHandle) {
-    // 与 show_desktop_update_window 相同的理由：在主线程之外创建辅助窗口。
-    show_settings_window(&app);
 }
 
 #[tauri::command]
@@ -1673,7 +1793,7 @@ fn dsh_status(service: State<'_, ManagedService>) -> Result<DshWebStatus, String
 
 fn start_dsh_web_in_background(app: AppHandle, service: ManagedService) {
     thread::spawn(move || {
-        if let Err(error) = connect_or_start_dsh_web(app, Arc::clone(&service)) {
+        if let Err(error) = preflight_and_start_dsh_web(app, Arc::clone(&service)) {
             if let Ok(mut instance) = service.lock() {
                 instance.state = ServiceState::Failed(error.clone());
                 instance.push_log(error);
@@ -1700,7 +1820,10 @@ async fn update_dsh_in_background(
             .map_err(|_| "DSH 服务状态锁已损坏".to_string())?;
         // `skipped` 表示用户选择“暂不更新，继续启动”或自动跳过；此时仍保留
         // 已知的最新版本与发布标签，允许用户稍后发起后台更新。
-        if !matches!(instance.update.phase, "updateAvailable" | "skipped") {
+        if !matches!(
+            instance.update.phase,
+            "updateAvailable" | "updateRequired" | "skipped"
+        ) {
             return Err("当前没有可安装的 DSH 更新。".to_string());
         }
         let update_tag = instance
@@ -1807,6 +1930,8 @@ pub fn run() {
             start_dsh_web_in_background(app.handle().clone(), Arc::clone(&service_for_setup));
             // 监听 dsh-win-notify 插件的会话完成通知事件（client 路线）。
             register_session_notifications(app.handle());
+            // 监听 DSH 设置页「桌面端」面板的动作（client 路线）。
+            register_desktop_shell_bridge(app.handle());
             // 注册通知 AUMID：让系统通知显示“DSH Desktop”名称与本程序图标。
             #[cfg(windows)]
             register_notification_identity(app.handle());
@@ -1838,10 +1963,6 @@ pub fn run() {
             restart_desktop_app,
             restart_dsh_web,
             show_launcher,
-            shell_settings,
-            update_close_behavior,
-            update_proxy_settings,
-            show_shell_settings,
             show_about
         ])
         .build(tauri::generate_context!())
@@ -1960,10 +2081,14 @@ mod proxy_settings_tests {
     /// 前后端字段契约：设置文件必须是前端 `ShellSettings.proxy` 期待的 camelCase 键名。
     #[test]
     fn settings_round_trip_uses_camel_case_proxy_keys() {
-        let snapshot = ShellSettings::snapshot(
-            CloseBehavior::MinimizeToTray,
-            settings(true, "http://127.0.0.1:7890", "", "10.1.20.160"),
-        );
+        let snapshot = ShellSettings {
+            close_behavior: CloseBehavior::MinimizeToTray,
+            proxy: settings(true, "http://127.0.0.1:7890", "", "10.1.20.160"),
+            service: ServiceSettings::default(),
+            updates: UpdatePreferences::default(),
+            revision: 0,
+            version: APP_VERSION.to_string(),
+        };
         let json = serde_json::to_string(&snapshot).expect("应能序列化");
         assert!(json.contains("\"closeBehavior\":\"minimizeToTray\""), "{json}");
         assert!(json.contains("\"enabled\":true"), "{json}");
@@ -1973,5 +2098,138 @@ mod proxy_settings_tests {
         );
         assert!(json.contains("\"httpProxy\":\"\""), "{json}");
         assert!(json.contains("\"noProxy\":\"10.1.20.160\""), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod dsh_shell_tests {
+    use super::*;
+
+    #[test]
+    fn auth_token_is_redacted_from_logs() {
+        let line = "dsh web: http://127.0.0.1:41729/?token=SECRET-VALUE extra";
+        let redacted = redact_auth_token(line);
+        assert!(!redacted.contains("SECRET-VALUE"), "{redacted}");
+        assert!(redacted.contains("token=***"), "{redacted}");
+        assert!(redacted.contains("extra"), "token 之后的正文应保留：{redacted}");
+    }
+
+    /// 顺序不变量：认证地址必须从**原始**行解析；脱敏后的行不再产出可用地址。
+    /// 回归：0.2.29 因为「先脱敏、后解析」把 `?token=***` 交给 WebView，
+    /// 用户停在一个 401 页面。此测试直接跑 collect_logs 的真实管线。
+    #[test]
+    fn collect_logs_saves_real_auth_url_and_redacts_logs() {
+        use std::io::Cursor;
+
+        let service: ManagedService = Arc::new(Mutex::new(DshWebService::default()));
+        {
+            let mut instance = service.lock().expect("锁可用");
+            instance.generation = 7;
+            instance.state = ServiceState::Starting;
+        }
+        let input = "dsh web: http://127.0.0.1:41729/?token=REAL-TOKEN\n第二行\n";
+        collect_logs(
+            Cursor::new(input.as_bytes().to_vec()),
+            Arc::clone(&service),
+            "stdout",
+            7,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if service.lock().map(|instance| instance.logs.len()).unwrap_or(0) >= 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "collect_logs 未在超时前写入日志");
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let instance = service.lock().expect("锁可用");
+        let auth_url = instance.auth_url.as_ref().expect("应保存真实认证地址");
+        let token = auth_url
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .map(|(_, value)| value.to_string());
+        assert_eq!(token.as_deref(), Some("REAL-TOKEN"));
+        let logs = instance.logs.iter().cloned().collect::<Vec<_>>().join("\n");
+        assert!(logs.contains("token=***"), "日志应脱敏：{logs}");
+        assert!(!logs.contains("REAL-TOKEN"), "日志不得携带真实 token：{logs}");
+    }
+
+    /// 旧进程的残留输出不得污染当前实例。
+    #[test]
+    fn collect_logs_ignores_stale_generation() {
+        use std::io::Cursor;
+
+        let service: ManagedService = Arc::new(Mutex::new(DshWebService::default()));
+        {
+            let mut instance = service.lock().expect("锁可用");
+            instance.generation = 9;
+        }
+        let input = "dsh web: http://127.0.0.1:41729/?token=STALE\n";
+        collect_logs(
+            Cursor::new(input.as_bytes().to_vec()),
+            Arc::clone(&service),
+            "stdout",
+            8,
+        );
+        thread::sleep(Duration::from_millis(300));
+        let instance = service.lock().expect("锁可用");
+        assert!(instance.auth_url.is_none(), "过期 generation 不得写入");
+        assert!(instance.logs.is_empty(), "过期 generation 不得写日志");
+    }
+
+    #[test]
+    fn auth_url_is_parsed_before_redaction_only() {
+        let raw = "dsh web: http://127.0.0.1:41729/?token=SECRET-TOKEN";
+        let parsed = parse_dsh_web_auth_url(raw).expect("原始行应产出认证地址");
+        let token = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .map(|(_, value)| value.to_string());
+        assert_eq!(token.as_deref(), Some("SECRET-TOKEN"));
+
+        let redacted = redact_auth_token(raw);
+        assert!(redacted.contains("token=***"), "{redacted}");
+        assert!(
+            parse_dsh_web_auth_url(&redacted).is_none(),
+            "脱敏后的占位 token 绝不能当作可用认证地址"
+        );
+    }
+
+    #[test]
+    fn token_redaction_stops_at_ampersand() {
+        let line = "GET /?token=SECRET&foo=1";
+        assert_eq!(redact_auth_token(line), "GET /?token=***&foo=1");
+    }
+
+    #[test]
+    fn lines_without_token_are_untouched() {
+        let line = "[stdout] DSH Web 已启动";
+        assert_eq!(redact_auth_token(line), line);
+    }
+
+    #[test]
+    fn fixed_port_default_is_not_the_dsh_default() {
+        assert_ne!(DEFAULT_DSH_PORT, 3080, "桌面端必须避开 DSH 默认端口");
+    }
+
+    const NETSTAT_SAMPLE: &str = "\n  \
+        TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1024\n  \
+        TCP    127.0.0.1:3080         0.0.0.0:0              LISTENING       20204\n  \
+        TCP    127.0.0.1:41729        0.0.0.0:0              LISTENING       31464\n  \
+        TCP    127.0.0.1:41729        127.0.0.1:50565        TIME_WAIT       0\n  \
+        TCP    [::1]:41729            [::]:0                 LISTENING       999\n";
+
+    #[test]
+    fn port_occupant_finds_only_loopback_listeners() {
+        assert_eq!(listening_pid(NETSTAT_SAMPLE, 41729), Some(31464));
+        assert_eq!(listening_pid(NETSTAT_SAMPLE, 3080), Some(20204));
+        assert_eq!(listening_pid(NETSTAT_SAMPLE, 9999), None);
+    }
+
+    #[test]
+    fn wildcard_and_time_wait_rows_are_ignored() {
+        assert_eq!(listening_pid(NETSTAT_SAMPLE, 135), None, "非回环绑定不算占用");
     }
 }

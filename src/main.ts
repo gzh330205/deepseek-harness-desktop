@@ -1,5 +1,6 @@
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 interface DshWebStatus {
@@ -9,22 +10,13 @@ interface DshWebStatus {
   authUrl?: string;
   message: string;
   logs: string[];
+  /** 启动前置门禁判定需要升级 DSH：显示「更新 DSH」入口。 */
+  requiresDshUpdate?: boolean;
+  /** 前置门禁读到的 DSH 版本。 */
+  dshVersion?: string;
+  /** 本次启动是否成功注入了桌面面板插件。 */
+  panelInjected?: boolean;
 }
-
-interface ProxySettings {
-  enabled: boolean;
-  httpsProxy: string;
-  httpProxy: string;
-  noProxy: string;
-}
-
-interface ShellSettings {
-  closeBehavior: "minimizeToTray" | "exit";
-  proxy: ProxySettings;
-  version: string;
-}
-
-const emptyProxy: ProxySettings = { enabled: false, httpsProxy: "", httpProxy: "", noProxy: "" };
 
 /** 手动检查更新的结果；`failed` 是业务状态而非异常，因此页面内展示原因。 */
 interface UpdateCheckResult {
@@ -39,23 +31,16 @@ const detail = requiredElement<HTMLParagraphElement>("detail");
 const address = requiredElement<HTMLParagraphElement>("address");
 const logs = requiredElement<HTMLPreElement>("logs");
 const retry = requiredElement<HTMLButtonElement>("retry");
-const settingsPanel = requiredElement<HTMLElement>("settings-panel");
+const updateDsh = requiredElement<HTMLButtonElement>("update-dsh");
 const aboutPanel = requiredElement<HTMLElement>("about-panel");
-const closeBehavior = requiredElement<HTMLSelectElement>("close-behavior");
-const settingsStatus = requiredElement<HTMLParagraphElement>("settings-status");
 const version = requiredElement<HTMLElement>("version");
-const proxyEnabled = requiredElement<HTMLInputElement>("proxy-enabled");
-const proxyHttps = requiredElement<HTMLInputElement>("proxy-https");
-const proxyHttp = requiredElement<HTMLInputElement>("proxy-http");
-const proxyNo = requiredElement<HTMLInputElement>("proxy-no");
-const proxySave = requiredElement<HTMLButtonElement>("proxy-save");
-const proxySaveRestart = requiredElement<HTMLButtonElement>("proxy-save-restart");
-const proxyStatus = requiredElement<HTMLParagraphElement>("proxy-status");
+const aboutDshVersion = requiredElement<HTMLElement>("about-dsh-version");
+const aboutDshUrl = requiredElement<HTMLElement>("about-dsh-url");
+const aboutPanelState = requiredElement<HTMLElement>("about-panel-state");
 const updateCheck = requiredElement<HTMLButtonElement>("update-check");
 const updateStatus = requiredElement<HTMLParagraphElement>("update-status");
 
 let navigating = false;
-let settings: ShellSettings | undefined;
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -68,7 +53,7 @@ function windowLabel(): string {
 }
 
 function isAuxiliaryWindow(): boolean {
-  return windowLabel() === "about" || windowLabel() === "settings";
+  return windowLabel() === "about";
 }
 
 // 启动流程：桌面壳打开时 Rust 已在后台启动 DSH Web 服务，启动页只负责
@@ -87,6 +72,10 @@ async function restartDsh(): Promise<void> {
 }
 
 function render(status: DshWebStatus): void {
+  // 「更新 DSH」只在启动前置门禁判定需要升级时出现。
+  updateDsh.hidden = true;
+  updateDsh.disabled = false;
+
   if (status.state === "ready" && status.url) {
     title.textContent = "正在打开 DeepSeek Harness";
     detail.textContent = "DSH Web 服务已经就绪。";
@@ -97,10 +86,11 @@ function render(status: DshWebStatus): void {
   if (status.state === "failed") {
     title.textContent = "DSH Web 服务未能启动";
     detail.textContent = status.message;
-    address.textContent = "请确认 dsh 命令可用，或在设置中配置 DSH_DESKTOP_DSH_COMMAND。";
+    address.textContent = "请确认 dsh 命令可用（可设置 DSH_DESKTOP_DSH_COMMAND 指定可执行文件）。";
     logs.textContent = status.logs.join("\n") || "未收到服务日志。";
     logs.hidden = false;
     retry.hidden = false;
+    updateDsh.hidden = !status.requiresDshUpdate;
     return;
   }
 
@@ -130,47 +120,6 @@ async function openDsh(): Promise<void> {
   }
 }
 
-function applyProxy(proxy: ProxySettings): void {
-  proxyEnabled.checked = proxy.enabled;
-  proxyHttps.value = proxy.httpsProxy;
-  proxyHttp.value = proxy.httpProxy;
-  proxyNo.value = proxy.noProxy;
-  syncProxyInputs();
-}
-
-/** 未启用代理时锁住地址输入框，让“开关”成为唯一权威。 */
-function syncProxyInputs(): void {
-  const disabled = !proxyEnabled.checked;
-  for (const input of [proxyHttps, proxyHttp, proxyNo]) {
-    input.disabled = disabled;
-  }
-}
-
-/** 保存代理设置；`restart` 为真时让托管的 DSH 服务按新环境变量重启。 */
-async function saveProxy(restart: boolean): Promise<void> {
-  const proxy: ProxySettings = {
-    enabled: proxyEnabled.checked,
-    httpsProxy: proxyHttps.value,
-    httpProxy: proxyHttp.value,
-    noProxy: proxyNo.value,
-  };
-  const button = restart ? proxySaveRestart : proxySave;
-  button.disabled = true;
-  proxyStatus.textContent = restart ? "正在保存并重启 DSH 服务…" : "正在保存…";
-  try {
-    const updated = await invoke<ShellSettings>("update_proxy_settings", { proxy, restart });
-    settings = updated;
-    applyProxy(updated.proxy);
-    proxyStatus.textContent = restart
-      ? "已保存，已请求重启 DSH 服务；若当前复用的是外部 DSH 服务，代理不会注入。"
-      : "已保存。将在下次启动或重启 DSH 服务后生效。";
-  } catch (error) {
-    proxyStatus.textContent = `保存失败：${String(error)}`;
-  } finally {
-    button.disabled = false;
-  }
-}
-
 /**
  * 手动检查桌面端更新。发现新版本时 Rust 会打开既有的更新窗口接管下载与安装，
  * 这里只负责给出「已是最新 / 发现新版本 / 检查失败」的明确反馈。
@@ -190,16 +139,36 @@ async function checkDesktopUpdate(): Promise<void> {
   }
 }
 
-async function loadSettings(): Promise<void> {
-  settings = await invoke<ShellSettings>("shell_settings");
-  closeBehavior.value = settings.closeBehavior;
-  applyProxy(settings.proxy ?? emptyProxy);
-  version.textContent = settings.version;
+function showPanel(panel: HTMLElement): void {
+  aboutPanel.hidden = panel !== aboutPanel;
 }
 
-function showPanel(panel: HTMLElement): void {
-  settingsPanel.hidden = panel !== settingsPanel;
-  aboutPanel.hidden = panel !== aboutPanel;
+async function loadVersion(): Promise<void> {
+  try {
+    version.textContent = await getVersion();
+  } catch {
+    version.textContent = "—";
+  }
+}
+
+/**
+ * 「关于」窗口的运行状态：DSH 版本/地址、桌面面板是否注入。
+ * 面板是唯一的设置入口后，这里是用户排查「面板为什么没出现」的地方。
+ */
+async function refreshAboutStatus(): Promise<void> {
+  try {
+    const status = await invoke<DshWebStatus>("dsh_status");
+    aboutDshVersion.textContent = status.dshVersion ?? "—";
+    aboutDshUrl.textContent = status.url ?? "—";
+    aboutPanelState.textContent = status.panelInjected
+      ? "已注入（DSH 设置 → 桌面端）"
+      : "未注入";
+    if (status.requiresDshUpdate) {
+      aboutPanelState.textContent = "未注入：需要先升级 DSH";
+    }
+  } catch (error) {
+    aboutPanelState.textContent = `无法读取服务状态：${String(error)}`;
+  }
 }
 
 async function waitForReady(): Promise<void> {
@@ -221,36 +190,11 @@ async function waitForReady(): Promise<void> {
   });
 }
 
-requiredElement<HTMLButtonElement>("settings-trigger").addEventListener("click", () => {
-  if (isAuxiliaryWindow()) return;
-  void invoke("show_shell_settings");
-});
 requiredElement<HTMLButtonElement>("about-trigger").addEventListener("click", () => {
   if (isAuxiliaryWindow()) return;
   void invoke("show_about");
 });
 
-closeBehavior.addEventListener("change", () => {
-  const nextBehavior = closeBehavior.value as ShellSettings["closeBehavior"];
-  settingsStatus.textContent = "正在保存…";
-  void invoke<ShellSettings>("update_close_behavior", { closeBehavior: nextBehavior })
-    .then((updated) => {
-      settings = updated;
-      settingsStatus.textContent = "已保存。";
-    })
-    .catch((error: unknown) => {
-      closeBehavior.value = settings?.closeBehavior ?? "minimizeToTray";
-      settingsStatus.textContent = `保存失败：${String(error)}`;
-    });
-});
-
-proxyEnabled.addEventListener("change", syncProxyInputs);
-proxySave.addEventListener("click", () => {
-  void saveProxy(false);
-});
-proxySaveRestart.addEventListener("click", () => {
-  void saveProxy(true);
-});
 updateCheck.addEventListener("click", () => {
   void checkDesktopUpdate();
 });
@@ -265,18 +209,22 @@ retry.addEventListener("click", () => {
   });
 });
 
-void loadSettings().catch((error: unknown) => {
-  settingsStatus.textContent = `无法读取桌面设置：${String(error)}`;
+// 前置门禁要求升级 DSH：复用既有的后台更新流程（右下角进度浮层 + 更新完成后
+// 的居中重启询问），更新完成后由更新弹窗调用 restart_dsh_web 重新走门禁。
+updateDsh.addEventListener("click", () => {
+  updateDsh.disabled = true;
+  address.textContent = "正在后台更新 DSH，完成后会提示重启…";
+  void invoke("update_dsh_in_background").catch((error: unknown) => {
+    updateDsh.disabled = false;
+    address.textContent = `启动 DSH 更新失败：${String(error)}`;
+  });
 });
 
 if (isAuxiliaryWindow()) {
   document.body.classList.add("auxiliary-window");
-}
-
-if (windowLabel() === "about") {
   showPanel(aboutPanel);
-} else if (windowLabel() === "settings") {
-  showPanel(settingsPanel);
+  void loadVersion();
+  void refreshAboutStatus();
 } else {
   // The native window starts hidden. Reveal it only after this launcher has
   // painted, so users see the loading view instead of a blank WebView.
