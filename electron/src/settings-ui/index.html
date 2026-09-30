@@ -90,6 +90,14 @@
   </section>
 
   <section>
+    <h2>侧边栏浏览器</h2>
+    <div class="checks">
+      <label><input type="checkbox" id="browserEnabled" data-testid="browser-enabled" /> 启用桌面壳自带的侧边栏浏览器（含 agent 网页读取工具）</label>
+    </div>
+    <p class="hint">关闭后不再向 DSH 注入浏览器工具，侧边栏也不再出现「浏览器」；重新打开需要重载 DSH 界面（保存并重启最直接）。</p>
+  </section>
+
+  <section>
     <h2>更新检查</h2>
     <div class="checks">
       <label><input type="checkbox" id="checkDesktopOnStart" data-testid="check-desktop" /> 启动时检查桌面端更新</label>
@@ -140,6 +148,7 @@
       document.getElementById('noProxy').value = v.noProxy
       document.getElementById('checkDesktopOnStart').checked = v.checkDesktopOnStart
       document.getElementById('checkDshOnStart').checked = v.checkDshOnStart
+      document.getElementById('browserEnabled').checked = v.browserEnabled !== false
       const rows = [
         ['桌面端版本', state.facts.desktopVersion],
         ['随包 DSH', state.facts.runtimeVersion + '（' + state.facts.runtimeSource + '）'],
@@ -167,6 +176,7 @@
         noProxy: fields[2].value,
         checkDesktopOnStart: document.getElementById('checkDesktopOnStart').checked,
         checkDshOnStart: document.getElementById('checkDshOnStart').checked,
+        browserEnabled: document.getElementById('browserEnabled').checked,
       }
     }
 

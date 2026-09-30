@@ -95,6 +95,71 @@ export class PanelBridge {
   }
 
   /**
+   * Append a browser-control note to a DSH session.
+   *
+   * The plugin writes it as a `user/message` with its own `source.kind`, so the model reads it as
+   * history without it being taken for a user prompt.
+   *
+   * Returns the reason when it cannot be delivered — the caller logs it, because "the agent was
+   * not told" is exactly the kind of silent failure this feature must not have. `unknown-session`
+   * is expected whenever the panel's session has no live turn yet: DSH's `sessions.get()` only
+   * resolves *live* sessions, and the plugin cannot resurrect a persisted one.
+   */
+  async sessionNote(sessionId: string, text: string): Promise<{ readonly ok: boolean; readonly error?: string }> {
+    const origin = this.options.origin()
+    const cookie = this.options.cookie()
+    if (origin === undefined) return { ok: false, error: 'no-origin' }
+    if (cookie === undefined) return { ok: false, error: 'no-cookie' }
+    if (sessionId === '') return { ok: false, error: 'no-session-id' }
+    if (text === '') return { ok: false, error: 'no-text' }
+    try {
+      const token = await this.bootstrapToken()
+      if (token === undefined) return { ok: false, error: 'no-bootstrap-token' }
+      const response = await fetch(`${origin}${PANEL_ROUTE}/session-note`, {
+        method: 'POST',
+        headers: {
+          cookie,
+          'content-type': 'application/json',
+          'x-dsh-desktop-shell-token': token,
+        },
+        body: JSON.stringify({ sessionId, text }),
+        cache: 'no-store',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(this.options.timeoutMs ?? 5_000),
+      })
+      const payload = await response.json().catch(() => ({})) as Record<string, unknown>
+      if (response.ok && payload.ok === true) return { ok: true }
+      const pluginError = typeof payload.error === 'string' ? payload.error : 'unknown'
+      const live = Array.isArray(payload.liveSessions) ? payload.liveSessions.map(String).slice(0, 5) : []
+      return {
+        ok: false,
+        error: `HTTP ${String(response.status)} ${pluginError}${live.length === 0 ? '' : `（活动会话：${live.join(', ')}）`}`,
+      }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /** One-time write token from the plugin (same flow the settings PUT uses). */
+  private async bootstrapToken(): Promise<string | undefined> {
+    const payload = await this.request('/bootstrap', this.options.timeoutMs ?? 4_000)
+    const token = payload?.token
+    return typeof token === 'string' && token !== '' ? token : undefined
+  }
+
+  /**
+   * The session that most recently drove the browser, as the plugin saw it.
+   *
+   * Used when the shell has to open the sidebar browser before the panel has ever reported a
+   * session id (the panel may never have been opened). `undefined` when the host is unreachable.
+   */
+  async driverSession(): Promise<string | undefined> {
+    const payload = await this.request('/state', this.options.timeoutMs ?? 4_000)
+    const sessionId = payload?.driverSessionId
+    return typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined
+  }
+
+  /**
    * Ask what quitting or restarting DSH would interrupt.
    *
    * A short deadline on purpose: the answer gates a dialog, and a slow host must not

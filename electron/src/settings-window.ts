@@ -34,6 +34,7 @@ export interface SettingsSnapshot {
     readonly noProxy: string
     readonly checkDesktopOnStart: boolean
     readonly checkDshOnStart: boolean
+    readonly browserEnabled: boolean
   }
   readonly facts: {
     readonly desktopVersion: string

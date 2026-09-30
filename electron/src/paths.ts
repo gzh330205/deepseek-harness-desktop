@@ -50,6 +50,16 @@ export function factsPath(): string {
   return join(bridgeDir(), 'desktop-facts.json')
 }
 
+/** The browser-tool catalog, written for the panel plugin to register natively. */
+export function browserToolsPath(): string {
+  return join(bridgeDir(), 'browser-tools.json')
+}
+
+/** What the plugin reported about its native registration (drives the MCP fallback). */
+export function toolRegistrationPath(): string {
+  return join(bridgeDir(), 'browser-tool-registration.json')
+}
+
 /**
  * Apply the userData override before anything reads `app.getPath('userData')`.
  * Must run before `app.whenReady()`.

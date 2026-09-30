@@ -99,3 +99,46 @@ test('nothing changed means nothing is reported as changed', () => {
   if (!result.ok) return
   assert.deepEqual(result.changed, [])
 })
+
+test('the browser switch is written as a nested section and only when it changes', () => {
+  const base = { service: { port: 41729 } }
+
+  // Turning it off is a change, and it is reported.
+  const off = mergeSettingsInput({ ...base, browser: { enabled: true } }, { browserEnabled: false }, 41729)
+  assert.equal(off.ok, true)
+  if (!off.ok) return
+  assert.deepEqual(off.document.browser, { enabled: false })
+  assert.deepEqual(off.changed, ['browser.enabled'])
+
+  // An absent field means "leave it", and an unchanged one is not reported.
+  const untouched = mergeSettingsInput({ ...base, browser: { enabled: false } }, {}, 41729)
+  assert.equal(untouched.ok, true)
+  if (!untouched.ok) return
+  assert.deepEqual(untouched.document.browser, { enabled: false })
+  assert.deepEqual(untouched.changed, [])
+
+  // A document that never had the section gains it without losing anything else, and
+  // "on" needs no write at all because both readers default to on.
+  const freshOff = mergeSettingsInput({ ...base, closeBehavior: 'exit' }, { browserEnabled: false }, 41729)
+  assert.equal(freshOff.ok, true)
+  if (!freshOff.ok) return
+  assert.deepEqual(freshOff.document.browser, { enabled: false })
+  assert.equal(freshOff.document.closeBehavior, 'exit')
+
+  const freshOn = mergeSettingsInput({ ...base }, { browserEnabled: true }, 41729)
+  assert.equal(freshOn.ok, true)
+  if (!freshOn.ok) return
+  const browser = freshOn.document.browser as Record<string, unknown>
+  assert.notEqual(browser.enabled, false)
+  assert.deepEqual(freshOn.changed, [])
+})
+
+test('an empty submission never invents the off state', () => {
+  const result = mergeSettingsInput({}, {}, 41729)
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  // An absent field means "leave it": the merge must not write `enabled: false`, because the
+  // plugin's `withDefaults` is what materialises the default (`enabled !== false`).
+  const browser = result.document.browser as Record<string, unknown>
+  assert.notEqual(browser.enabled, false)
+})

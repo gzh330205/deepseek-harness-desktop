@@ -1,7 +1,7 @@
 {
   "name": "dsh-desktop-electron",
   "productName": "DSH Desktop",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "private": true,
   "description": "Electron shell for DSH Desktop (migrating from the Tauri shell in src-tauri/)",
   "license": "MIT",
@@ -31,6 +31,7 @@
     "package:debug:dir": "node scripts/package-debug.mjs --dir"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.31.0",
     "@types/node": "^22.20.0",
     "electron": "44.0.0",
     "electron-builder": "^26.15.3",

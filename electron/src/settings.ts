@@ -8,6 +8,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 
 import { SHELL_SETTINGS_FILENAME } from './constants.ts'
+import { clampAutoReleaseSeconds, DEFAULT_AUTO_RELEASE_SECONDS } from './browser-control.ts'
 import { withServicePort } from './settings-shape.ts'
 import { bridgeDir } from './paths.ts'
 import { join } from 'node:path'
@@ -25,16 +26,43 @@ export interface UpdatePreferences {
   readonly checkDshOnStart: boolean
 }
 
+export interface BrowserPreferences {
+  /** Whether the shell offers its self-hosted sidebar browser (and the agent's browser tools). */
+  readonly enabled: boolean
+  /**
+   * How the browser tools reach the agent.
+   *
+   * uto prefers DSH-native tools registered by the shipped panel plugin and falls back to
+   * the MCP row when the plugin reported a failed registration; 
+ative / mcp pin one
+   * surface (picking 
+ative is how a fallback is retried).
+   */
+  readonly agentTools: 'auto' | 'native' | 'mcp'
+  /**
+   * How long the user can be idle after taking the browser over before control is handed back.
+   * A page-tool call waits during that window instead of failing (see `browser-control.ts`).
+   */
+  readonly autoReleaseSeconds: number
+}
+
 export interface ShellSettings {
   readonly servicePort?: number
   /** `minimizeToTray` hides the window; `exit` quits. Matches the panel plugin's schema. */
   readonly closeBehavior: 'minimizeToTray' | 'exit'
   readonly proxy: ManagedProxy
   readonly updates: UpdatePreferences
+  readonly browser: BrowserPreferences
 }
 
 export const EMPTY_PROXY: ManagedProxy = { enabled: false, httpProxy: '', httpsProxy: '', noProxy: '' }
 export const DEFAULT_UPDATE_PREFERENCES: UpdatePreferences = { checkDesktopOnStart: true, checkDshOnStart: true }
+export const DEFAULT_BROWSER_PREFERENCES: BrowserPreferences = { enabled: true, agentTools: 'auto', autoReleaseSeconds: DEFAULT_AUTO_RELEASE_SECONDS }
+
+/** Keep a hand-edited settings file from producing a silly idle window. */
+function clampBrowserAutoRelease(value: unknown): number {
+  return clampAutoReleaseSeconds(value)
+}
 
 /** Environment variables a managed proxy owns; cleared when the switch is off. */
 export const MANAGED_PROXY_ENV = [
@@ -46,19 +74,26 @@ export const MANAGED_PROXY_ENV = [
  */
 export function readShellSettings(): ShellSettings {
   const path = join(bridgeDir(), SHELL_SETTINGS_FILENAME)
+  const fallback: ShellSettings = {
+    closeBehavior: 'minimizeToTray',
+    proxy: EMPTY_PROXY,
+    updates: DEFAULT_UPDATE_PREFERENCES,
+    browser: DEFAULT_BROWSER_PREFERENCES,
+  }
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'))
   } catch {
-    return { closeBehavior: 'minimizeToTray', proxy: EMPTY_PROXY, updates: DEFAULT_UPDATE_PREFERENCES }
+    return fallback
   }
   if (typeof raw !== 'object' || raw === null) {
-    return { closeBehavior: 'minimizeToTray', proxy: EMPTY_PROXY, updates: DEFAULT_UPDATE_PREFERENCES }
+    return fallback
   }
   const record = raw as Record<string, unknown>
   const service = typeof record.service === 'object' && record.service !== null ? record.service as Record<string, unknown> : {}
   const proxyRecord = typeof record.proxy === 'object' && record.proxy !== null ? record.proxy as Record<string, unknown> : {}
   const updatesRecord = typeof record.updates === 'object' && record.updates !== null ? record.updates as Record<string, unknown> : {}
+  const browserRecord = typeof record.browser === 'object' && record.browser !== null ? record.browser as Record<string, unknown> : {}
   const port = typeof service.port === 'number' ? service.port : undefined
   // `tray` was the pre-P2 spelling in this shell; the panel plugin writes
   // `minimizeToTray` and both must keep working.
@@ -77,6 +112,13 @@ export function readShellSettings(): ShellSettings {
     updates: {
       checkDesktopOnStart: updatesRecord.checkDesktopOnStart !== false,
       checkDshOnStart: updatesRecord.checkDshOnStart !== false,
+    },
+    browser: {
+      enabled: browserRecord.enabled !== false,
+      agentTools: browserRecord.agentTools === 'native' || browserRecord.agentTools === 'mcp'
+        ? browserRecord.agentTools
+        : 'auto',
+      autoReleaseSeconds: clampBrowserAutoRelease(browserRecord.autoReleaseSeconds),
     },
   }
 }

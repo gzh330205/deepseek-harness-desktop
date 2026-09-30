@@ -248,6 +248,26 @@ export const IPC = {
   panelEvent: 'dsh-desktop:panel-event',
   /** Shell → product page: the shell's state changed, reload it. */
   panelState: 'dsh-desktop:panel-state',
+  /**
+   * Sidebar-browser panel → main: a command for the shell-owned browser view
+   * (create / bounds / show / hide / navigate / back / forward / reload / focus / pick /
+   * device / close).
+   */
+  browserCommand: 'dsh-desktop:browser-command',
+  /** Main → sidebar-browser panel: the view's navigation state changed. */
+  browserState: 'dsh-desktop:browser-state',
+  /** Main → sidebar-browser panel: the user picked an element in the browser view. */
+  browserPick: 'dsh-desktop:browser-pick',
+  /** Main → sidebar-browser panel: the browser's download list changed. */
+  browserDownloads: 'dsh-desktop:browser-downloads',
+  /**
+   * Main → sidebar-browser panel: open the browser tab in DSH's right sidebar.
+   *
+   * Sent when the *agent* wants the user to see a page (`navigate { show: true }`) but the panel is
+   * not on screen. Only the page can do this — opening a pane is a client-side operation
+   * (`ctx.sidebarRight.openTab` / `openTabIn`), so the shell asks and the page acts.
+   */
+  browserOpenPane: 'dsh-desktop:browser-open-pane',
 } as const
 
 /**

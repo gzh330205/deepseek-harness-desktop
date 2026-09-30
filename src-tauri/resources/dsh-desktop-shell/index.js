@@ -17,6 +17,7 @@
  * 明确不在防御范围内：以同一用户身份运行的本地进程（它本来就能直接读设置文件）。
  */
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -33,6 +34,19 @@ const TOKEN_TTL_MS = 10 * 60 * 1000;
 const MAX_BODY_BYTES = 256 * 1024;
 const PROXY_SCHEMES = ['http', 'https', 'socks5', 'socks5h'];
 const CLOSE_BEHAVIORS = ['minimizeToTray', 'exit'];
+/** 浏览器工具怎么交给 agent：自动（优先原生，失败回退）/ 只用原生 / 只用 MCP。 */
+const TOOL_SURFACES = ['auto', 'native', 'mcp'];
+/** 接管空闲自动交还的取值边界（与 electron/src/browser-control.ts 一致）。 */
+const AUTO_RELEASE_MIN = 5;
+const AUTO_RELEASE_MAX = 600;
+const AUTO_RELEASE_DEFAULT = 30;
+function clampAutoReleaseSeconds(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return AUTO_RELEASE_DEFAULT;
+  return Math.min(AUTO_RELEASE_MAX, Math.max(AUTO_RELEASE_MIN, Math.round(value)));
+}
+
+/** 控制权提示的来源标记：绝不能是 'user'（那会被当成真实用户提问）。 */
+const CONTROL_NOTE_SOURCE = 'desktop-shell-browser-control';
 
 /** 默认设置：字段与桌面壳 Rust 侧 `ShellSettings` 对齐（camelCase）。 */
 const DEFAULT_SETTINGS = {
@@ -42,6 +56,7 @@ const DEFAULT_SETTINGS = {
   proxy: { enabled: false, httpsProxy: '', httpProxy: '', noProxy: '' },
   service: { port: 41729 },
   updates: { checkDesktopOnStart: true, checkDshOnStart: true },
+  browser: { enabled: true, agentTools: 'auto', autoReleaseSeconds: 30 },
 };
 
 function sendJson(res, status, payload) {
@@ -145,7 +160,7 @@ function validatePatch(patch) {
   }
   const next = {};
   for (const key of Object.keys(patch)) {
-    if (!['closeBehavior', 'proxy', 'service', 'updates'].includes(key)) {
+    if (!['closeBehavior', 'proxy', 'service', 'updates', 'browser'].includes(key)) {
       return { error: `未知设置项：${key}` };
     }
   }
@@ -205,6 +220,35 @@ function validatePatch(patch) {
     next.updates = result;
   }
 
+  if (patch.browser !== undefined) {
+    const browser = patch.browser;
+    if (browser === null || typeof browser !== 'object' || Array.isArray(browser)) {
+      return { error: 'browser 必须是对象' };
+    }
+    if (browser.enabled === undefined && browser.agentTools === undefined) {
+      next.browser = {};
+    } else {
+      const nextBrowser = {};
+      if (browser.enabled !== undefined) {
+        if (typeof browser.enabled !== 'boolean') return { error: 'browser.enabled 必须是布尔值' };
+        nextBrowser.enabled = browser.enabled;
+      }
+      if (browser.agentTools !== undefined) {
+        if (!TOOL_SURFACES.includes(browser.agentTools)) {
+          return { error: `browser.agentTools 必须是 ${TOOL_SURFACES.join(' / ')} 之一` };
+        }
+        nextBrowser.agentTools = browser.agentTools;
+      }
+      if (browser.autoReleaseSeconds !== undefined) {
+        if (typeof browser.autoReleaseSeconds !== 'number' || !Number.isFinite(browser.autoReleaseSeconds)) {
+          return { error: 'browser.autoReleaseSeconds 必须是数字（秒）' };
+        }
+        nextBrowser.autoReleaseSeconds = browser.autoReleaseSeconds;
+      }
+      next.browser = nextBrowser;
+    }
+  }
+
   return { patch: next };
 }
 
@@ -214,6 +258,7 @@ function withDefaults(raw) {
   const proxy = source.proxy ?? {};
   const service = source.service ?? {};
   const updates = source.updates ?? {};
+  const browser = source.browser ?? {};
   const port = Number(service.port);
   return {
     ...source,
@@ -234,6 +279,11 @@ function withDefaults(raw) {
     updates: {
       checkDesktopOnStart: updates.checkDesktopOnStart !== false,
       checkDshOnStart: updates.checkDshOnStart !== false,
+    },
+    browser: {
+      enabled: browser.enabled !== false,
+      agentTools: TOOL_SURFACES.includes(browser.agentTools) ? browser.agentTools : 'auto',
+      autoReleaseSeconds: clampAutoReleaseSeconds(browser.autoReleaseSeconds),
     },
   };
 }
@@ -331,11 +381,153 @@ function sameProxy(left, right) {
   );
 }
 
-export function apply(ctx) {
+const TOOLS_FILENAME = 'browser-tools.json';
+
+import { BROWSER_SKILL } from './browser-skill.js';
+
+/** 把目录里的一条定义变成 DSH 原生工具（薄代理：执行仍在桌面壳里）。 */
+function buildNativeTool(definition, endpoint, token, rememberSession) {
+  return {
+    name: definition.name,
+    description: definition.description,
+    // 目录里的 schema 已经落在原生注册表接受的子集内（见 browser-tool-schema.test.ts）。
+    parameters: definition.inputSchema,
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    timeoutMs: 180000,
+    async execute(args, exec) {
+      // 记下**真正在驱动浏览器的会话**：控制权提示要写进这个会话，而不是面板碰巧报上来的那个
+      // （两者在多会话/新建会话时可能不是同一个，实测踩过：提示因此落到了一个不活动的会话）。
+      rememberSession?.(exec?.agent?.session);
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        // 带上会话 id：桌面壳按会话隔离浏览器标签（第二个会话不能复用第一个的页面）。
+        body: JSON.stringify({ name: definition.name, args: args ?? {}, sessionId: exec?.agent?.session?.id ?? '' }),
+        signal: exec?.signal,
+      });
+      if (!response.ok) throw new Error(`浏览器工具桥返回 HTTP ${response.status}`);
+      const payload = await response.json();
+      const text = (Array.isArray(payload.content) ? payload.content : [])
+        .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+        .join('\n');
+      // 抛错才会让这次调用在 DSH 侧显示为失败；返回文本则视为成功。
+      if (payload.isError === true) throw new Error(text === '' ? '浏览器工具执行失败' : text);
+      return text;
+    },
+  };
+}
+
+export function apply(ctx, config) {
   const bridgeDir = process.env.DSH_DESKTOP_BRIDGE_DIR ?? null;
   console.log(
     `[dsh-desktop-shell] host apply pid=${process.pid} bridgeDir=${bridgeDir ?? '(unset)'}`,
   );
+
+  // ── 往会话里写「浏览器控制权」提示 ────────────────────────────────────────────
+  //
+  // 用 `user/message` + 自定义 `source.kind`：DSH 会把这种事件投影进模型看到的历史，
+  // 但只有 `source.kind === 'user'` 才被当作真实用户提问（不会因此凭空起一个新回合）。
+  // 这正是 DSH 自己的 dsh-agent-instructions 注入工作区指令用的办法。
+  let sessionsService;
+  /** 最近一次真正调用浏览器工具的会话 id（控制权提示的首选投递目标）。 */
+  let driverSessionId;
+  const rememberSession = (session) => {
+    const id = session?.id ?? session?.sessionId;
+    if (typeof id === 'string' && id !== '') driverSessionId = id;
+  };
+  ctx.inject(['sessions'], (sessionCtx) => {
+    sessionsService = sessionCtx.sessions;
+    console.log('[dsh-desktop-shell] 已接入 sessions 服务（可写入控制权提示）');
+  });
+
+  /** @returns {{ok: boolean, error?: string, liveSessions?: string[]}} */
+  const appendSessionNote = (sessionId, text) => {
+    if (sessionsService === undefined) {
+      console.log('[dsh-desktop-shell] 写入控制权提示失败：sessions 服务不可用');
+      return { ok: false, error: 'sessions-service-unavailable' };
+    }
+    const live = () => {
+      try {
+        return (sessionsService.list?.() ?? []).map((entry) => entry?.id ?? String(entry)).slice(0, 8);
+      } catch {
+        return [];
+      }
+    };
+    try {
+      // 优先用「正在驱动浏览器的那个会话」（原生工具执行时记下的），面板报的 id 只作为回退：
+      // DSH 的 sessions.get() 只解析**活动**会话，而面板所在的会话可能不是同一个/还没有回合。
+      const candidates = [driverSessionId, sessionId].filter((value, index, all) => typeof value === 'string' && value !== '' && all.indexOf(value) === index);
+      let target;
+      let used;
+      for (const candidate of candidates) {
+        const found = sessionsService.get(candidate);
+        if (found !== undefined) { target = found; used = candidate; break; }
+      }
+      if (target === undefined) {
+        console.log(`[dsh-desktop-shell] 写入控制权提示失败：候选会话都不可用（面板=${sessionId || '(无)'}，驱动=${driverSessionId || '(未记录)'}；活动：${live().join(', ') || '(无)'}）`);
+        return { ok: false, error: 'unknown-session', liveSessions: live() };
+      }
+      target.append(
+        'user/message',
+        { role: 'user', content: [{ type: 'text', text }], source: { kind: CONTROL_NOTE_SOURCE } },
+        { surfaceOp: 'append' },
+      );
+      console.log(`[dsh-desktop-shell] 已向会话 ${used}${used === sessionId ? '' : '（按浏览器驱动会话）'} 写入控制权提示：${text.slice(0, 40)}…`);
+      return { ok: true };
+    } catch (error) {
+      console.log(`[dsh-desktop-shell] 写入控制权提示失败：${error?.message ?? String(error)}`);
+      return { ok: false, error: error?.message ?? String(error) };
+    }
+  };
+
+  // ── 内置技能：随插件分发，用户无需安装任何东西 ────────────────────────────────
+  ctx.inject(['skills'], (skillCtx) => {
+    try {
+      skillCtx.skills.register(BROWSER_SKILL);
+      console.log(`[dsh-desktop-shell] 已注册内置技能 ${BROWSER_SKILL.name}`);
+    } catch (error) {
+      // 技能服务在旧/新版本里换了形状：记一条日志跳过，面板与工具不受影响。
+      console.log(`[dsh-desktop-shell] 注册内置技能失败（忽略）：${error?.message ?? String(error)}`);
+    }
+  });
+
+  // ── 原生浏览器工具：与 MCP 同一个目录来源，执行仍在桌面壳里 ──────────────────
+  const nativeEndpoint = config?.nativeTools?.url;
+  const nativeToken = config?.nativeTools?.token;
+  if (typeof nativeEndpoint === 'string' && nativeEndpoint !== '' && typeof nativeToken === 'string') {
+    ctx.inject(['tools'], (toolCtx) => {
+      let report = { ok: false, count: 0, error: '' };
+      try {
+        if (bridgeDir === null) throw new Error('缺少 DSH_DESKTOP_BRIDGE_DIR');
+        const catalog = JSON.parse(readFileSync(join(bridgeDir, TOOLS_FILENAME), 'utf8'));
+        const definitions = Array.isArray(catalog?.tools) ? catalog.tools : [];
+        if (definitions.length === 0) throw new Error('工具目录为空');
+        for (const definition of definitions) {
+          toolCtx.tools.register(buildNativeTool(definition, nativeEndpoint, nativeToken, rememberSession));
+        }
+        report = { ok: true, count: definitions.length };
+        console.log(`[dsh-desktop-shell] 已注册 ${definitions.length} 个原生浏览器工具`);
+      } catch (error) {
+        report = { ok: false, count: 0, error: error?.message ?? String(error) };
+        console.log(`[dsh-desktop-shell] 注册原生浏览器工具失败：${report.error}`);
+      }
+      // 回报给桌面壳：失败时下次启动会自动改用 MCP 工具，而不是让 agent 什么都看不到。
+      const reportUrl = config?.nativeTools?.reportUrl;
+      void fetch(typeof reportUrl === 'string' && reportUrl !== '' ? reportUrl : nativeEndpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${nativeToken}` },
+        body: JSON.stringify(report),
+      }).catch((error) => {
+        console.log(`[dsh-desktop-shell] 回报注册结果失败（忽略）：${error?.message ?? String(error)}`);
+      });
+    });
+  }
 
   /** 认证回探的短 TTL 缓存：同一会话内的连续请求不重复回探。 */
   const authCache = { cookie: null, expiresAt: 0 };
@@ -434,6 +626,9 @@ export function apply(ctx) {
             facts,
             settings,
             revision: settings.revision,
+            // 哪个会话正在驱动浏览器（原生工具执行时记下的）。壳用它来让面板打开侧边栏浏览器：
+            // 面板可能从未被打开过，也就从没上报过 sessionId。
+            driverSessionId: driverSessionId ?? null,
             pendingRestart: !sameProxy(settings.proxy, runningProxy()),
             runningProxy: runningProxy(),
           });
@@ -446,6 +641,34 @@ export function apply(ctx) {
         if (req.method === 'GET' && url.pathname === `${ROUTE}/settings`) {
           const settings = await readSettings(bridgeDir);
           return sendJson(res, 200, { ok: true, settings, revision: settings.revision });
+        }
+
+        if (req.method === 'POST' && url.pathname === `${ROUTE}/session-note`) {
+          if (!tokenValid(req)) {
+            console.log('[dsh-desktop-shell] 拒绝 session-note：bootstrap token 无效或已过期');
+            return sendJson(res, 403, { ok: false, error: 'invalid-token' });
+          }
+          const contentType = String(req.headers['content-type'] ?? '');
+          if (!contentType.toLowerCase().startsWith('application/json')) {
+            console.log(`[dsh-desktop-shell] 拒绝 session-note：content-type=${contentType || '(空)'}`);
+            return sendJson(res, 415, { ok: false, error: 'json-required' });
+          }
+          let body;
+          try {
+            body = await readJsonBody(req);
+          } catch (error) {
+            return sendJson(res, 400, {
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
+          const text = typeof body.text === 'string' ? body.text.slice(0, 2000) : '';
+          if (sessionId === '' || text === '') {
+            return sendJson(res, 400, { ok: false, error: 'missing-session-or-text' });
+          }
+          const result = appendSessionNote(sessionId, text);
+          return sendJson(res, result.ok ? 200 : 409, result);
         }
 
         if (req.method === 'PUT' && url.pathname === `${ROUTE}/settings`) {
@@ -486,6 +709,7 @@ export function apply(ctx) {
             proxy: patch.proxy === undefined ? current.proxy : { ...current.proxy, ...patch.proxy },
             service: patch.service === undefined ? current.service : { ...current.service, ...patch.service },
             updates: patch.updates === undefined ? current.updates : { ...current.updates, ...patch.updates },
+            browser: patch.browser === undefined ? current.browser : { ...current.browser, ...patch.browser },
             revision: current.revision + 1,
           };
           try {

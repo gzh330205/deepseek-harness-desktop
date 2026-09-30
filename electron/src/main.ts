@@ -51,7 +51,21 @@ import {
   type ShellMenuName,
   type LoadMode,
 } from './constants.ts'
-import { writeFacts } from './desktop-files.ts'
+import { writeBrowserToolsCatalog, writeFacts } from './desktop-files.ts'
+import {
+  BROWSER_PARTITION,
+  BrowserViewManager,
+  type BrowserViewManagerOptions,
+  type BrowserViewState,
+} from './browser-view.ts'
+import { mergeBrowserPrefs, readBrowserPrefs, writeBrowserPrefs } from './browser-prefs.ts'
+import { BrowserDownloads } from './browser-downloads.ts'
+import { BrowserTabs } from './browser-tabs.ts'
+import { BROWSER_TOOLS, callBrowserTool } from './browser-tools.ts'
+import { startAgentBridge, type AgentBridge, type BridgeRegistrationReport } from './agent-bridge.ts'
+import { decideToolSurface, parseRegistrationRecord, type ToolRegistrationRecord, type ToolSurfaceDecision } from './browser-tool-surface.ts'
+import { clampAutoReleaseSeconds, controlNote, shouldWriteControlNote } from './browser-control.ts'
+import type { ControlChange } from './browser-view.ts'
 import { runGates, resolvePort, supportsNoOpen } from './gates.ts'
 import { DshHostProcess } from './host-process.ts'
 import {
@@ -63,7 +77,7 @@ import {
 import { blake2b512Chunked } from './blake2b.ts'
 import { verifyMinisign } from './minisign.ts'
 import { PanelBridge, checkSettingsRoundTrip, describeTasks } from './panel-bridge.ts'
-import { applyUserDataOverride, bridgeDir, bundledRuntimeRoot, harnessHome, resolveDshEntry, runtimeBinDir } from './paths.ts'
+import { applyUserDataOverride, bridgeDir, bundledRuntimeRoot, harnessHome, resolveDshEntry, runtimeBinDir, toolRegistrationPath } from './paths.ts'
 import {
   ensureDesktopProfile,
   harnessHomeFrom,
@@ -136,6 +150,23 @@ let cookieHeader: string | undefined
 let shellSettings: ShellSettings = readShellSettings()
 /** Client for the bundled panel plugin's authenticated routes. */
 let panelBridge: PanelBridge | undefined
+/** The shell-owned sidebar browser (per-tab views + panel bridge). */
+let browserPanel: BrowserTabs | undefined
+/** Downloads started in the browser partition (session-level, so tabs can close mid-download). */
+let browserDownloads: BrowserDownloads | undefined
+/** Loopback MCP endpoint the agent's browser tools are served from. */
+let agentBridge: AgentBridge | undefined
+/** Which surface publishes the browser tools this launch (decided before the child boots). */
+let toolSurface: ToolSurfaceDecision | undefined
+/** Pane tab id -> the DSH session it belongs to (reported by the panel on every command). */
+const browserTabSessions = new Map<string, string>()
+/**
+ * Pane tab id -> whether the last takeover wrote a session note.
+ *
+ * A hand-back note is only useful as the *closing half* of a takeover note; without one it would be
+ * a message about something the agent never heard about.
+ */
+const browserControlNotes = new Map<string, boolean>()
 /** Set once a quit has been authorised, so `close` stops asking. */
 let quitAllowed = false
 /** Which dsh runtime this run uses, and whether it verified. */
@@ -607,6 +638,285 @@ function installPanelBridge(): void {
   })
 }
 
+/**
+ * The sidebar browser's panel bridge.
+ *
+ * The panel is a DSH client plugin rendered inside the product page, so it is a renderer:
+ * every command is re-validated here (sender identity, main frame, loopback origin) and
+ * then handed to {@link BrowserViewManager}, which owns the native view, its dedicated
+ * session partition and its navigation policy. Commands never carry a URL to load on
+ * behalf of a page other than this one.
+ */
+function installBrowserPanel(): void {
+  const window = mainWindow
+  /**
+   * One tab's manager wiring. Extracted so `rebindManager` can re-point a live view at another tab
+   * occurrence when the panel takes the agent's background view over: the page keeps loading, but
+   * its state pushes, picks and control notes must name the panel's tab from then on.
+   */
+  const managerOptions = (tabId: string, notify: (state: BrowserViewState) => void): BrowserViewManagerOptions => ({
+    window: () => mainWindow,
+    notify,
+    log: pushLog,
+    titleBarHeight: TITLEBAR_HEIGHT,
+    applicationOrigin: () => hostOrigin,
+    screenshotDir: () => join(bridgeDir(), 'browser-screenshots'),
+    // A pick is already nonce-checked by the manager; it still only ever goes to the
+    // panel of the tab that produced it.
+    onPick: (element) => { pageContents()?.send(IPC.browserPick, { ...element, tabId }) },
+    // Control handover: the panel learns from its own state push; the *agent* is told through a
+    // session note, so a waiting tool call knows why it is waiting and when it may continue.
+    onControlChange: (change) => { notifyBrowserControl(tabId, change) },
+    // Browser-local preferences (homepage, bookmarks) live next to shell-settings.json.
+    prefs: {
+      read: () => readBrowserPrefs(bridgeDir()),
+      write: (prefs) => { writeBrowserPrefs(bridgeDir(), prefs) },
+      directory: () => bridgeDir(),
+    },
+  })
+  browserPanel = new BrowserTabs({
+    // One manager (one native view, one renderer process) per sidebar tab occurrence.
+    createManager: (tabId, notify) => new BrowserViewManager(managerOptions(tabId, notify)),
+    notify: (tabId, state) => { pageContents()?.send(IPC.browserState, { ...state, tabId }) },
+    log: pushLog,
+    // Adoption: the sidebar tab that just came on screen takes the conversation's background view
+    // over. Same view, same page, same load — only the id it reports under changes, so the closures
+    // that name the tab have to be re-pointed.
+    rebindManager: (manager, tabId) => {
+      const sessionId = browserPanel?.sessionOf(tabId) ?? ''
+      if (sessionId !== '') browserTabSessions.set(tabId, sessionId)
+      manager.rebind({
+        notify: (state) => { pageContents()?.send(IPC.browserState, { ...state, tabId }) },
+        onPick: (element) => { pageContents()?.send(IPC.browserPick, { ...element, tabId }) },
+        onControlChange: (change) => { notifyBrowserControl(tabId, change) },
+      })
+    },
+    // The agent wants the user to see a page but no panel is on screen: ask DSH's page to open the
+    // browser tab in the right sidebar (opening it is a client-side operation). The driving
+    // conversation travels with the request so the panel opens *that* conversation's tab.
+    onOpenPane: (paneTabId, mayExpandSidebar, drivingSession) => { void openBrowserForAgent(paneTabId, mayExpandSidebar, drivingSession) },
+  })
+  browserPanel.setAutoReleaseSeconds(shellSettings.browser.autoReleaseSeconds)
+  window?.on('closed', () => { browserPanel?.shutdown() })
+  // Downloads belong to the browser partition, not to one tab: a tab can be closed mid-download.
+  browserDownloads = new BrowserDownloads({
+    log: pushLog,
+    notify: (items) => { pageContents()?.send(IPC.browserDownloads, { downloads: items }) },
+    saveDir: () => app.getPath('downloads'),
+    openPath: (path) => shell.openPath(path),
+    revealPath: (path) => { shell.showItemInFolder(path) },
+  })
+  browserDownloads.attach(session.fromPartition(BROWSER_PARTITION))
+  window?.on('closed', () => { browserDownloads?.dispose() })
+  // Leaving the DSH page (launcher, reload, crash recovery) must not leave a native surface
+  // floating over whatever replaces it.
+  pageContents()?.on('did-navigate', () => { browserPanel?.hideAll() })
+  // The DSH page's own errors and warnings go into shell.log as well. A client plugin that
+  // throws while rendering leaves a blank pane and *nothing* in the shell's log otherwise —
+  // which is exactly how a white sidebar once shipped (see docs/sidebar-browser-integration.md).
+  pageContents()?.on('console-message', (details: Electron.Event<Electron.WebContentsConsoleMessageEventParams>) => {
+    if (details.level !== 'error' && details.level !== 'warning') return
+    const message = typeof details.message === 'string' ? details.message.slice(0, 500) : ''
+    if (message === '') return
+    // Electron's own unpackaged-build security notices are not our page's problems.
+    if (message.includes('Electron Security Warning') || message.includes('electronjs.org/docs/tutorial/security')) return
+    pushLog(`[页面${details.level === 'error' ? '错误' : '警告'}] ${message}`)
+  })
+
+  ipcMain.handle(IPC.browserCommand, (event, command: unknown) => {
+    if (mainWindow === undefined || mainWindow.isDestroyed()) return { ok: false, reason: '主窗口未就绪' }
+    if (event.sender !== pageContents()) return { ok: false, reason: 'forbidden' }
+    if (event.senderFrame !== event.sender.mainFrame) return { ok: false, reason: 'forbidden' }
+    const url = event.senderFrame?.url ?? ''
+    if (!url.startsWith('http://127.0.0.1:') && !url.startsWith('http://localhost:')) {
+      return { ok: false, reason: 'forbidden' }
+    }
+    // Downloads are shell-level (one partition, many tabs), so they are answered here rather
+    // than by a tab's manager.
+    if (typeof command === 'object' && command !== null) {
+      const downloadCommand = command as { name?: unknown; id?: unknown; text?: unknown }
+      // Panel-side diagnostics: the client plugin's console is invisible from the shell, so it
+      // reports lifecycle lines (menu open/close, freeze result) through here into shell.log.
+      if (downloadCommand.name === 'diag') {
+        const text = typeof downloadCommand.text === 'string' ? downloadCommand.text.slice(0, 300) : ''
+        if (text !== '') pushLog(`[面板] ${text}`)
+        return { ok: true }
+      }
+      const downloads = browserDownloads
+      if (downloads !== undefined) {
+        switch (downloadCommand.name) {
+          case 'downloads': return { ok: true, downloads: downloads.list() }
+          case 'openDownload': return downloads.open(typeof downloadCommand.id === 'string' ? downloadCommand.id : '')
+          case 'revealDownload': return downloads.reveal(typeof downloadCommand.id === 'string' ? downloadCommand.id : '')
+          case 'clearDownloads': downloads.clear(); return { ok: true, downloads: downloads.list() }
+          default: break
+        }
+      }
+    }
+    // The panel tells us which DSH session it belongs to on every command; remember it per tab so
+    // a control handover can be reported into that session (see `notifyBrowserControl`).
+    if (typeof command === 'object' && command !== null) {
+      const envelope = command as { tabId?: unknown; sessionId?: unknown }
+      if (typeof envelope.tabId === 'string' && typeof envelope.sessionId === 'string' && envelope.sessionId !== '') {
+        browserTabSessions.set(envelope.tabId, envelope.sessionId)
+      }
+    }
+    return browserPanel?.handle(command) ?? { ok: false, reason: '浏览器不可用' }
+  })
+}
+
+/**
+ * Tell the agent (not just the panel) that browser control changed hands.
+ *
+ * Runs a session append inside the DSH host plugin: `user/message` with a dedicated `source.kind`,
+ * which DSH projects into the model's history without treating it as a user prompt.
+ *
+ * Only written when the agent would otherwise learn nothing. If a call was in flight it is *held*
+ * until the hand-back, and that call's own result already explains the wait — adding a note on top
+ * of it is what made a real session answer "我暂停，稍后继续读结构" and end its turn.
+ */
+function notifyBrowserControl(tabId: string, change: ControlChange): void {
+  const seconds = clampAutoReleaseSeconds(change.autoReleaseSeconds)
+  pushLog(
+    change.state === 'taken'
+      ? `浏览器控制权已交给用户（${change.reason === 'user-click' ? '用户点击页面' : '面板'}）：助手调用会等待，${String(seconds)} 秒无操作后自动交还`
+      : `浏览器控制权已交还助手（${change.reason === 'auto-idle' ? '用户停止操作' : '面板按钮'}）`,
+  )
+  const wroteTakeoverNote = browserControlNotes.get(tabId) === true
+  if (!shouldWriteControlNote(change, wroteTakeoverNote)) {
+    browserControlNotes.set(tabId, false)
+    pushLog(
+      change.state === 'taken'
+        ? '（有调用正在等待：解释随该调用的结果一起返回，不额外写入会话）'
+        : '（本次接管没有写会话提示：等待的调用已自行说明，不额外写入会话）',
+    )
+    return
+  }
+  browserControlNotes.set(tabId, change.state === 'taken')
+  const sessionId = browserTabSessions.get(tabId)
+  if (sessionId === undefined) {
+    pushLog('（未记录到该标签所属的 DSH 会话，跳过向会话写入控制权提示）')
+    return
+  }
+  void panelBridge?.sessionNote(sessionId, controlNote(change.state === 'taken' ? 'taken' : change.reason === 'auto-idle' ? 'expired' : 'released', seconds))
+    .then((result) => {
+      if (!result.ok) pushLog(`（控制权提示未能写入会话：${result.error ?? '未知原因'}；会话 ${sessionId}）`)
+    })
+    .catch((error: unknown) => {
+      pushLog(`（控制权提示写入异常：${error instanceof Error ? error.message : String(error)}）`)
+    })
+}
+
+/**
+ * Ask DSH's page to open the browser tab in the right sidebar.
+ *
+ * The one way the browser reaches the user's screen.
+ *
+ * A native view may only be placed where the panel measured itself, so the sequence is: the page
+e * opens the tab (a client-side operation, ctx.sidebarRight.openTabIn/openTab), the panel mounts
+ * and reports bounds, and the shell hands it the view the agent is using.
+ */
+/**
+ * The agent asked to show a page (the only entry point a tool call has into the user's screen).
+ *
+ * Everything here is a request to the *page*: only the client half can open a tab in DSH's right
+ * sidebar. The driving conversation is passed along, because `openTabIn` needs it and a new
+ * conversation must not land in another one's panel.
+ */
+async function openBrowserForAgent(tabId: string, mayExpandSidebar: boolean, knownSessionId = ''): Promise<void> {
+  await openBrowserPane(tabId, mayExpandSidebar, knownSessionId)
+}
+async function openBrowserPane(tabId: string, mayExpandSidebar: boolean, knownSessionId = ''): Promise<void> {
+  const page = pageContents()
+  if (page === undefined) return
+  // Prefer the conversation the tool call came from; the panel's last report and the plugin's
+  // recorded driver are the fallbacks.
+  const sessionId = knownSessionId !== ''
+    ? knownSessionId
+    : browserTabSessions.get(tabId) ?? await panelBridge?.driverSession() ?? ''
+  page.send(IPC.browserOpenPane, { tabId, sessionId, expand: mayExpandSidebar })
+  pushLog(
+    `助手要求显示页面：已请面板打开侧边栏浏览器（会话 ${sessionId === '' ? '未知' : sessionId}` +
+      `${mayExpandSidebar ? '，面板从未显示过→必要时展开侧栏' : ''}）`,
+  )
+}
+
+/**
+ * What the plugin reported about its native registration last launch.
+ *
+ * This is the memory behind the automatic MCP fallback: if the plugin could not register the
+ * catalog natively (a DSH upgrade changed `ctx.tools.register`), the shell injects the MCP row
+ * on the *next* launch instead of losing the tools silently.
+ */
+function readToolRegistrationRecord(): ToolRegistrationRecord | undefined {
+  try {
+    const raw = readFileSync(toolRegistrationPath(), 'utf8')
+    return parseRegistrationRecord(JSON.parse(raw))
+  } catch {
+    return undefined
+  }
+}
+
+function recordToolRegistration(report: BridgeRegistrationReport): void {
+  try {
+    writeFileSync(toolRegistrationPath(), `${JSON.stringify({ ...report, at: Date.now() }, null, 2)}\n`, 'utf8')
+  } catch {
+    // Diagnostics only: a failure to remember the result must not break the run.
+  }
+  if (report.ok) {
+    pushLog(`面板插件已注册 ${String(report.count)} 个原生浏览器工具（下次启动继续用原生工具）`)
+  } else {
+    pushLog(`面板插件注册原生工具失败：${report.error ?? '未知原因'}——下次启动将自动回退 MCP 工具`)
+  }
+  pushPanelState()
+}
+
+/**
+ * Start the browser-tool bridge.
+ *
+ * It has to be listening *before* the child boots, because the overlay that points DSH's
+ * MCP client at it is written during `DshHostProcess.start()`. A failure here is logged and
+ * non-fatal: the panel keeps working, only the agent tools are missing.
+ */
+async function startBrowserTools(): Promise<void> {
+  if (browserPanel === undefined) return
+  // A relaunch rebuilds everything anyway; this only matters if boot ever reruns in place.
+  await agentBridge?.close().catch(() => {})
+  agentBridge = undefined
+  // Which surface publishes these tools is decided *before* the child boots (the overlay either
+  // carries the MCP row or leaves it to the plugin), so decide it here and remember it.
+  toolSurface = decideToolSurface(shellSettings.browser.agentTools, readToolRegistrationRecord(), BROWSER_TOOLS.length)
+  // The host is bound to the calling conversation, so browser tabs stay per conversation.
+  const hostFor = (sessionId: string) => browserPanel?.toolHost(sessionId)
+  try {
+    agentBridge = await startAgentBridge({
+      serverName: 'desktop_browser',
+      tools: BROWSER_TOOLS,
+      call: async (name, args, signal, sessionId) => {
+        // Every entry point (MCP and the plugin's direct calls) ends up here, so this is the one
+        // place that brackets a call with the "the agent is driving" veil.
+        browserPanel?.beginAgentActivity(name, sessionId)
+        try {
+          const host = hostFor(sessionId)
+          if (host === undefined) return { content: [{ type: 'text', text: '浏览器不可用' }], isError: true }
+          return await callBrowserTool(host, name, args, signal)
+        } finally {
+          browserPanel?.endAgentActivity()
+        }
+      },
+      log: pushLog,
+      onRegistered: (report) => { recordToolRegistration(report) },
+    })
+    // The plugin reads this file to register the same catalog natively (one source, two surfaces).
+    writeBrowserToolsCatalog(BROWSER_TOOLS)
+    pushLog(
+      `浏览器 agent 工具桥已就绪（${String(BROWSER_TOOLS.length)} 个工具，loopback；呈现方式：${toolSurface.mode === 'native' ? '原生' : 'MCP'}——${toolSurface.reason}）`,
+    )
+  } catch (error) {
+    pushLog(`浏览器 agent 工具桥启动失败，agent 将看不到这些工具：${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function handlePanelAction(action: string): Promise<void> {
   switch (action) {
     case 'settings-changed': {
@@ -806,6 +1116,7 @@ function settingsSnapshot(): SettingsSnapshot {
       noProxy: shellSettings.proxy.noProxy,
       checkDesktopOnStart: shellSettings.updates.checkDesktopOnStart,
       checkDshOnStart: shellSettings.updates.checkDshOnStart,
+      browserEnabled: shellSettings.browser.enabled,
     },
     facts: {
       desktopVersion: app.getVersion(),
@@ -1177,6 +1488,12 @@ async function boot(): Promise<void> {
   installWebSocketCookie()
   installWebSocketObservation()
   installPanelBridge()
+  installBrowserPanel()
+  if (shellSettings.browser.enabled) {
+    await startBrowserTools()
+  } else {
+    pushLog('侧边栏浏览器已在设置中关闭：本次不注入浏览器工具（面板 tab 也不会注册）')
+  }
   installUpdates()
   installSettingsWindow()
 
@@ -1301,6 +1618,15 @@ async function boot(): Promise<void> {
       ? channelSettings.profileName
       : process.env[PROFILE_ENV] as string,
     ...binDir === undefined ? {} : { runtimeBinDir: binDir },
+    ...agentBridge === undefined ? {} : { agentMcp: { url: agentBridge.url, token: agentBridge.token } },
+    // Which surface publishes the tools is decided in `startBrowserTools()` (before this).
+    // Native mode hands the plugin the direct call endpoint; MCP mode leaves the overlay row.
+    toolSurface: {
+      injectMcp: toolSurface?.injectMcp ?? true,
+      ...toolSurface?.nativeTools === true && agentBridge !== undefined
+        ? { nativeTools: { callUrl: agentBridge.callUrl, registeredUrl: agentBridge.registeredUrl, token: agentBridge.token } }
+        : {},
+    },
     onLog: (stream, line) => { pushLog(`[${stream}] ${line}`) },
   })
   host = child
@@ -1343,6 +1669,16 @@ async function boot(): Promise<void> {
         seededFrom: profileSeed.seededFrom,
         dependencies: Object.keys(profileSeed.dependencies).length,
       },
+    },
+    // Reported on the settings page: "on but no tools" must not look like "working".
+    browser: {
+      enabled: shellSettings.browser.enabled,
+      tools: agentBridge === undefined ? 0 : BROWSER_TOOLS.length,
+      bridge: agentBridge !== undefined,
+      // Which surface publishes the tools, and why (the fallback reason is user-visible).
+      toolSurface: toolSurface?.mode ?? 'mcp',
+      toolSurfaceReason: toolSurface?.reason ?? '',
+      nativeToolCount: readToolRegistrationRecord()?.count ?? 0,
     },
   })
 
@@ -1583,6 +1919,8 @@ app.on('before-quit', (event) => {
   void (async () => {
     // Stop the host first: it holds files the installer may need to replace.
     await host?.stop().catch(() => {})
+    await agentBridge?.close().catch(() => {})
+    agentBridge = undefined
     if (pendingInstaller !== undefined) {
       pushLog(`运行已校验的安装包：${pendingInstaller}`)
       launchInstaller(pendingInstaller)

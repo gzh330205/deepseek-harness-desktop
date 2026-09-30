@@ -26,7 +26,10 @@ import {
 } from './constants.ts'
 import { bareUrl, parseDshWebAuthUrl, redactAuthToken } from './dsh-output.ts'
 import { nodeModeEnvironment } from './dsh-runner.ts'
-import { writeOverlay } from './desktop-files.ts'
+import { writeOverlay, type AgentMcpEndpoint, type OverlayOptions } from './desktop-files.ts'
+
+/** The overlay's tool-surface switches, passed straight through from main.ts. */
+type ToolSurfaceOptions = OverlayOptions
 import { bridgeDir, harnessHome } from './paths.ts'
 import { proxyEnvironment, type ManagedProxy } from './settings.ts'
 
@@ -50,6 +53,10 @@ export interface HostOptions {
   readonly profileName: string
   /** Directory holding the bundled `pnpm`/`node` shims, prepended to PATH when present. */
   readonly runtimeBinDir?: string
+  /** Browser-tool MCP endpoint the overlay should point DSH's MCP client at. */
+  readonly agentMcp?: AgentMcpEndpoint
+  /** How the tool catalog is published this launch: native tools, or the MCP row. */
+  readonly toolSurface?: ToolSurfaceOptions
   readonly onLog: (stream: 'stdout' | 'stderr', line: string) => void
 }
 
@@ -70,7 +77,7 @@ export class DshHostProcess {
    * Spawn the child once and resolve when dsh prints its authentication URL.
    */
   async start(): Promise<HostReady> {
-    const overlay = writeOverlay(this.options.appVersion)
+    const overlay = writeOverlay(this.options.appVersion, this.options.agentMcp, this.options.toolSurface ?? {})
     this.overlayPathValue = overlay.path
     this.panelInjected = overlay.panelInjected
     mkdirSync(dirname(overlay.path), { recursive: true })

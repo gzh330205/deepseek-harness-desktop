@@ -40,6 +40,8 @@ export interface SettingsInput {
   readonly noProxy?: string
   readonly checkDesktopOnStart?: boolean
   readonly checkDshOnStart?: boolean
+  /** Whether the shell offers its self-hosted sidebar browser (and the agent's browser tools). */
+  readonly browserEnabled?: boolean
 }
 
 export type MergeSettingsResult =
@@ -81,6 +83,7 @@ export function mergeSettingsInput(raw: unknown, input: SettingsInput, defaultPo
   const service = asRecord(document.service)
   const proxy = asRecord(document.proxy)
   const updates = asRecord(document.updates)
+  const browser = asRecord(document.browser)
   const changed: string[] = []
 
   const nextPort = input.servicePort ?? readNumber(service, 'port') ?? defaultPort
@@ -131,5 +134,10 @@ export function mergeSettingsInput(raw: unknown, input: SettingsInput, defaultPo
     }
   }
 
-  return { ok: true, document: { ...document, service, proxy, updates }, changed }
+  if (input.browserEnabled !== undefined && readBoolean(browser, 'enabled', true) !== input.browserEnabled) {
+    browser.enabled = input.browserEnabled
+    changed.push('browser.enabled')
+  }
+
+  return { ok: true, document: { ...document, service, proxy, updates, browser }, changed }
 }

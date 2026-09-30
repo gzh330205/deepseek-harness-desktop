@@ -1,6 +1,6 @@
 {
   "schema": 1,
   "description": "Versions that ship inside the Electron shell. The shell, its bundled dsh runtime, its package manager, and the panel plugin are released as one unit, so these pins may only change together with electron/package.json.",
-  "dsh": "0.2.0-rc.1",
+  "dsh": "0.2.0-rc.2",
   "pnpm": "10.34.2"
 }

@@ -415,3 +415,44 @@ electron-builder 的安装器会**先运行旧版本的卸载器**再进入安�
 ### 发布后验证
 
 `latest` → 0.3.10 ✔；`isPrerelease: false` ✔；三资产齐全 ✔；经 latest 通道匿名下载 **197,291,699 字节**并验签通过 ✔；打包态冒烟：bundled 0.2.0-rc.1（shell 0.3.10）、界面 468 节点、panelReady ✔、标题栏自 asar 加载 ✔；asar 内容核对含 `dist/settings/index.html` 等全部 11 个文件 ✔。
+
+## 后续发布：v0.3.11（2026-09-30）——随包 DSH 升至 0.2.0-rc.2 + 侧边栏浏览器
+
+| 项 | 值 |
+|---|---|
+| 版本 | **0.3.11**（Latest） |
+| 安装包 | `DSH.Desktop_0.3.11_x64-setup.exe`，188.7 MiB（197,842,598 字节） |
+| 随包运行时 | dsh **0.2.0-rc.2**（12446 文件 / 360.8 MiB，关键文件 26 个；打包载荷校验 12447 个文件） |
+| pin 变更 | `electron/runtime-pin.json`：dsh 0.2.0-rc.1 → 0.2.0-rc.2（pnpm 10.34.2 不变） |
+
+### 为什么 DSH 升级必须连着壳一起发
+
+`runtime-pin.json` 的注释写明 shell / 随包 dsh / pnpm / 面板插件**作为一个整体发布**，而且
+`prepare-runtime.mjs` 还要校验随包原生插件的 V8 指纹白名单（本次通过：Electron 44.0.0 → V8
+`15.2.124.13-electron.0`，详见 README 硬约束 11）。所以升级顺序是：改 pin + 改壳版本 → 重跑
+`runtime:prepare` → **先在隔离实例上验证** → 构建 → 发版。
+
+### 升级前在隔离实例上的验证（41733，用 `DSH_DESKTOP_BUNDLED_RUNTIME` 指向新运行时）
+
+| 环节 | 结果 |
+|---|---|
+| 运行时清单校验 | 通过：dsh 0.2.0-rc.2，12446 个文件 |
+| 启动闸门 | 通过：`dsh 0.2.0-rc.2`，端口 41733 |
+| **rc.1 建的 profile** | 直接复用成功（用户升级时会走的同一条路径） |
+| 面板插件 | sessions 服务接入、内置技能、14 个原生工具、`/dsh-desktop-shell/v1/*` 路由全部就绪 |
+| 浏览器工具 | `navigate` 142 ms（页面加载并上屏）、`snapshot` 20 ms、遮罩成对显示/撤下 |
+| prepare 自身 | 安装 537 包 → 裁剪 13989 项 / 111.4 MiB（472.2 → 360.8 MiB）→ `dsh --version` 与 `web --help` 自证加载 → 随包 pnpm shim 可用 |
+
+### 侧边栏浏览器（本次一并进入安装版）
+
+桌面壳自己实现的浏览器，注册为 DSH 右侧栏的规范 tab 类型（不依赖 DSH 自带的
+`ui-sidebar-browser`，后者通过 overlay 关掉）。一个侧边栏 tab = 一个独立浏览器组件实例：各自的
+地址/历史/元素提取/设备模拟/遮罩/控制权；agent 通过 14 个工具操作，操作期间显示「助手正在操作」
+遮罩（跟 agent 的回合显示、回合结束自动撤下）。设计与全部实测记录见
+[sidebar-browser-integration.md](sidebar-browser-integration.md)。
+
+### 发布后验证
+
+`latest.json` → 0.3.11 ✔（版本/签名/URL 配套）；`isPrerelease: false`、`isLatest: true` ✔；三资产齐全
+（exe + sig + latest.json）✔；安装包经 latest 通道匿名 HEAD **200** ✔；签名自校验通过 ✔；打包载荷
+自证 **`dsh 0.2.0-rc.2（Electron 44.0.0）`、12447 个文件、关键文件 26 个** ✔。

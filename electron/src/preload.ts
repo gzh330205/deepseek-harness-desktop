@@ -116,4 +116,22 @@ if (isProductDocument()) {
   }
 
   contextBridge.exposeInMainWorld('__TAURI__', Object.freeze({ event: Object.freeze({ emit, listen }) }))
+
+  /**
+   * The sidebar browser's panel bridge.
+   *
+   * Deliberately one opaque `command` plus two subscriptions: the command names, their
+   * payloads and the geometry are validated in the main process (the panel is a renderer,
+   * and this bridge can move a native surface). Guests loaded into the browser view get no
+   * preload at all, so nothing here is reachable from a visited page — an element pick
+   * reaches this bridge only after the main process checked its nonce.
+   */
+  contextBridge.exposeInMainWorld('__DSH_DESKTOP_BROWSER__', Object.freeze({
+    command: (command: unknown): Promise<unknown> => ipcRenderer.invoke(IPC.browserCommand, command),
+    subscribe: (listener: (state: unknown) => void): (() => void) => subscribe(IPC.browserState, listener),
+    onPick: (listener: (pick: unknown) => void): (() => void) => subscribe(IPC.browserPick, listener),
+    onDownloads: (listener: (payload: unknown) => void): (() => void) => subscribe(IPC.browserDownloads, listener),
+    /** The shell asks the page to open the browser tab in DSH's right sidebar (client-side op). */
+    onOpenPane: (listener: (request: unknown) => void): (() => void) => subscribe(IPC.browserOpenPane, listener),
+  }))
 }
