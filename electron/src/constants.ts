@@ -69,6 +69,14 @@ export const DSH_ENTRY_ENV = 'DSH_DESKTOP_DSH_ENTRY'
 export const DSH_PLUGIN_PATH_ENV = 'DSH_DESKTOP_PLUGIN_PATH'
 /** Root of the runtime that ships inside the app (P0 spike S1). */
 export const DSH_BUNDLED_RUNTIME_ENV = 'DSH_DESKTOP_BUNDLED_RUNTIME'
+/**
+ * pnpm's JavaScript entry, for the bundled `pnpm.cmd` shim.
+ *
+ * The runtime is packed into the app ASAR, so the shim — which must itself be physical, because
+ * cmd.exe starts it — cannot reach pnpm by a relative path any more. The shell knows the exact
+ * entry (`bundledPnpmEntry()`), so it tells the shim instead of the shim guessing a layout.
+ */
+export const DSH_PNPM_ENTRY_ENV = 'DSH_DESKTOP_PNPM_ENTRY'
 /** Isolate all shell state; the official shell exposes the same escape hatch. */
 export const DSH_USER_DATA_ENV = 'DSH_DESKTOP_USER_DATA_DIR'
 /**

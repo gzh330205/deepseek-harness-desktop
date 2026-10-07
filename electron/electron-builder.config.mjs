@@ -18,7 +18,35 @@
  * never published — `scripts/release-electron.mjs` only knows the release channel.
  */
 
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { asarUnpackPatterns } from './scripts/asar-unpack.mjs'
+
 const debug = process.env.DSH_DESKTOP_CHANNEL === 'debug'
+
+/**
+ * The runtime goes **inside** the ASAR, and only the files that cannot be loaded from an archive
+ * are unpacked beside it.
+ *
+ * Why: the prepared runtime is ~12,400 files, and an installer pays per file, not per byte
+ * (measured on this machine: 12.4k files = 18.5 s, the same 360 MiB as one file = 0.2 s). Inside
+ * the ASAR the whole tree is one file on disk. The `physical` list in the manifest is produced by
+ * `prepare-runtime.mjs` (executables, native modules, shell scripts, plus a magic-byte sniff for
+ * extension-less binaries), and `verify-package.mjs` fails the build if any of it did not land in
+ * `app.asar.unpacked`.
+ */
+const runtimeRoot = join(dirname(fileURLToPath(import.meta.url)), 'runtime', 'dsh')
+const runtimeManifestPath = join(runtimeRoot, 'desktop-runtime.json')
+const physicalRuntimeFiles = existsSync(runtimeManifestPath)
+  ? JSON.parse(readFileSync(runtimeManifestPath, 'utf8')).physical ?? []
+  : []
+if (physicalRuntimeFiles.length === 0) {
+  // Never ship an ASAR-packed runtime with nothing unpacked: the `.node`/`.exe` files inside an
+  // archive are exactly what makes the app refuse to start.
+  throw new Error('electron-builder: runtime/dsh/desktop-runtime.json has no physical file list; run `pnpm runtime:prepare`')
+}
 
 export default {
   appId: debug ? 'ai.deepseek.dsh-desktop.debug' : 'ai.deepseek.dsh-desktop',
@@ -41,16 +69,21 @@ export default {
   files: [
     'dist/**/*',
     'package.json',
+    // The DSH runtime, packed into the ASAR (`resources/app.asar/dsh/**`). The second entry is the
+    // same workaround `extraResources` needed: electron-builder excludes a source directory's root
+    // `node_modules`, and the exit code is still 0 when it does — `verify-package.mjs` catches it.
+    { from: 'runtime/dsh', to: 'dsh', filter: ['**/*'] },
+    { from: 'runtime/dsh/node_modules', to: 'dsh/node_modules', filter: ['**/*'] },
   ],
+  // Everything in the manifest's `physical` list, escaped for builder's glob matcher.
+  //
+  // The prefix is the **source** path (`runtime/dsh/...`), not the destination it lands at inside
+  // the archive (`dsh/...`): builder feeds the pattern the original file path and applies `to:` only
+  // when writing the archive. Getting this wrong is silent — the runtime is packed, nothing is
+  // unpacked, and the app then refuses to start — so `verify-package.mjs` asserts the physical half
+  // really exists under `app.asar.unpacked`.
+  asarUnpack: asarUnpackPatterns(physicalRuntimeFiles, 'runtime/dsh'),
   extraResources: [
-    // The DSH runtime the app ships with: dsh's production dependency tree plus
-    // desktop-runtime.json. Outside the asar so native modules load normally.
-    { from: 'runtime/dsh', to: 'runtime/dsh' },
-    // electron-builder excludes a source directory's root `node_modules`; without this
-    // second entry only desktop-runtime.json is copied and the packaged app has no
-    // runtime at all. The exit code is still 0, so this is silent — verify the file
-    // count after packaging (scripts/verify-package.mjs does).
-    { from: 'runtime/dsh/node_modules', to: 'runtime/dsh/node_modules', filter: ['**/*'] },
     // The DSH panel plugin travels with the installer and is injected via --patch.
     { from: '../src-tauri/resources/dsh-desktop-shell', to: 'dsh-desktop-shell' },
     // Tray and window icons (tray.ts reads these from process.resourcesPath).

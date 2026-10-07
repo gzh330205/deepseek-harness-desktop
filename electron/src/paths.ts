@@ -90,20 +90,61 @@ export function pluginEntryPath(): string | undefined {
   return existsSync(development) ? development : undefined
 }
 
-/** Root of the runtime that ships with the app, when one is present. */
+/**
+ * Root of the runtime that ships with the app, when one is present.
+ *
+ * Packaged, this is the **ASAR** (`resources/app.asar/dsh`): the whole runtime is packed into one
+ * file so the installer does not have to create ~12,400 files (measured: 18.5 s versus 0.2 s for
+ * the same bytes as a single file). Electron's `fs` reads through it, and the files that cannot be
+ * loaded from an archive — native modules, executables, shell scripts — sit physically in
+ * `resources/app.asar.unpacked/dsh`. Development points this at a prepared tree instead.
+ */
 export function bundledRuntimeRoot(): string | undefined {
   const override = process.env[DSH_BUNDLED_RUNTIME_ENV]
   if (override !== undefined && override !== '') return existsSync(override) ? resolve(override) : undefined
-  const packaged = join(process.resourcesPath, 'runtime', 'dsh')
+  const packaged = join(app.getAppPath(), 'dsh')
   return existsSync(packaged) ? packaged : undefined
 }
 
-/** Directory of the bundled `pnpm`/`node` shims, when the runtime ships them. */
+/**
+ * Candidate paths of something that lives beside the runtime tree.
+ *
+ * Two shapes: a prepared directory during development (`DSH_DESKTOP_BUNDLED_RUNTIME`), and the
+ * ASAR's unpacked twin when packaged — the physical half of the runtime is under
+ * `resources/app.asar.unpacked/dsh`, not `resources/dsh`.
+ */
+function bundledRuntimeSibling(relativePath: string): string[] {
+  const candidates: string[] = []
+  const override = process.env[DSH_BUNDLED_RUNTIME_ENV]
+  if (override !== undefined && override !== '') candidates.push(join(resolve(override), relativePath))
+  candidates.push(join(process.resourcesPath, 'app.asar.unpacked', 'dsh', relativePath))
+  return candidates
+}
+
+/**
+ * Directory of the bundled `pnpm`/`node` shims, when the runtime ships them.
+ *
+ * These must stay physical: `cmd.exe` starts them and a shell cannot read inside an ASAR.
+ */
 export function runtimeBinDir(): string | undefined {
-  const runtime = bundledRuntimeRoot()
-  if (runtime === undefined) return undefined
-  const bin = join(runtime, 'bin')
-  return existsSync(bin) ? bin : undefined
+  for (const candidate of bundledRuntimeSibling('bin')) {
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
+/**
+ * pnpm's JavaScript entry, run on the app's own binary in Node mode.
+ *
+ * `dsh plugin …` forwards to `pnpm` on PATH (our shim), and profile seeding installs plugins with
+ * it, so a runtime without this cannot manage plugins at all.
+ */
+export function bundledPnpmEntry(): string | undefined {
+  const relative = join('node_modules', 'pnpm', 'bin', 'pnpm.cjs')
+  for (const candidate of bundledRuntimeSibling(relative)) {
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
 }
 
 /**

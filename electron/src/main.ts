@@ -77,7 +77,7 @@ import {
 import { blake2b512Chunked } from './blake2b.ts'
 import { verifyMinisign } from './minisign.ts'
 import { PanelBridge, checkSettingsRoundTrip, describeTasks } from './panel-bridge.ts'
-import { applyUserDataOverride, bridgeDir, bundledRuntimeRoot, harnessHome, resolveDshEntry, runtimeBinDir, toolRegistrationPath } from './paths.ts'
+import { applyUserDataOverride, bridgeDir, bundledPnpmEntry, bundledRuntimeRoot, harnessHome, resolveDshEntry, runtimeBinDir, toolRegistrationPath } from './paths.ts'
 import {
   ensureDesktopProfile,
   harnessHomeFrom,
@@ -1504,9 +1504,7 @@ async function boot(): Promise<void> {
   const binDir = runtimeBinDir()
   // pnpm's JavaScript entry: run it with our own binary rather than the `.cmd` shim, so
   // an install directory containing spaces cannot break the command line.
-  const pnpmEntry = bundled === undefined
-    ? undefined
-    : join(bundled, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
+  const pnpmEntry = bundled === undefined ? undefined : bundledPnpmEntry()
   if (bundled !== undefined) {
     const verification = verifyRuntime({
       root: bundled,
@@ -1618,6 +1616,8 @@ async function boot(): Promise<void> {
       ? channelSettings.profileName
       : process.env[PROFILE_ENV] as string,
     ...binDir === undefined ? {} : { runtimeBinDir: binDir },
+    // The `pnpm.cmd` shim cannot reach pnpm by a relative path once the runtime is inside the ASAR.
+    ...pnpmEntry === undefined ? {} : { pnpmEntry },
     ...agentBridge === undefined ? {} : { agentMcp: { url: agentBridge.url, token: agentBridge.token } },
     // Which surface publishes the tools is decided in `startBrowserTools()` (before this).
     // Native mode hands the plugin the direct call endpoint; MCP mode leaves the overlay row.

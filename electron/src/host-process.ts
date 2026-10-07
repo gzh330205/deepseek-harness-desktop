@@ -19,6 +19,7 @@ import { delimiter, dirname } from 'node:path'
 import {
   DSH_BRIDGE_DIR_ENV,
   DSH_HOME_ENV,
+  DSH_PNPM_ENTRY_ENV,
   HOST_EXIT_TIMEOUT_MS,
   LOOPBACK,
   STARTUP_TIMEOUT_MS,
@@ -53,6 +54,14 @@ export interface HostOptions {
   readonly profileName: string
   /** Directory holding the bundled `pnpm`/`node` shims, prepended to PATH when present. */
   readonly runtimeBinDir?: string
+  /**
+   * pnpm's JavaScript entry, handed to the `pnpm.cmd` shim through the environment.
+   *
+   * The runtime is packed into the app ASAR, so a shim cannot find pnpm by a relative path: the
+   * shim is a real file (`app.asar.unpacked/dsh/bin`), while pnpm's JS is inside the archive. The
+   * shell resolves the entry once and passes it down.
+   */
+  readonly pnpmEntry?: string
   /** Browser-tool MCP endpoint the overlay should point DSH's MCP client at. */
   readonly agentMcp?: AgentMcpEndpoint
   /** How the tool catalog is published this launch: native tools, or the MCP row. */
@@ -116,6 +125,8 @@ export class DshHostProcess {
           PATH: `${binDir}${delimiter}${process.env.PATH ?? process.env.Path ?? ''}`,
           DSH_DESKTOP_NODE_EXECUTABLE: process.execPath,
         },
+        // The shim cannot resolve pnpm by a relative path when the runtime lives in the ASAR.
+        ...this.options.pnpmEntry === undefined ? {} : { [DSH_PNPM_ENTRY_ENV]: this.options.pnpmEntry },
       }),
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],

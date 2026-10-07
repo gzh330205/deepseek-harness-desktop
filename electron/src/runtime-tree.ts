@@ -29,6 +29,13 @@ export interface RuntimeManifest {
   readonly bytes: number
   readonly listDigest: string
   readonly critical: Readonly<Record<string, string>>
+  /**
+   * Files that must stay outside `app.asar` (executables, native modules, shell scripts).
+   *
+   * Absent in manifests written before the runtime moved into the ASAR; the packaged app cannot
+   * start without them being unpacked, so `scripts/verify-package.mjs` asserts every entry.
+   */
+  readonly physical?: readonly string[]
 }
 
 export type RuntimeVerification =

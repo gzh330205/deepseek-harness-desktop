@@ -2,15 +2,21 @@
 /**
  * Verify a packaged app directory actually contains the runtime it claims.
  *
- * electron-builder excludes a source directory's root `node_modules`, so an
- * `extraResources` entry pointing at `runtime/dsh` copies only the manifest and still
- * exits 0 — the app then silently falls back to a system dsh. That failure was measured,
- * not imagined, so packaging ends with this check.
+ * The runtime now lives **inside** `resources/app.asar` (one file on disk instead of ~12,400, which
+ * is what makes installation fast) with the files that cannot be loaded from an archive in
+ * `resources/app.asar.unpacked/dsh`. Two failures this guards against, both of which used to be
+ * silent:
+ *
+ *   1. the tree not being packed at all — electron-builder excludes a source directory's root
+ *      `node_modules`, and still exits 0, so the app would fall back to a system dsh;
+ *   2. a file that must be physical staying inside the archive — `.node`/`.exe` cannot be loaded
+ *      from an ASAR, so the app refuses to start ("随包运行时文件损坏或不完整").
  *
  * Usage: node scripts/verify-package.mjs [--dir <unpackedDir>]
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,50 +37,91 @@ function fail(message) {
 const sourceManifestPath = join(root, 'runtime', 'dsh', 'desktop-runtime.json')
 if (!existsSync(sourceManifestPath)) fail('缺少 runtime/dsh/desktop-runtime.json，先运行 prepare-runtime.mjs')
 const expected = JSON.parse(readFileSync(sourceManifestPath, 'utf8'))
+if (!Array.isArray(expected.physical) || expected.physical.length === 0) {
+  fail('运行时的 desktop-runtime.json 里没有 physical 清单（先重新运行 prepare-runtime.mjs）')
+}
 
-const packagedRuntime = join(resources, 'runtime', 'dsh')
-const packagedManifestPath = join(packagedRuntime, 'desktop-runtime.json')
-if (!existsSync(packagedManifestPath)) fail(`打包目录里没有随包运行时：${packagedRuntime}`)
-const packaged = JSON.parse(readFileSync(packagedManifestPath, 'utf8'))
+const asarPath = join(resources, 'app.asar')
+if (!existsSync(asarPath)) fail('缺少 app.asar')
+const unpackedRoot = `${asarPath}.unpacked`
+if (!existsSync(unpackedRoot)) fail(`缺少 ${unpackedRoot}（asarUnpack 未生效）`)
+
+/** The ASAR reader electron-builder itself uses; resolved through it, since pnpm keeps
+ * `app-builder-lib` out of this package's own `node_modules`. */
+const { readAsar } = createRequire(createRequire(import.meta.url).resolve('electron-builder/package.json'))(
+  'app-builder-lib/out/asar/asar.js',
+)
+const archive = await readAsar(asarPath)
+
+const manifestInsideAsar = join('dsh', 'desktop-runtime.json')
+let packaged
+try {
+  packaged = JSON.parse((await archive.readFile(manifestInsideAsar)).toString('utf8'))
+} catch (error) {
+  fail(`app.asar 里没有随包运行时清单 ${manifestInsideAsar}：${String(error)}`)
+}
 if (packaged.dsh !== expected.dsh || packaged.listDigest !== expected.listDigest) {
   fail(`随包运行时与源不一致（dsh ${String(packaged.dsh)} vs ${String(expected.dsh)}）`)
 }
 
-let files = 0
-const walk = (directory) => {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (entry.isDirectory()) walk(join(directory, entry.name))
-    else if (entry.isFile()) files += 1
+// Walk the archive the same way the runtime verification does: every file under `dsh/`.
+const archived = []
+const collect = (node, path) => {
+  if (node.files !== undefined) {
+    for (const [name, child] of Object.entries(node.files)) collect(child, `${path}/${name}`)
+    return
   }
+  if (node.link !== undefined) fail(`app.asar 里出现链接：${path}`)
+  archived.push({ path, unpacked: node.unpacked === true })
 }
-walk(packagedRuntime)
-// The manifest itself is written after the file list was taken.
-if (files !== packaged.files + 1) {
-  fail(`随包运行时文件数不符：打包目录 ${String(files)} 个，清单声明 ${String(packaged.files)} + 1。检查 electron-builder 的 extraResources 是否漏了 node_modules 条目。`)
+collect(archive.getFile('dsh', false), 'dsh')
+if (archived.length !== packaged.files + 1) {
+  fail(`随包运行时文件数不符：app.asar 里 ${String(archived.length)} 个，清单声明 ${String(packaged.files)} + 1（清单自身）`)
 }
 
-// A foreign binary in the integrity set is how a working install was refused once: the
-// file shipped, did not survive installation, and the shell refused to start over a file
-// it would never load. Fail the build instead of shipping that again.
 for (const relativePath of Object.keys(packaged.critical)) {
   if (isForeignPlatformPath(relativePath, packaged.platform, packaged.arch)) {
     fail(`关键文件表里出现了其他平台/架构的文件：${relativePath}（应被 prepare-runtime 裁掉）`)
   }
+  if (!archived.some(entry => entry.path === `dsh/${relativePath}`)) {
+    fail(`app.asar 里缺少关键文件：dsh/${relativePath}`)
+  }
+}
+if (!archived.some(entry => entry.path === `dsh/${packaged.entry}`)) {
+  fail(`app.asar 里缺少入口：dsh/${packaged.entry}`)
 }
 
-for (const relativePath of Object.keys(packaged.critical)) {
-  const path = join(packagedRuntime, relativePath)
-  if (!existsSync(path)) fail(`随包运行时缺少关键文件：${relativePath}`)
-  if (statSync(path).size === 0) fail(`随包运行时关键文件为空：${relativePath}`)
+// The real check: everything the manifest calls physical must be a physical file next to the ASAR.
+// A missing entry here is not a slow install, it is an app that will not start.
+const missing = []
+for (const relativePath of packaged.physical) {
+  const physical = join(unpackedRoot, 'dsh', relativePath)
+  if (!existsSync(physical)) {
+    missing.push(relativePath)
+    continue
+  }
+  if (statSync(physical).size === 0) missing.push(`${relativePath}（空文件）`)
 }
-if (!existsSync(join(packagedRuntime, packaged.entry))) fail(`随包运行时缺少入口：${packaged.entry}`)
+if (missing.length > 0) {
+  fail(`asarUnpack 漏了 ${String(missing.length)} 个必须物理落盘的运行时文件，例如：${missing.slice(0, 5).join('、')}`)
+}
+const wronglyPacked = archived.filter(entry => entry.unpacked && !entry.path.startsWith('dsh/'))
+if (wronglyPacked.length > 0) fail(`意外的 unpacked 条目：${wronglyPacked[0].path}`)
 
 for (const required of ['dsh-desktop-shell/index.js', 'dsh-desktop-shell/client.js']) {
   if (!existsSync(join(resources, required))) fail(`缺少面板插件资源：resources/${required}`)
 }
-if (!existsSync(join(resources, 'app.asar'))) fail('缺少 app.asar')
+
+// The plugin-management path: the shims must be physical, and pnpm's JS must be readable through
+// the archive they point into (the shell passes its path down as DSH_DESKTOP_PNPM_ENTRY).
+for (const shim of ['pnpm.cmd', 'node.cmd']) {
+  if (!existsSync(join(unpackedRoot, 'dsh', 'bin', shim))) fail(`缺少随包 shim：app.asar.unpacked/dsh/bin/${shim}`)
+}
+if (!archived.some(entry => entry.path === 'dsh/node_modules/pnpm/bin/pnpm.cjs')) {
+  fail('app.asar 里缺少 pnpm 入口 node_modules/pnpm/bin/pnpm.cjs')
+}
 
 process.stdout.write(
-  `打包校验通过：dsh ${packaged.dsh}（Electron ${packaged.electron}）、${String(files)} 个文件、`
-  + `关键文件 ${String(Object.keys(packaged.critical).length)} 个\n`,
+  `打包校验通过：dsh ${packaged.dsh}（Electron ${packaged.electron}）、asar 内 ${String(archived.length)} 个文件、`
+  + `关键文件 ${String(Object.keys(packaged.critical).length)} 个、物理落盘 ${String(packaged.physical.length)} 个\n`,
 )

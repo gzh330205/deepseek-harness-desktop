@@ -13,15 +13,16 @@
  *      per-file hashes for the files that matter (the entry point and every native
  *      module).
  *
- * Output: `electron/runtime/dsh` (build artifact, git-ignored), which electron-builder
- * copies to `resources/runtime/dsh`.
+ * Output: `electron/runtime/dsh` (build artifact, git-ignored). electron-builder packs this tree
+ * into the application ASAR (`resources/app.asar/dsh/**`, one file on disk instead of 12k), and
+ * unpacks only the `physical` list from the manifest — see `asar-unpack.mjs`.
  *
  * Usage: node scripts/prepare-runtime.mjs [--force] [--keep-staging]
  */
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isForeignPlatformPath } from './runtime-policy.mjs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -158,7 +159,37 @@ const PRUNE_FILE = [
   /\.d\.(ts|mts|cts)$/u,      // declarations
   /\.map$/u,                  // source maps
   /\.tsbuildinfo$/u,
+  /\.pdb$/u,                  // debug symbols: never loaded, 10 MiB of node-pty's conpty
+  /\.lib$/u,                  // link-time import library (koffi)
+  /\.exp$/u,
+  /\.ilk$/u,
+  /\.gypi$/u,                 // node-gyp build configuration
+  /\.vcxproj(\.filters)?$/u,
+  /^binding\.sln$/u,
 ]
+/** Extensions that are executed, dlopen'd, or read by a shell: they cannot live in an ASAR. */
+const PHYSICAL_EXTENSIONS = ['.exe', '.dll', '.node', '.com', '.cmd', '.bat', '.ps1', '.sh', '.so', '.dylib']
+/**
+ * A binary with no extension (some projects ship one): sniff the magic bytes.
+ *
+ * `MZ` (PE), `\x7fELF`, and Mach-O's 0xFEEDFACE/0xFEEDFACF/0xCAFEBABE.
+ */
+function looksExecutable(path) {
+  try {
+    const handle = openSync(path, 'r')
+    const buffer = Buffer.alloc(4)
+    const read = readSync(handle, buffer, 0, 4, 0)
+    closeSync(handle)
+    if (read < 4) return false
+    const [a, b, c, d] = buffer
+    if (a === 0x4d && b === 0x5a) return true                                        // PE
+    if (a === 0x7f && b === 0x45 && c === 0x4c && d === 0x46) return true             // ELF
+    const magic = buffer.readUInt32BE(0)
+    return magic === 0xfeedface || magic === 0xfeedfacf || magic === 0xcafebabe
+  } catch {
+    return false
+  }
+}
 /** Other platforms' and architectures' binaries: never loadable here. */
 const foreign = (relativePath) => isForeignPlatformPath(relativePath, targetPlatform, targetArch)
 
@@ -223,7 +254,11 @@ mkdirSync(shimDir, { recursive: true })
 writeFileSync(join(shimDir, 'pnpm.cmd'), [
   '@echo off',
   'rem Bundled pnpm: runs on the app\'s own Electron in Node mode.',
-  'if defined DSH_DESKTOP_NODE_EXECUTABLE (',
+  'rem The shell passes the exact entry: once the runtime is packed into app.asar, pnpm\'s JS is',
+  'rem inside the archive while this shim is a real file beside it, so a relative path cannot work.',
+  'if defined DSH_DESKTOP_PNPM_ENTRY (',
+  '  "%DSH_DESKTOP_NODE_EXECUTABLE%" "%DSH_DESKTOP_PNPM_ENTRY%" %*',
+  ') else if defined DSH_DESKTOP_NODE_EXECUTABLE (',
   '  "%DSH_DESKTOP_NODE_EXECUTABLE%" "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
   ') else (',
   '  node "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
@@ -243,13 +278,24 @@ writeFileSync(join(shimDir, 'node.cmd'), [
 
 // Prove the shim resolves before packaging: a broken shim only surfaces when a user tries
 // to install a plugin.
+const pnpmEntryPath = join(output, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
+const shimEnv = { ...process.env, DSH_DESKTOP_NODE_EXECUTABLE: electronBinary, ELECTRON_RUN_AS_NODE: '1' }
 const shimCheck = execFileSync(`"${join(shimDir, 'pnpm.cmd')}" --version`, {
-  env: { ...process.env, DSH_DESKTOP_NODE_EXECUTABLE: electronBinary, ELECTRON_RUN_AS_NODE: '1' },
+  env: shimEnv,
   windowsHide: true,
   shell: true,
 }).toString().trim()
 if (!/^\d+\.\d+\.\d+/u.test(shimCheck)) fail(`随包 pnpm shim 不可用，输出：${shimCheck}`)
-log(`    ✔ 随包 pnpm shim 可用（pnpm ${shimCheck}）`)
+log(`    ✔ 随包 pnpm shim 可用（相对路径分支，pnpm ${shimCheck}）`)
+// The packaged app cannot use the relative path (pnpm ships inside app.asar, the shim outside it),
+// so the env-var branch is the one that ships: exercise it here rather than in production.
+const shimCheckViaEnv = execFileSync(`"${join(shimDir, 'pnpm.cmd')}" --version`, {
+  env: { ...shimEnv, DSH_DESKTOP_PNPM_ENTRY: pnpmEntryPath },
+  windowsHide: true,
+  shell: true,
+}).toString().trim()
+if (!/^\d+\.\d+\.\d+/u.test(shimCheckViaEnv)) fail(`随包 pnpm shim 的 DSH_DESKTOP_PNPM_ENTRY 分支不可用，输出：${shimCheckViaEnv}`)
+log(`    ✔ 随包 pnpm shim 可用（DSH_DESKTOP_PNPM_ENTRY 分支，pnpm ${shimCheckViaEnv}）`)
 
 const entryRelative = 'node_modules/@deepseek-ai/dsh/lib/bin.js'
 const entryPath = join(output, entryRelative)
@@ -288,6 +334,18 @@ for (const file of files) {
   }
 }
 
+// What electron-builder must keep outside `app.asar`. Extension first (the common case), then a
+// magic-byte sniff for the rare extension-less binary — the sniff only runs where the extension
+// says nothing, so it costs ~600 four-byte reads.
+const physical = files.filter((file) => {
+  if (foreign(file)) return false
+  const lower = file.toLowerCase()
+  if (PHYSICAL_EXTENSIONS.some(extension => lower.endsWith(extension))) return true
+  const name = file.slice(file.lastIndexOf('/') + 1)
+  if (name.includes('.')) return false
+  return looksExecutable(join(output, file))
+})
+
 const manifest = {
   schema: 1,
   shell: shellManifest.version,
@@ -303,10 +361,17 @@ const manifest = {
   bytes: measure(output),
   listDigest,
   critical,
+  // Files that must stay physical: the whole tree is packed into `app.asar` (12.4k small files
+  // would otherwise have to be written one by one at install time), and only these cannot be
+  // loaded from inside an archive — Electron runs/loads them through the filesystem, and a
+  // `.cmd` cannot be read by cmd.exe. `electron-builder.config.mjs` turns this list into
+  // `asarUnpack`, and `verify-package.mjs` asserts every entry really landed in
+  // `app.asar.unpacked` (a missing pattern is a startup failure, not a slow install).
+  physical,
 }
 writeFileSync(join(output, 'desktop-runtime.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 
-log(`==> 运行时清单已写出：${String(files.length)} 个文件 / ${mib(manifest.bytes)}，关键文件 ${String(Object.keys(critical).length)} 个`)
+log(`==> 运行时清单已写出：${String(files.length)} 个文件 / ${mib(manifest.bytes)}，关键文件 ${String(Object.keys(critical).length)} 个，需物理落盘 ${String(physical.length)} 个`)
 log(`    entry sha256 ${critical[entryRelative]?.slice(0, 16) ?? '(缺失)'}…`)
 // Staging is kept as a cache: a repeat build with the same pin skips the install.
 if (keepStaging === false && process.argv.includes('--clean-staging')) {

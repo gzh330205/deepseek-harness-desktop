@@ -30,6 +30,9 @@ function nodeModulesDir() {
     // .../node_modules/@deepseek-ai/dsh/lib/bin.js → .../node_modules
     candidates.push(resolve(dirname(entry), '..', '..', '..', '..'))
   }
+  // Installed builds keep the runtime inside the app ASAR, with the physical half beside it.
+  candidates.push('D:\\Program Files\\DSH Desktop\\resources\\app.asar.unpacked\\dsh\\node_modules')
+  candidates.push('D:\\Program Files\\DSH Desktop\\resources\\app.asar\\dsh\\node_modules')
   candidates.push('D:\\Program Files\\DSH Desktop\\resources\\runtime\\dsh\\node_modules')
   for (const candidate of candidates) {
     if (existsSync(join(candidate, '@deepseek-ai', 'dsh-skill', 'lib', 'index.js'))) return candidate

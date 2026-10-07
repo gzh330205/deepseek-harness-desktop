@@ -6,7 +6,9 @@
 
 ## 0. 结论
 
-**零环境安装达成。** 打包产物在 `PATH` 只剩 `C:\Windows\System32;C:\Windows`（没有系统 dsh、没有 Node、没有 git）时仍能完整启动 DSH 界面，运行时来自应用自己的 `resources/runtime/dsh`。
+**零环境安装达成。** 打包产物在 `PATH` 只剩 `C:\Windows\System32;C:\Windows`（没有系统 dsh、没有 Node、没有 git）时仍能完整启动 DSH 界面，运行时来自应用自己的随包运行时。
+
+> **2026-09-30 更新**：运行时已从 `resources/runtime/dsh/**`（12,439 个松散文件）改为**打进 `resources/app.asar`**（1 个文件）+ 58 个必须物理落盘的文件，安装时创建的文件数从 **12,573 降到 84**。设计与实测见 §10；下表的路径按当时（loose）记录。
 
 | 指标 | 数值 |
 |---|---|
@@ -286,3 +288,62 @@ npm test           → 46/46 通过（runtime-tree 7 项 + profile 7 项）
 - 启动完整性校验**保留严格**：它这次做对了事——宁可拒绝启动并指名文件，也不肯用一个自己无法担保的运行时。它把一个可能表现为「莫名其妙崩溃」的问题变成了一句可读的提示。
 - 但**「关键文件」的范围必须等于「这台机器上真的会执行的文件」**，否则校验会变成误报源。
 - 教训写进了 `AGENTS`/README：**只在开发路径上验过的路径/命令行处理，等于没验**。
+
+## 10. 后续优化：运行时进 ASAR —— 安装从 12,573 个文件降到 84 个（2026-09-30）
+
+用户实报「安装包安装很慢」。查下来**慢的不是 189 MB，而是 12,500 个小文件**：
+
+| 实测（本机 D 盘，16 核） | 耗时 |
+|---|---|
+| 复制整个随包运行时（12,447 个文件 / 360 MiB） | **18.5 s** |
+| 复制**同样字节数**的单个大文件 | **0.2 s** |
+| 7z 多线程解包同一棵树 | 12.3 s / 10.6 s |
+| 7z 单线程解包 | 12.3 s |
+
+瓶颈在「创建文件」本身（每文件一次的 MFT 更新 + Defender 实时扫描），所以**多线程解包也救不了**（12.3 vs 12.3）。文件数的来源是 npm 的粒度：一个运行时 = **803 个包 / 8,424 个 JS 文件**，其中 **73% 的文件小于 4 KB、合计只有 10 MiB**；体积则来自另外 72 个原生大文件（287.8 MiB）。**体积和文件数是两件不相干的事**。
+
+修法照官方桌面端（`deepseek-harness/apps/desktop`）：**把整个运行时打进 `app.asar`，只把不能从归档里加载的文件 unpack 到旁边**（官方 `asar: true` + `files` 里挂 `dsh` 树 + `asarUnpack`，并在 `src/main.ts` 里直接用 `join(app.getAppPath(), 'dsh')`）。
+
+### 10.1 改了什么
+
+| 位置 | 之前 | 现在 |
+|---|---|---|
+| 运行时落点 | `resources/runtime/dsh/**`（12,439 个松散文件） | `resources/app.asar/**`（**1 个文件**）+ `resources/app.asar.unpacked/dsh/**`（58 个） |
+| 谁决定必须物理 | 无 | `prepare-runtime.mjs` 写出清单的 `physical`：按扩展名（`.exe/.dll/.node/.com/.cmd/.bat/.ps1/.sh/.so/.dylib`）+ 对无扩展名文件做魔数嗅探（PE/ELF/Mach-O） |
+| `asarUnpack` | — | `scripts/asar-unpack.mjs` 把 `physical` 转成 glob，**前缀必须是源路径 `runtime/dsh/...`**：builder 用源路径匹配，`to:` 只决定写进归档的位置。写错是**静默失效**（运行时照旧全打进 asar、一个都不 unpack） |
+| `pnpm.cmd` shim | 相对路径 `..\node_modules\pnpm\bin\pnpm.cjs` | 优先用壳注入的 `DSH_DESKTOP_PNPM_ENTRY`：shim 必须是真实文件（cmd.exe 读不了归档），而 pnpm 的 JS 在归档里，相对路径已不可达 |
+| 裁剪 | 声明 / source map / 测试 / 其他平台 | 再加 `.pdb`、`.lib`、`.exp`、`.ilk`、`.gypi`、`.vcxproj*`、`binding.sln`（原生模块的构建与调试产物，永不加载）：−7 项 / −10.2 MiB |
+
+### 10.2 实测结果
+
+| 指标 | 改造前 | 改造后 |
+|---|---|---|
+| 安装时要创建的文件 | **12,573** | **84**（asar 本体 + 58 个物理文件 + Electron 自己的 26 个） |
+| 其中运行时 | 12,547 | 58 |
+| `app.asar` 本体 | — | 133.8 MiB |
+| 解包后应用目录 | 679 MiB | 675 MiB |
+| NSIS 安装包体积 | 188.2 MiB（0.3.10） | **178.3 MiB**（0.3.11，asar 比几千个松散文件更好压） |
+
+**决定性的前后对比**（同一台机器、同样 675/679 MiB 载荷、同一个工具；用 7-Zip 把两个安装包的载荷各自解开，**不做安装、不动注册表**）：
+
+| 安装包 | 解开并写出全部文件 | 文件数 |
+|---|---|---|
+| `DSH.Desktop_0.3.10`（松散运行时） | **13.4 s** | 12,572 |
+| `DSH.Desktop_0.3.11`（运行时进 asar） | **1.8 s** | 85 |
+
+**同一份载荷，快 7.4 倍**。而 NSIS 自己是单线程、且每文件开销比 7za 更重，所以真实安装的差距只会更大——注意这个数字是「解压之后的落盘阶段」，NSIS 块的解压成本两边一样，没有算在差值里。
+
+### 10.3 验证（全部是打包态，不是开发态）
+
+1. `verify-package.mjs`：从 `app.asar` 里读清单、走 12,440 个归档条目，并**逐个断言 58 个 `physical` 真的落在 `app.asar.unpacked`**——漏一个不是慢，是启动即失败。
+2. `prepare-runtime.mjs` 自证：裁剪后 `dsh --version` / `web --help` 正常，pnpm shim 的**两个分支**（相对路径 + `DSH_DESKTOP_PNPM_ENTRY`）都验过。
+3. `scripts/smoke.mjs cookie --isolate-home --packaged`：`ok: true`，入口是 `...\app.asar\dsh\node_modules\@deepseek-ai\dsh\lib\bin.js`，日志 `随包运行时校验通过：dsh 0.2.0-rc.2，12439 个文件`，`panelReady: true`。
+4. 真机跑打包产物（隔离 userData/DSH home，端口 41735）：`navigate` 1346 ms 打开 example.com、`snapshot` 22 ms、遮罩成对出现与撤下；14 个原生工具 / 路由 / 内置技能全部注册。
+5. **pnpm 从归档里真的能跑**：用打包后的 shim + `DSH_DESKTOP_PNPM_ENTRY` 指向 `app.asar\dsh\node_modules\pnpm\bin\pnpm.cjs` → `pnpm --version` = 10.34.2、`pnpm add is-number` 1.7 s 成功。这一条同时证明 **Electron 会把 asar 内标记为 unpacked 的可执行文件重定向到 `app.asar.unpacked`**（pnpm 会 spawn `dist/vendor/fastlist-x64.exe`）。
+6. 单测 257 项 / 250 通过（7 个既有 blake2b 失败）、`tsc --noEmit` 干净。
+7. 安装包本身也验证过：`electron-builder --win nsis` 出的 0.3.11 包能正常产出（178.3 MiB），其载荷解开后就是第 10.2 节那张对比表。
+
+### 10.4 还没做
+
+- 官方 NSIS 层还有三件事（`windows-directory-installer.mjs`）：目标目录相同时**跳过旧版卸载**、先解到暂存目录再**目录改名上位**、自研带进度的解包插件。asar 之后载荷只剩 1 个大文件 + 58 个小文件，这三件事的收益已经很小。
+- 更新仍是整包下载；差分更新是另一件事（官方有 `installed-update-*` 一套）。
