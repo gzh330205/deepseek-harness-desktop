@@ -50,6 +50,30 @@ export const MAX_DEVICE_WIDTH = 2560
 export const MIN_DEVICE_HEIGHT = 320
 export const MAX_DEVICE_HEIGHT = 2560
 
+/**
+ * Strip Electron's identity from the browser's User-Agent.
+ *
+ * Electron appends the app's product name and its own version to the Chrome UA:
+ *
+ *   Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)
+ *   DSHDesktop/0.3.12 Chrome/152.0.7977.54 Electron/44.0.0 Safari/537.36
+ *
+ * Risk-control and anti-bot layers read `Electron/…` — or any product token they do not know — as
+ * "not a real browser" and can refuse to keep the resulting session, which the user sees as a login
+ * that bounces straight back to the login page. We therefore send what Chrome itself sends:
+ * `Chrome/<major>.0.0.0` (Chrome reduces the last three components) with Electron's platform tokens
+ * untouched, so Windows/macOS/Linux and x64/arm64 still look right.
+ *
+ * @param electronUserAgent - `webContents.getUserAgent()` of a freshly created view.
+ * @returns A Chrome-shaped UA, or the input unchanged when it cannot be parsed.
+ */
+export function chromeLikeUserAgent(electronUserAgent: string): string {
+  const prefix = /^(Mozilla\/5\.0 \([^)]*\) AppleWebKit\/[\d.]+ \(KHTML, like Gecko\))/u.exec(electronUserAgent)?.[1]
+  const major = /Chrome\/(\d+)/u.exec(electronUserAgent)?.[1]
+  if (prefix === undefined || major === undefined) return electronUserAgent
+  return `${prefix} Chrome/${major}.0.0.0 Safari/537.36`
+}
+
 /** Size a custom viewport starts from when the panel has no size yet. */
 export const FALLBACK_DEVICE_SIZE = { width: 1280, height: 800 } as const
 

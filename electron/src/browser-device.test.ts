@@ -18,6 +18,7 @@ import {
   MAX_DEVICE_WIDTH,
   MIN_DEVICE_WIDTH,
   clampDeviceSize,
+  chromeLikeUserAgent,
   effectiveDeviceSize,
   isDevicePreset,
   presetSize,
@@ -41,6 +42,28 @@ test('preset detection rejects anything else', () => {
   assert.equal(isDevicePreset('ipad'), false)
   assert.equal(isDevicePreset(undefined), false)
   assert.equal(isDevicePreset(3), false)
+})
+
+test('the browser sends a Chrome User-Agent, without Electron in it', () => {
+  // The real string Electron 44 hands us for this app (measured with `httpbin.org/user-agent`).
+  const electronUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+    + 'DSHDesktop/0.3.12 Chrome/152.0.7977.54 Electron/44.0.0 Safari/537.36'
+  assert.equal(
+    chromeLikeUserAgent(electronUa),
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+      + 'Chrome/152.0.0.0 Safari/537.36',
+  )
+  // Risk control reads these tokens as "not a real browser".
+  assert.equal(chromeLikeUserAgent(electronUa).includes('Electron'), false)
+  assert.equal(chromeLikeUserAgent(electronUa).includes('DSHDesktop'), false)
+  // The platform tokens Electron computed are kept: Windows, macOS and Linux all stay plausible.
+  const mac = chromeLikeUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+    + '(KHTML, like Gecko) DSHDesktop/0.3.12 Chrome/152.0.7977.54 Electron/44.0.0 Safari/537.36')
+  assert.ok(mac.startsWith('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'), mac)
+  // A Safari-shaped UA (the iPhone preset) has no Chrome token: leave it exactly as it is.
+  const safari = DEVICE_SPECS.iphone.userAgent
+  assert.equal(chromeLikeUserAgent(safari), safari)
+  assert.equal(chromeLikeUserAgent(''), '')
 })
 
 test('desktop means "no override" unless a custom size was chosen', () => {

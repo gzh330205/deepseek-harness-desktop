@@ -99,7 +99,7 @@ export {
   presetSize,
 } from './browser-device.ts'
 export type { DevicePreset } from './browser-device.ts'
-import { DEVICE_SPECS, clampDeviceSize, effectiveDeviceSize, isDevicePreset, presetSize } from './browser-device.ts'
+import { DEVICE_SPECS, chromeLikeUserAgent, clampDeviceSize, effectiveDeviceSize, isDevicePreset, presetSize } from './browser-device.ts'
 import { FREEZE_IDLE, beginFreeze, blocksSurfaceShow, clearFreeze, endFreeze, type FreezeState } from './browser-freeze.ts'
 import { withTimeout } from './async-timeout.ts'
 import {
@@ -330,6 +330,14 @@ const EMPTY_STATE: BrowserViewState = {
 /**
  * Owns the single browser view. All methods are safe to call before the view exists.
  */
+/**
+ * Sessions whose cookie diagnostics are already installed.
+ *
+ * Every browser tab shares one persistent partition; without this the `changed` listener would be
+ * registered once per tab and every cookie would be logged N times.
+ */
+const cookieDiagnosticsInstalled = new WeakSet<Session>()
+
 export class BrowserViewManager {
   private view: WebContentsView | undefined
   private lastRect: BrowserRect = BROWSER_HIDDEN_RECT
@@ -467,6 +475,9 @@ export class BrowserViewManager {
     view.setBackgroundColor('#ffffff')
     view.setBounds(BROWSER_HIDDEN_RECT)
     window.contentView.addChildView(view)
+    // Before the first load: a Chrome-shaped UA (Electron's own token makes risk control treat the
+    // session as untrusted, which shows up as a login that never sticks).
+    view.webContents.setUserAgent(chromeLikeUserAgent(view.webContents.getUserAgent()))
     this.view = view
     this.defaultUserAgent = view.webContents.getUserAgent()
     this.attach(view)
@@ -485,9 +496,21 @@ export class BrowserViewManager {
     contents.on('did-navigate', (_event, url) => {
       this.error = null
       this.recordVisit(url)
+      // The navigation chain is the only way to see a site bounce back to its login page: the
+      // shell logs one line per committed main-frame navigation, redirects included.
+      this.options.log(`侧边栏浏览器导航：${url}`)
       this.push()
     })
-    contents.on('did-navigate-in-page', (_event, _url, mainFrame) => { if (mainFrame) this.push() })
+    contents.on('did-redirect-navigation', (_event, url, _inPlace, mainFrame) => {
+      if (mainFrame) this.options.log(`侧边栏浏览器重定向：${url}`)
+    })
+    contents.on('did-navigate-in-page', (_event, url, mainFrame) => {
+      if (!mainFrame) return
+      // A single-page app "redirects to the login page" with a route change, not a navigation: without
+      // this line a login that bounces back leaves no trace in the log at all.
+      this.options.log(`侧边栏浏览器页面内跳转：${url}`)
+      this.push()
+    })
     contents.on('page-title-updated', () => {
       // The title usually arrives after the navigation: patch the visit we just recorded
       // rather than adding a second entry for the same page.
@@ -547,6 +570,33 @@ export class BrowserViewManager {
         return
       }
       this.acceptPick(parseConsolePick(message, this.pickNonce ?? ''))
+    })
+
+    // Which cookies a login actually sets — names and domains only, never values.
+    //
+    // The browser shares one persistent partition, so this is registered once per session rather
+    // than once per tab. It is the difference between "the site never stored its session" and "it
+    // stored it and something removed it", which is otherwise invisible from the shell.
+    const browserSession = contents.session
+    if (!cookieDiagnosticsInstalled.has(browserSession)) {
+      cookieDiagnosticsInstalled.add(browserSession)
+      browserSession.cookies.on('changed', (_event, cookie, cause, removed) => {
+        this.options.log(`浏览器 Cookie ${removed ? '删除' : '写入'}：${cookie.name}（${cookie.domain}，${cause}）`)
+      })
+    }
+
+    // Page-side diagnostics for *auth* failures. A site that quietly bounces back to its login page
+    // (rejected cookie, blocked third-party storage, failing API call) says why in its own console —
+    // and until this existed, none of it reached shell.log, so such a loop left no trace at all.
+    contents.on('console-message', (details: Electron.Event<Electron.WebContentsConsoleMessageEventParams>) => {
+      if (details.level !== 'error' && details.level !== 'warning') return
+      const message = typeof details.message === 'string' ? details.message.replace(/\s+/gu, ' ').slice(0, 300) : ''
+      if (message === '') return
+      // Errors are few and always relevant; warnings are noisy, so only the storage/auth family.
+      const interesting = details.level === 'error'
+        || /cookie|storage|partition|blocked|SameSite|CORS|401|403|session|token|login/i.test(message)
+      if (!interesting) return
+      this.options.log(`[页面${details.level === 'error' ? '错误' : '警告'}] ${message}`)
     })
 
     // Keyboard input needs no page script: Electron reports it here.

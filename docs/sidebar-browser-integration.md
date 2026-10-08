@@ -764,6 +764,52 @@ A/B: tabs                  → 各自只看到自己那一页
 而该会话的 store 尚未被采纳时，`openTabIn` 是 no-op，我们核对后退回 `openTab`（打开你在看的那个
 会话）。同会话（正常情形）不受影响。
 
+### 4.11.8 M23：登录态不生效 —— 真正的凶手是 User-Agent
+
+用户实报「好像 cookie 没有起作用，我登录一个网站（`https://app.apifox.com/`）一直被重定向到登录页」。
+
+先证伪「cookie 坏了」：在同一分区里实测 `https://httpbin.org/cookies/set?dshcookie=probe1` →
+302 到 `/cookies` 时就已经带上，再次访问仍然带上；分区是 `persist:dsh-desktop-browser`，
+cookie 文件确实写在 `Partitions/dsh-desktop-browser/Network/Cookies`。代码侧也没有会清 cookie 的路径
+（`clearStorageData` 只在面板「清空 Cookie 与站点数据」命令里调用；没有命令行开关、没有三方 cookie 策略覆盖）。
+
+真正的凶手是**我们发出去的 UA**。Electron 默认会在 Chrome 后面挂上应用名和它自己的版本：
+
+```
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)
+DSHDesktop/0.3.12 Chrome/152.0.7977.54 Electron/44.0.0 Safari/537.36
+```
+
+风控/反爬层读这两个 token（`Electron/…`、未知产品名）会判成「不是真实浏览器」，登录请求虽然成功、
+**登录态却不被承认**，于是 SPA 一进 `/main` 就按未登录处理、弹回 `/user/login` —— 正是用户看到的
+「一直被重定向到登录页」。修法是 `chromeLikeUserAgent()`（[browser-device.ts](../electron/src/browser-device.ts)）：
+保留 Electron 已经算好的平台 token，把它替换成 Chrome 自己发的约简形式 `Chrome/<major>.0.0.0`：
+
+```
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36
+```
+
+修复后同一账号登录一次即通（日志按时间序）：
+
+```
+浏览器 Cookie 写入：Authorization（.apifox.com，inserted）
+浏览器 Cookie 写入：Authorization.sig（.apifox.com，inserted）
+侧边栏浏览器页面内跳转：https://app.apifox.com/main
+浏览器 Cookie 写入：userToken（.apifox.com，inserted）
+侧边栏浏览器页面内跳转：https://app.apifox.com/main/teams/161998?tab=project
+```
+
+**这一轮顺带补上的诊断**（没有它们，这类问题在日志里一点痕迹都没有）：
+
+| 诊断 | 为什么必须 |
+|---|---|
+| 主框架导航链（含 `did-redirect-navigation`） | 登录流程的重定向以前完全不可见 |
+| SPA 页面内路由跳转（`did-navigate-in-page`） | SPA 的"弹回登录页"是路由跳转，不是导航 |
+| Cookie 写入/删除（**只记名字与域，不记值**） | 区分「站点没写会话 cookie」与「写了又被删」 |
+| 页面 `error` 级日志 + cookie/CORS/session 相关 warning | 登录 API 失败、cookie 被拒会自己说话 |
+
+也顺手排除了两个怀疑对象：活动探针（passive、不改 DOM、不 `preventDefault`）、弹窗处理（该站点登录是页面内表单，无弹窗）。
+
 ### 4.11.7 M22：遮罩跟 **agent 的回合**走（不再一闪一闪），并彻底修掉"卡住不撤"
 
 用户复验后报了三件事：
