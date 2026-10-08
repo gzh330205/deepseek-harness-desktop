@@ -22,7 +22,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { verifyMinisign } from '../src/minisign.ts'
@@ -43,6 +43,25 @@ const notes = notesIndex >= 0 ? args[notesIndex + 1] : undefined
 function fail(message) {
   process.stderr.write(`错误：${message}\n`)
   process.exit(1)
+}
+
+/**
+ * Environment for electron-builder, with DSH Desktop's own runtime kept out of `PATH`.
+ *
+ * The app prepends its runtime `bin` to the `PATH` of the dsh process it spawns
+ * (`host-process.ts`) so that dsh can find the bundled pnpm. Any build started from inside the app —
+ * an agent session, a terminal opened by it — inherits that, and electron-builder probes `pnpm` to
+ * collect the dependency tree. Resolving the app's runtime shim there is wrong twice over: it is not
+ * the project's toolchain, and in a packaged install its pnpm lives inside `app.asar`, which made the
+ * whole build die with `Cannot find module …app.asar.unpacked\…\pnpm.cjs`.
+ *
+ * @returns A copy of the environment without any DSH Desktop install in `PATH`.
+ */
+function builderEnvironment() {
+  const key = Object.keys(process.env).find(name => name.toUpperCase() === 'PATH') ?? 'PATH'
+  const current = process.env[key] ?? ''
+  const kept = current.split(pathDelimiter).filter(entry => entry !== '' && !/DSH Desktop/iu.test(entry))
+  return { ...process.env, [key]: kept.join(pathDelimiter) }
 }
 
 if (version === undefined) fail('用法：release-electron.mjs <version> --notes "…" [--dry-run|--prerelease|--yes]')
@@ -89,7 +108,7 @@ if (skipBuild) {
   execFileSync(process.execPath, [
     join(root, 'node_modules', 'electron-builder', 'cli.js'),
     '--win', 'nsis', '--publish', 'never', '--config', 'electron-builder.config.mjs',
-  ], { cwd: root, stdio: 'inherit' })
+  ], { cwd: root, stdio: 'inherit', env: builderEnvironment() })
 }
 
 if (!existsSync(artifactPath)) {

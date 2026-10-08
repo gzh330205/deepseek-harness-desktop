@@ -124,7 +124,8 @@ function bundledRuntimeSibling(relativePath: string): string[] {
 /**
  * Directory of the bundled `pnpm`/`node` shims, when the runtime ships them.
  *
- * These must stay physical: `cmd.exe` starts them and a shell cannot read inside an ASAR.
+ * These must stay physical: `cmd.exe` starts them and a shell cannot read inside an ASAR, so this is
+ * the runtime's `bin` under `app.asar.unpacked`, never a path inside the archive.
  */
 export function runtimeBinDir(): string | undefined {
   for (const candidate of bundledRuntimeSibling('bin')) {
@@ -136,12 +137,21 @@ export function runtimeBinDir(): string | undefined {
 /**
  * pnpm's JavaScript entry, run on the app's own binary in Node mode.
  *
- * `dsh plugin …` forwards to `pnpm` on PATH (our shim), and profile seeding installs plugins with
- * it, so a runtime without this cannot manage plugins at all.
+ * `dsh plugin …` forwards to `pnpm` on PATH (our shim), and profile seeding installs plugins with it,
+ * so a runtime without this cannot manage plugins at all.
+ *
+ * Packaged, `pnpm.cjs` lives **inside the ASAR** (it is JavaScript, read through the archive like any
+ * other module; only what pnpm *executes* sits in `app.asar.unpacked`). Looking for it beside the
+ * shims finds nothing — and the caller reads "no pnpm" as "this runtime cannot install plugins",
+ * which silently skips profile seeding.
  */
 export function bundledPnpmEntry(): string | undefined {
   const relative = join('node_modules', 'pnpm', 'bin', 'pnpm.cjs')
-  for (const candidate of bundledRuntimeSibling(relative)) {
+  const override = process.env[DSH_BUNDLED_RUNTIME_ENV]
+  const candidates: string[] = []
+  if (override !== undefined && override !== '') candidates.push(join(resolve(override), relative))
+  candidates.push(join(app.getAppPath(), 'dsh', relative))
+  for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate
   }
   return undefined

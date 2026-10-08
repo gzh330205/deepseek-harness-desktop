@@ -251,18 +251,38 @@ log('    ✔ --version 与 web --help 均正常')
 // scripts expect it.
 const shimDir = join(output, 'bin')
 mkdirSync(shimDir, { recursive: true })
+// Branch order matters, and every branch has a job:
+//   1. the shell's exact entry (DSH_DESKTOP_PNPM_ENTRY) — what actually ships, since the packaged
+//      runtime keeps pnpm's JavaScript *inside* app.asar while this shim is a real file beside it;
+//   2. the prepared tree's relative path — development, where the runtime is an ordinary directory;
+//   3. the ASAR derived from this file's own location — for anything that resolves `pnpm` from PATH
+//      without our variables (a build tool, the user's own shell). Without it those callers got
+//      `Cannot find module …app.asar.unpacked\dsh\node_modules\pnpm\bin\pnpm.cjs`, which took down
+//      an entire electron-builder run;
+//   4. a plain, explicit failure rather than a confusing module error.
 writeFileSync(join(shimDir, 'pnpm.cmd'), [
   '@echo off',
   'rem Bundled pnpm: runs on the app\'s own Electron in Node mode.',
-  'rem The shell passes the exact entry: once the runtime is packed into app.asar, pnpm\'s JS is',
-  'rem inside the archive while this shim is a real file beside it, so a relative path cannot work.',
-  'if defined DSH_DESKTOP_PNPM_ENTRY (',
+  'if defined DSH_DESKTOP_PNPM_ENTRY if defined DSH_DESKTOP_NODE_EXECUTABLE (',
   '  "%DSH_DESKTOP_NODE_EXECUTABLE%" "%DSH_DESKTOP_PNPM_ENTRY%" %*',
-  ') else if defined DSH_DESKTOP_NODE_EXECUTABLE (',
-  '  "%DSH_DESKTOP_NODE_EXECUTABLE%" "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
-  ') else (',
-  '  node "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
+  '  goto :eof',
   ')',
+  'if exist "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" (',
+  '  if defined DSH_DESKTOP_NODE_EXECUTABLE (',
+  '    "%DSH_DESKTOP_NODE_EXECUTABLE%" "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
+  '    goto :eof',
+  '  )',
+  '  node "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
+  '  goto :eof',
+  ')',
+  'rem `if exist` cannot see inside app.asar (it is one file, not a directory), so this branch is',
+  'rem taken on trust: with the app binary in hand, that IS where pnpm lives in a packaged install.',
+  'if defined DSH_DESKTOP_NODE_EXECUTABLE (',
+  '  "%DSH_DESKTOP_NODE_EXECUTABLE%" "%~dp0..\\..\\..\\app.asar\\dsh\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
+  '  goto :eof',
+  ')',
+  'echo DSH Desktop: cannot find the bundled pnpm (this shim only works inside DSH Desktop). 1>&2',
+  'exit /b 1',
   '',
 ].join('\r\n'), 'utf8')
 writeFileSync(join(shimDir, 'node.cmd'), [
@@ -296,6 +316,8 @@ const shimCheckViaEnv = execFileSync(`"${join(shimDir, 'pnpm.cmd')}" --version`,
 }).toString().trim()
 if (!/^\d+\.\d+\.\d+/u.test(shimCheckViaEnv)) fail(`随包 pnpm shim 的 DSH_DESKTOP_PNPM_ENTRY 分支不可用，输出：${shimCheckViaEnv}`)
 log(`    ✔ 随包 pnpm shim 可用（DSH_DESKTOP_PNPM_ENTRY 分支，pnpm ${shimCheckViaEnv}）`)
+// The ASAR branch only exists in the packaged layout (it is derived from the shim's own location),
+// so `verify-package.mjs` exercises it against `release/win-unpacked` instead.
 
 const entryRelative = 'node_modules/@deepseek-ai/dsh/lib/bin.js'
 const entryPath = join(output, entryRelative)

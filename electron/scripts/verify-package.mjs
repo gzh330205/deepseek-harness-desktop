@@ -15,6 +15,7 @@
  * Usage: node scripts/verify-package.mjs [--dir <unpackedDir>]
  */
 
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
@@ -121,7 +122,21 @@ if (!archived.some(entry => entry.path === 'dsh/node_modules/pnpm/bin/pnpm.cjs')
   fail('app.asar 里缺少 pnpm 入口 node_modules/pnpm/bin/pnpm.cjs')
 }
 
+// Run the packaged shim the way an outside caller does — `pnpm` resolved from PATH with no
+// DSH_DESKTOP_PNPM_ENTRY — because that is exactly how it took down an electron-builder run: the
+// shim looked for pnpm in the unpacked tree, where JavaScript is not.
+const appExecutable = join(unpacked, 'DSH Desktop.exe')
+if (!existsSync(appExecutable)) fail('缺少 DSH Desktop.exe')
+const shimVersion = execFileSync(`"${join(unpackedRoot, 'dsh', 'bin', 'pnpm.cmd')}" --version`, {
+  env: { ...process.env, DSH_DESKTOP_NODE_EXECUTABLE: appExecutable, ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_PNPM_ENTRY: '' },
+  windowsHide: true,
+  shell: true,
+  encoding: 'utf8',
+}).trim()
+if (!/^\d+\.\d+\.\d+/u.test(shimVersion)) fail(`打包后的 pnpm shim 不可用（PATH 解析场景），输出：${shimVersion}`)
+
 process.stdout.write(
   `打包校验通过：dsh ${packaged.dsh}（Electron ${packaged.electron}）、asar 内 ${String(archived.length)} 个文件、`
-  + `关键文件 ${String(Object.keys(packaged.critical).length)} 个、物理落盘 ${String(packaged.physical.length)} 个\n`,
+  + `关键文件 ${String(Object.keys(packaged.critical).length)} 个、物理落盘 ${String(packaged.physical.length)} 个、`
+  + `pnpm shim ${shimVersion}\n`,
 )
