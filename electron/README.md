@@ -91,6 +91,9 @@ pnpm release:dry        # 发布演习：签名 + 自校验 + 生成 latest.json
 16. **只把「这台机器上真的会执行的文件」算作关键校验文件**：`scripts/runtime-policy.mjs` 按目标平台推导外地 token 集合，外地二进制既随包裁剪、也不进校验集——把一个永不加载的 ARM64 文件算进去，真实用户就被挡在了门外。
 17. **不要给已崩溃的渲染进程发 IPC**：`webContents.send` 到崩溃的帧会在 Electron 内部打出 `Render frame was disposed…`，`try/catch` 拦不住——用 `webContents.isCrashed()` 提前不发；状态留在模块里，新页面订阅时会自己拉。
 18. **只在开发路径上验过的路径/命令行处理等于没验**：`electron/runtime` 没有空格，用户装到 `D:\Program Files\…` 才有空格；插件迁移因此静默失败了一整个版本。
+19. **运行时进 ASAR 后，`asarUnpack` 的前缀是「源路径」而不是归档里的路径**：`asarUnpack` 用的是 `runtime/dsh/...`（appDir 相对），写 `dsh/...` 会**静默失效**——运行时照旧全打进 asar、一个都不 unpack，而 electron-builder 退出码仍是 0。清单的 `physical` 列表由 `prepare-runtime.mjs` 生成，`verify-package.mjs` 逐个断言它们真的落在 `app.asar.unpacked`。
+20. **打包布局下 pnpm 的 JS 在 `app.asar` **里**，shim 在归档外**：`pnpm.cmd` 不能再用相对路径找 `node_modules/pnpm/bin/pnpm.cjs`（那是 `.cjs`，不会 unpack）。壳把自己解析出的入口通过 `DSH_DESKTOP_PNPM_ENTRY` 传给 dsh；shim 另有「按自身位置推 asar」的分支，供**从 PATH 解析 `pnpm` 的外部调用方**（构建工具、用户自己的 shell）使用——缺这一支时 `electron-builder` 会以 `Cannot find module …app.asar.unpacked\…\pnpm.cjs` 整场失败。另外 `bundledPnpmEntry()` 必须在 asar 里找（`app.getAppPath()/dsh/...`），找到不存在的 `.unpacked` 路径会返回 `undefined`，于是**profile 插件安装被静默跳过**。
+21. **从应用内部发起的构建会继承它自己运行时的 `PATH`**：`host-process.ts` 把随包 `bin` 前置给 dsh 子进程，于是 agent 会话/终端里跑 electron-builder 时，它探测到的 `pnpm` 是**应用的运行时 shim**，不是项目工具链。`release-electron.mjs` 因此给 electron-builder 传净化过的 PATH（剔掉含 `DSH Desktop` 的项）。
 
 ## 更新通道
 
