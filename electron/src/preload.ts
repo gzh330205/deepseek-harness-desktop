@@ -94,9 +94,9 @@ if (isShellDocument()) {
  *
  * `dsh-desktop-shell`'s client half (`resources/dsh-desktop-shell/client.js`) notifies
  * the shell through `globalThis.__TAURI__.event.emit('dsh-desktop-shell', {action})`
- * and refreshes on `event.listen('dsh-desktop-state')`; the notification plugin emits
- * `dsh-win-notify` the same way. Rather than fork that plugin, this shell provides the
- * two methods it uses — and nothing else. There is no `core.invoke`, no path API, no
+ * and refreshes on `event.listen('dsh-desktop-state')`; the notification plugin emits its
+ * `tauriEventName` (default `dsh-notify`) the same way. Rather than fork that plugin, this shell
+ * provides the two methods it uses — and nothing else. There is no `core.invoke`, no path API, no
  * filesystem: a page that can reach this object still cannot ask the shell to do
  * anything beyond the allowlists below.
  */
@@ -104,6 +104,10 @@ if (isProductDocument()) {
   const emit = (name: string, payload?: unknown): Promise<void> => {
     if ((PANEL_EMIT_EVENTS as readonly string[]).includes(name)) {
       ipcRenderer.send(IPC.panelEvent, name, payload)
+    } else {
+      // Telling the shell matters: a plugin whose event name drifted gets no error from `emit`
+      // (Tauri resolves), so it believes the shell handled it and never falls back.
+      ipcRenderer.send(IPC.panelDropped, typeof name === 'string' ? name : String(name))
     }
     return Promise.resolve()
   }

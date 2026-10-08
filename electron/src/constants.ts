@@ -182,6 +182,8 @@ export const SMOKE_MINISIGN_ENV = 'DSH_DESKTOP_SMOKE_MINISIGN'
 export const SMOKE_MENU_ENV = 'DSH_DESKTOP_SMOKE_MENU'
 /** Test-only: export the support bundle at startup and record where it went. */
 export const SMOKE_SUPPORT_ENV = 'DSH_DESKTOP_SMOKE_SUPPORT'
+/** Test-only: emit the notification plugin's event from the real page and record what the shell did. */
+export const SMOKE_NOTIFY_ENV = 'DSH_DESKTOP_SMOKE_NOTIFY'
 /** Rolling shell log, written next to the other shell state. */
 export const SHELL_LOG_FILENAME = 'shell.log'
 export const SHELL_LOG_MAX_BYTES = 512 * 1024
@@ -254,6 +256,11 @@ export const IPC = {
   updateAction: 'dsh-desktop:update-action',
   /** Product page → shell: one of {@link PANEL_EMIT_EVENTS}. */
   panelEvent: 'dsh-desktop:panel-event',
+  /**
+   * Product page → shell: an emit the preload refused by name. Diagnostics only — the shell logs it
+   * so "the plugin tried to talk to us and nothing happened" is visible in `shell.log`.
+   */
+  panelDropped: 'dsh-desktop:panel-dropped',
   /** Shell → product page: the shell's state changed, reload it. */
   panelState: 'dsh-desktop:panel-state',
   /**
@@ -281,8 +288,17 @@ export const IPC = {
 /**
  * Events the DSH page may send to the shell (the `dsh-desktop-shell` action channel and
  * the notification bridge). Everything else is refused.
+ *
+ * The notification plugin's event name is its own `tauriEventName` setting, whose default — and the
+ * name its README documents for shell integration — is `dsh-notify`, **not** the package name
+ * `dsh-win-notify` this list carried for a long time. That mismatch was silent in the worst way:
+ * `emit` resolves for names it refuses, the plugin treats "no throw" as "the shell showed it", and
+ * so it never fell back to a browser notification either — the user simply saw nothing. Both names
+ * are accepted now, and a refused name is reported (see `IPC.panelDropped`) instead of vanishing.
  */
-export const PANEL_EMIT_EVENTS = ['dsh-desktop-shell', 'dsh-win-notify'] as const
+export const PANEL_EMIT_EVENTS = ['dsh-desktop-shell', 'dsh-notify', 'dsh-win-notify'] as const
+/** Per-run set of refused emit names, so one drift is reported once rather than per event. */
+export const PANEL_DROPPED_LOG_CAP = 8
 /** Events the shell may send to the DSH page. */
 export const PANEL_LISTEN_EVENTS = ['dsh-desktop-state'] as const
 /** Actions the settings page may ask for; anything else is ignored. */

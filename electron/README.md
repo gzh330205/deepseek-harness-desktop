@@ -94,6 +94,7 @@ pnpm release:dry        # 发布演习：签名 + 自校验 + 生成 latest.json
 19. **运行时进 ASAR 后，`asarUnpack` 的前缀是「源路径」而不是归档里的路径**：`asarUnpack` 用的是 `runtime/dsh/...`（appDir 相对），写 `dsh/...` 会**静默失效**——运行时照旧全打进 asar、一个都不 unpack，而 electron-builder 退出码仍是 0。清单的 `physical` 列表由 `prepare-runtime.mjs` 生成，`verify-package.mjs` 逐个断言它们真的落在 `app.asar.unpacked`。
 20. **打包布局下 pnpm 的 JS 在 `app.asar` **里**，shim 在归档外**：`pnpm.cmd` 不能再用相对路径找 `node_modules/pnpm/bin/pnpm.cjs`（那是 `.cjs`，不会 unpack）。壳把自己解析出的入口通过 `DSH_DESKTOP_PNPM_ENTRY` 传给 dsh；shim 另有「按自身位置推 asar」的分支，供**从 PATH 解析 `pnpm` 的外部调用方**（构建工具、用户自己的 shell）使用——缺这一支时 `electron-builder` 会以 `Cannot find module …app.asar.unpacked\…\pnpm.cjs` 整场失败。另外 `bundledPnpmEntry()` 必须在 asar 里找（`app.getAppPath()/dsh/...`），找到不存在的 `.unpacked` 路径会返回 `undefined`，于是**profile 插件安装被静默跳过**。
 21. **从应用内部发起的构建会继承它自己运行时的 `PATH`**：`host-process.ts` 把随包 `bin` 前置给 dsh 子进程，于是 agent 会话/终端里跑 electron-builder 时，它探测到的 `pnpm` 是**应用的运行时 shim**，不是项目工具链。`release-electron.mjs` 因此给 electron-builder 传净化过的 PATH（剔掉含 `DSH Desktop` 的项）。
+22. **通知桥的事件名是插件的 `tauriEventName`（`dsh-notify`），不是包名 `dsh-win-notify`**：`PANEL_EMIT_EVENTS` 两种都收，且 preload 会把被拒的名字报给主进程记一行日志。写错这类名字**两端都不会报错**——preload 的 `emit` 仍然 resolve，插件据此认为"壳已弹过"而不再回退浏览器通知，用户什么都看不到。回归验证：`DSH_DESKTOP_SMOKE_NOTIFY=1`（真实产品页里演练 emit，结果写 `notify-smoke.json`，期望 `accepted: 1, refused: 1`）。
 
 ## 更新通道
 

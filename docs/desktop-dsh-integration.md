@@ -255,6 +255,32 @@ C3 决定了 client 半的实现标准：任何在 `apply` 期间未捕获的异
 | `show-settings-window` | 若设置窗口已删除则改为 `show-about` |
 | `focus-main` | 聚焦主窗口 |
 
+### 9.6 通知桥：事件名必须是插件的 `tauriEventName`，不是包名（2026-10-08）
+
+用户实报「通知插件的通知不起效果了」。通知插件 `dsh-win-notify` 的客户端半首选**壳侧原生通知**：
+`globalThis.__TAURI__.event.emit(tauriEventName, { title, body, sessionId })`，由壳进程弹出系统通知；
+只有在壳不存在时才回退浏览器 `Notification`。Electron 壳为此在 preload 里提供了 Tauri 兼容的
+`event.emit/listen`，主进程在 `IPC.panelEvent` 上按名字分发。
+
+**Bug 在于名字**：壳的白名单与判断写的是包名 `dsh-win-notify`，而插件 emit 的是它自己的
+`tauriEventName`，默认值（也是其 README 给壳集成写明的）是 **`dsh-notify`**。更糟的是失败完全静默：
+
+- preload 的 `emit` 对不在白名单里的名字**只是不发送，仍然 resolve**；
+- 插件的 `shellNotify()` 把"没抛异常"当作"壳已经弹了"，于是**不再回退**浏览器通知；
+- 结果用户什么都看不到，日志里也没有一行。
+
+修复：
+
+1. `PANEL_EMIT_EVENTS` 增加 `dsh-notify`（保留旧拼写），主进程两种名字都接受；
+2. preload 把**被拒的名字**通过 `IPC.panelDropped` 报给主进程，主进程按名字去重记一行
+   `忽略了页面发来的未知事件「…」`——这类漂移从此在 `shell.log` 里可见；
+3. `showNotification` 成功时也记一行 `系统通知：<标题>`：否则"壳到底有没有尝试弹"从外部无法判断；
+4. 新增 smoke 驱动 `DSH_DESKTOP_SMOKE_NOTIFY=1`：在真实产品页里 emit 一个应被接受的名字和一个应被拒的
+   名字，把结果写进 `notify-smoke.json`。实测 `{ accepted: 1, refused: 1, ok: true }`。
+
+> 这一条同时是一次教训：**跨进程的事件名是一份契约，写错时两端都不会报错**。壳既然替第三方插件实现后端，
+> 就必须按插件声明的名字接收，并让"收到但我拒了"变成一行日志，而不是无声丢弃。
+
 ## 10. 兼容与降级矩阵
 
 | 场景 | 行为 | 用户可见结果 |

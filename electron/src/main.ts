@@ -30,6 +30,7 @@ import {
   DESKTOP_PROFILE_NAME,
   LOAD_MODE_ENV,
   PANEL_ACTIONS,
+  PANEL_DROPPED_LOG_CAP,
   PROFILE_ENV,
   PROXY_ORIGIN_ENV,
   SKIP_LEGACY_CLEANUP_ENV,
@@ -41,6 +42,7 @@ import {
   SMOKE_CRASH_ENV,
   SMOKE_MENU_ENV,
   SMOKE_MINISIGN_ENV,
+  SMOKE_NOTIFY_ENV,
   SMOKE_SUPPORT_ENV,
   SMOKE_UPDATE_ENV,
   UPDATE_CHECK_INTERVAL_MS,
@@ -190,6 +192,9 @@ const wsAttempts: string[] = []
 const wsErrors: string[] = []
 /** Panel actions the main process accepted; smoke uses it to prove the bridge works. */
 let panelEventCount = 0
+/** Notification emits the shell accepted (shown as a system notification), and refused emits. */
+let notificationEventCount = 0
+let refusedEmitCount = 0
 
 const launcherRoot = (): string => join(app.getAppPath(), 'dist', 'launcher')
 const titleBarRoot = (): string => join(app.getAppPath(), 'dist', 'titlebar')
@@ -624,7 +629,10 @@ function installPanelBridge(): void {
     const url = event.senderFrame?.url ?? ''
     if (!url.startsWith('http://127.0.0.1:') && !url.startsWith('http://localhost:')) return
 
-    if (name === 'dsh-win-notify') {
+    // The notification plugin's own event name (`tauriEventName`, default `dsh-notify`); the
+    // package-name spelling is kept for older configs.
+    if (name === 'dsh-notify' || name === 'dsh-win-notify') {
+      notificationEventCount += 1
       showNotification(payload)
       return
     }
@@ -635,6 +643,19 @@ function installPanelBridge(): void {
     if (typeof action !== 'string' || !(PANEL_ACTIONS as readonly string[]).includes(action)) return
     panelEventCount += 1
     void handlePanelAction(action)
+  })
+
+  // An emit the preload refused by name (see PANEL_EMIT_EVENTS). Reported once per name: this is the
+  // only trace a plugin whose event name drifted leaves, and it is otherwise completely silent.
+  const droppedNames = new Set<string>()
+  ipcMain.on(IPC.panelDropped, (event, name: unknown) => {
+    if (mainWindow === undefined || mainWindow.isDestroyed()) return
+    if (event.sender !== pageContents()) return
+    refusedEmitCount += 1
+    const label = typeof name === 'string' ? name.slice(0, 60) : ''
+    if (label === '' || droppedNames.has(label) || droppedNames.size >= PANEL_DROPPED_LOG_CAP) return
+    droppedNames.add(label)
+    pushLog(`忽略了页面发来的未知事件「${label}」（不在白名单里；若是插件通知，见 PANEL_EMIT_EVENTS）`)
   })
 }
 
@@ -1089,9 +1110,15 @@ function showNotification(payload: unknown): void {
   const title = typeof record.title === 'string' && record.title !== '' ? record.title : PRODUCT_NAME
   const body = typeof record.body === 'string' ? record.body : ''
   if (body === '' && title === PRODUCT_NAME) return
-  if (!Notification.isSupported()) return
+  if (!Notification.isSupported()) {
+    pushLog('系统通知不可用（当前系统不支持）')
+    return
+  }
   try {
     new Notification({ title, body }).show()
+    // One line per notification: "did the shell actually try to show it" is otherwise unknowable
+    // from the outside, and that is exactly the question a "通知没弹" report asks.
+    pushLog(`系统通知：${title}${body === '' ? '' : ` —— ${body.slice(0, 60)}`}`)
   } catch (error) {
     pushLog(`系统通知失败：${String(error)}`)
   }
@@ -1350,6 +1377,52 @@ async function driveSmokeCrash(): Promise<void> {
     // Diagnostics only.
   }
   app.exit(report.ok ? 0 : 1)
+}
+
+/**
+ * Test-only: prove the notification plugin's emit actually reaches the shell.
+ *
+ * The plugin's client half emits its own `tauriEventName` (default `dsh-notify`) through the preload's
+ * Tauri-compatible bridge. The shell once allowlisted the *package* name `dsh-win-notify` instead, and
+ * because `emit` resolves either way, the plugin believed the shell had shown the notification and
+ * skipped its own browser fallback — the user saw nothing, with no error anywhere. This driver emits
+ * one name the shell accepts and one it refuses, from the real product page, and records what happened
+ * to each. Enabled by `DSH_DESKTOP_SMOKE_NOTIFY=1`.
+ */
+async function driveSmokeNotify(): Promise<void> {
+  const report: Record<string, unknown> = {}
+  const deadline = Date.now() + 30_000
+  for (;;) {
+    const contents = pageContents()
+    if (contents !== undefined && !contents.isDestroyed() && contents.getURL().startsWith('http://127.0.0.1:')) break
+    if (Date.now() > deadline) break
+    await new Promise<void>((resolve) => { setTimeout(resolve, 250) })
+  }
+  const contents = pageContents()
+  if (contents === undefined || contents.isDestroyed()) {
+    report.error = '产品页未就绪，无法演练通知链路'
+  } else {
+    const before = { accepted: notificationEventCount, refused: refusedEmitCount }
+    // Exactly what the plugin does: `tauri.event.emit(name, payload)`.
+    report.bridge = await contents.executeJavaScript(`(() => {
+      const event = globalThis.__TAURI__ && globalThis.__TAURI__.event;
+      return { present: typeof event?.emit === 'function', listen: typeof event?.listen === 'function' };
+    })()`) as Record<string, unknown>
+    await contents.executeJavaScript(`globalThis.__TAURI__.event.emit('dsh-notify', { title: '冒烟通知', body: '通知链路演练', sessionId: 'smoke' })`)
+    // A name no allowlist carries: it must be refused *and* reported, never silently dropped.
+    await contents.executeJavaScript(`globalThis.__TAURI__.event.emit('dsh-drifted-plugin', { title: 'x' })`)
+    await new Promise<void>((resolve) => { setTimeout(resolve, 1_000) })
+    report.accepted = notificationEventCount - before.accepted
+    report.refused = refusedEmitCount - before.refused
+    report.logs = logs.filter(line => /系统通知|未知事件/.test(line)).slice(-4)
+  }
+  report.ok = report.accepted === 1 && report.refused === 1
+  try {
+    writeFileSync(join(bridgeDir(), 'notify-smoke.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8')
+  } catch {
+    // Diagnostics only.
+  }
+  app.exit(report.ok === true ? 0 : 1)
 }
 
 /**
@@ -1744,6 +1817,7 @@ async function boot(): Promise<void> {
   // Upgrade rehearsal: drive the update path with no window. Last, so the normal smoke
   // result is already on disk before this exits the app to hand over to the installer.
   if (process.env[SMOKE_UPDATE_ENV] === '1') await driveSmokeUpdate()
+  if (process.env[SMOKE_NOTIFY_ENV] === '1') await driveSmokeNotify()
   if (process.env[SMOKE_CRASH_ENV] === '1') await driveSmokeCrash()
   if (process.env[SMOKE_MENU_ENV] === '1') await driveSmokeMenu()
   if (process.env[SMOKE_MINISIGN_ENV] === '1') await driveSmokeMinisign()
