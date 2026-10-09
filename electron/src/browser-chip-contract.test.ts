@@ -59,6 +59,35 @@ test('the chip payload uses exactly the node fields DSH reads', () => {
   assert.ok(!body.includes('appearance:'), 'chip payload should keep appearance undefined')
 })
 
+test('the @ element source answers with a promise', async () => {
+  // DSH's controller is written as `source.candidates(...).then(...)`, and the type says
+  // `candidates(...): Promise<readonly InputTriggerCandidate[]>`. A synchronous array throws a
+  // TypeError *inside* `for (const source of roster)`, so the sources after ours are never fetched
+  // either: DSH's own file and session candidates stop settling and the `@` menu shows skeletons
+  // forever. That shipped, and the reproducers are the two assertions below.
+  //
+  // The object is lifted out of the real bundle and called, instead of matching the word `async`,
+  // because "returns something awaitable" is the actual contract.
+  const block = /\n {6}const source = \{(?<body>[\s\S]*?)\n {6}\};/u.exec(client)
+  const body = block?.groups?.body
+  assert.ok(body !== undefined, 'the element reference source must stay extractable')
+  const build = new Function(
+    'recentPicks', 'elementInsertion', 'decodeElementRef', 'elementBlock', 'ELEMENT_REFERENCE_SOURCE',
+    `return {${body}}`,
+  ) as (
+    picks: Map<string, { preview: string; selector: string }>,
+    insertion: unknown, decode: unknown, block: unknown, sourceName: string,
+  ) => { name: string; trigger: string; candidates: () => unknown }
+  const picks = new Map([['picked-1', { preview: '登录按钮', selector: '#login' }]])
+  const source = build(picks, () => ({}), () => undefined, () => '', 'browser-element')
+  assert.equal(source.trigger, '@')
+  const pending = source.candidates()
+  assert.equal(typeof (pending as { then?: unknown }).then, 'function', 'candidates must be awaitable')
+  assert.deepEqual(await pending, [
+    { name: '登录按钮', description: '#login', section: '页面元素', value: 'picked-1' },
+  ])
+})
+
 test('the ref is self-contained so a persisted draft still serializes after a reload', () => {
   assert.match(client, /function encodeElementRef\(element\)/u)
   assert.match(client, /function decodeElementRef\(ref\)/u)

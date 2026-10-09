@@ -1083,6 +1083,11 @@ window.__ModuleLoader__.load({
      * ② 用户也可以在输入框打 `@` 直接从「页面元素」里挑一个（走 DSH 自己的插入路径，
      *    是最不依赖内部事件的一条路）。
      * source 的 `candidates` 不参与 `@` 的其它分组，候选来自本会话拾取过的元素。
+     *
+     * **`candidates` 必须是 async（或返回 Promise）**：DSH 的 `ui-input-trigger` 控制器写的是
+     * `source.candidates(...).then(...)`，同步返回数组会抛 TypeError，而这个异常发生在
+     * `for (const source of roster)` 的循环体里 —— 于是**同一轮里排在后面的 source 也不会被
+     * 拉取**，DSH 自己的文件/会话候选同样停摆，`@` 菜单只剩骨架屏（真实用户报障）。
      */
     function registerElementReference(scope) {
       const inputTriggers = scope.inputTriggers;
@@ -1091,7 +1096,7 @@ window.__ModuleLoader__.load({
         trigger: '@',
         name: ELEMENT_REFERENCE_SOURCE,
         showGroupTitle: false,
-        candidates: () =>
+        candidates: async () =>
           [...recentPicks.entries()].map(([ref, element]) => ({
             name: element.preview === '' ? element.selector : element.preview,
             description: element.selector,

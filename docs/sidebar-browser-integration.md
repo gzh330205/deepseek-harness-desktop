@@ -764,6 +764,40 @@ A/B: tabs                  → 各自只看到自己那一页
 而该会话的 store 尚未被采纳时，`openTabIn` 是 no-op，我们核对后退回 `openTab`（打开你在看的那个
 会话）。同会话（正常情形）不受影响。
 
+### 4.11.9 M24：`@` 菜单一直转圈 —— 我们注册的 source 违反了 DSH 的 Promise 契约
+
+用户实报「用我们自己的 desktop，在 DSH 聊天框里 `@` 没法触发文件选择，弹窗一直加载中」。产品页的
+console 日志直接把答案摆出来了（壳会把产品页的 error 级 console 写进 `shell.log`）：
+
+```
+[页面错误] Uncaught TypeError: source.candidates(...).then is not a function      ← 每屏几十条
+```
+
+DSH 的 `ui-input-trigger` 控制器这样取候选：
+
+```js
+for (const source of roster) source.candidates(projection, { query, … }).then(…)
+```
+
+契约（`InputTriggerSource`）写的是 `candidates(session, req): Promise<readonly InputTriggerCandidate[]>`。
+而**我们面板插件**为「页面元素引用」注册的那个 `@` source 当时是**同步**箭头函数（返回数组），于是
+`.then` 不存在 → TypeError。
+
+**后果比"自己这一组没有候选"严重得多**：异常发生在 `for` 循环体里，同一轮里排在它**后面**的 source
+也不会被拉取 —— DSH 自己的文件/会话候选同样停摆，菜单永远停在骨架屏。这就是用户看到的「一直加载中」。
+
+修法与护栏：
+
+1. `candidates: async () => …`（[client.js](../src-tauri/resources/dsh-desktop-shell/client.js)），并把
+   「为什么必须 async」写进注释；
+2. `browser-chip-contract.test.ts` 增加一条**行为**级用例：把 source 对象从真实 bundle 文本里取出来、
+   真正调用 `candidates()`，断言返回值可 await 且候选内容正确。已验证**双向**——去掉 `async` 立即失败
+   （`candidates must be awaitable`），加回来通过。
+
+教训：**壳注入的客户端插件是宿主 UI 的一部分，契约违规会连带打坏宿主自己的功能**。凡是 DSH 会
+`.then()`/`await` 的回调（`candidates`、`codec.serialize`…），一律返回 Promise；"我这一组不显示而已"
+这种假设不成立。
+
 ### 4.11.8 M23：登录态不生效 —— 真正的凶手是 User-Agent
 
 用户实报「好像 cookie 没有起作用，我登录一个网站（`https://app.apifox.com/`）一直被重定向到登录页」。
