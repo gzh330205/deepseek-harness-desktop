@@ -166,7 +166,10 @@ export function launchInstaller(path: string, pid: number = process.pid): void {
   const child = spawn(path, ['/S', '--updated', '--force-run', `/DSHPID=${String(pid)}`], {
     detached: true,
     stdio: 'ignore',
-    windowsHide: false,
+    // Hidden: the installer runs silently and is GUI-subsystem, but NSIS scripts shell out
+    // (`nsExec`, `taskkill`) while waiting for `/DSHPID`, and every console child of a detached
+    // installer flashes a window on top of the app it is replacing. Nothing here needs a console.
+    windowsHide: true,
   })
   child.unref()
 }
