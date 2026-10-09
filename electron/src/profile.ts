@@ -16,7 +16,7 @@
  * then installs them with the bundled pnpm. Nothing existing is ever overwritten.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -173,6 +173,59 @@ export function profileNeedsInstall(seed: ProfileSeed): boolean {
 }
 
 /**
+ * The store major recorded in pnpm's `.modules.yaml`, e.g. `"10"` for `…/store/v10`.
+ *
+ * The file is YAML in JSON's clothes (`"storeDir": "C:\\…\\store\\v10",`), so the value is unquoted
+ * and backslash-unescaped before the version is read off the end.
+ *
+ * @param text - Contents of `node_modules/.modules.yaml`.
+ * @returns The major version, or `undefined` when the file does not record a store.
+ */
+export function storeMajorFromModulesYaml(text: string): string | undefined {
+  const line = /^\s*"?storeDir"?\s*:\s*(.+?)\s*,?\s*$/mu.exec(text)?.[1]
+  if (line === undefined) return undefined
+  const value = line.replace(/^["']|["']$/gu, '').replace(/\\{2}/gu, '/').replace(/\\/gu, '/')
+  return /\/v(\d+)$/u.exec(value)?.[1]
+}
+
+/**
+ * Whether the profile's `node_modules` was linked from a different pnpm major than ours.
+ *
+ * pnpm versions its content store by its own major and refuses to touch a `node_modules` linked from
+ * another one (`ERR_PNPM_UNEXPECTED_STORE`): every existing profile hits that the first time the
+ * bundled pnpm is upgraded across a major (10.34.2 → 11.7.0, which is what the `allowBuilds`
+ * alignment needed). The remedy is a plain `pnpm install`, which relinks from the new store without
+ * changing the dependency set — the lockfile decides that, not the store.
+ *
+ * @param directory - Profile directory.
+ * @param bundledPnpmVersion - pnpm shipped in the runtime manifest, e.g. `11.7.0`.
+ * @param migratedStore - Store this profile was already relinked to (`v11`), when the shell recorded
+ *   one. pnpm does not always rewrite `.modules.yaml` (a profile with no dependencies keeps the old
+ *   file), so without this the mismatch would be re-detected on every start and the profile purged
+ *   and reinstalled each launch.
+ * @returns The mismatch to report, or `undefined` when there is nothing to relink.
+ */
+export function profileStoreMismatch(
+  directory: string,
+  bundledPnpmVersion: string,
+  migratedStore?: string,
+): { readonly from: string; readonly to: string } | undefined {
+  const bundled = /^(\d+)\./u.exec(bundledPnpmVersion)?.[1]
+  if (bundled === undefined) return undefined
+  if (migratedStore === `v${bundled}`) return undefined
+  let text: string
+  try {
+    text = readFileSync(join(directory, 'node_modules', '.modules.yaml'), 'utf8')
+  } catch {
+    // No `node_modules`, or one pnpm did not write: nothing to migrate.
+    return undefined
+  }
+  const linked = storeMajorFromModulesYaml(text)
+  if (linked === undefined || linked === bundled) return undefined
+  return { from: `v${linked}`, to: `v${bundled}` }
+}
+
+/**
  * Install the profile's declared dependencies with the bundled pnpm.
  *
  * Runs the app's own binary in Node mode with pnpm's JavaScript entry point — **never a
@@ -205,7 +258,14 @@ export async function installProfileDependencies(options: {
 }): Promise<{ readonly ok: boolean; readonly detail: string }> {
   try {
     const additions = options.additions ?? []
-    const args = additions.length > 0 ? ['add', ...additions] : ['install']
+    // `confirmModulesPurge=false`: a store change (a bundled-pnpm major upgrade) makes pnpm want to
+    // delete and relink `node_modules`, and with no TTY it aborts instead of asking —
+    // `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. The prompt exists for interactive shells; here the
+    // lockfile decides the dependency set, so the purge is the migration we asked for.
+    const args = [
+      ...additions.length > 0 ? ['add', ...additions] : ['install'],
+      '--config.confirmModulesPurge=false',
+    ]
     const result = await options.run(options.nodeExecutable, [options.pnpmEntry, ...args], {
       cwd: options.path,
       // `DSH_DESKTOP_NODE_EXECUTABLE` stays set: it is what the bundled `node` shim uses
@@ -308,4 +368,44 @@ function missingLinkedPackages(source: string, target: string): string[] {
     missing.push(`link:${real}`)
   }
   return missing
+}
+
+/**
+ * Symlinked packages in a profile's `node_modules`: the local plugins the user installed there.
+ *
+ * They matter for exactly one operation: relinking the profile after the bundled pnpm changes its
+ * store version. pnpm's purge deletes `node_modules` wholesale and then restores only what
+ * `package.json` and the lockfile describe — but a plugin installed by hand, or by `dsh plugin` in a
+ * way that never reached `package.json`, is only a symlink in that directory. Losing it removes the
+ * plugin from a profile whose `cordis.patch.yml` still names it.
+ *
+ * @param directory - Profile directory.
+ * @returns Name and link target of every symlinked package, `.bin`/`.pnpm` excluded.
+ */
+export function linkedPackages(directory: string): { readonly name: string; readonly target: string }[] {
+  const modules = join(directory, 'node_modules')
+  if (!existsSync(modules)) return []
+  const linked: { name: string; target: string }[] = []
+  for (const entry of readdirSync(modules, { withFileTypes: true })) {
+    if (entry.name === '.pnpm' || entry.name === '.bin') continue
+    try {
+      linked.push({ name: entry.name, target: readlinkSync(join(modules, entry.name)) })
+    } catch {
+      // A regular directory: pnpm's install owns it, and the lockfile will bring it back.
+    }
+  }
+  return linked
+}
+
+/**
+ * Re-create a plugin link pnpm's purge removed.
+ *
+ * A junction on Windows (`pnpm link:` produces exactly that and needs no elevation) and a directory
+ * symlink elsewhere.
+ *
+ * @param directory - Profile directory.
+ * @param entry - Name and target from {@link linkedPackages}.
+ */
+export function relinkPackage(directory: string, entry: { readonly name: string; readonly target: string }): void {
+  symlinkSync(entry.target, join(directory, 'node_modules', entry.name), process.platform === 'win32' ? 'junction' : 'dir')
 }

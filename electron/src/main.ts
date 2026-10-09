@@ -85,7 +85,10 @@ import {
   ensureDesktopProfile,
   harnessHomeFrom,
   installProfileDependencies,
+  linkedPackages,
   profileNeedsInstall,
+  profileStoreMismatch,
+  relinkPackage,
   repairSeededProfile,
   type ProfileSeed,
 } from './profile.ts'
@@ -1104,6 +1107,32 @@ function runProfileCommand(
   })
 }
 
+/**
+ * Store a profile was last relinked to, e.g. `v11`.
+ *
+ * Kept beside the shell's other state rather than inside the profile: pnpm owns that directory and
+ * its purge would delete our file, and pnpm itself records no store version in the workspace state
+ * it writes.
+ */
+function readStoreMigration(profilePath: string): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(bridgeDir(), 'profile-store.json'), 'utf8')) as { profile?: unknown; store?: unknown }
+    if (raw.profile !== profilePath || typeof raw.store !== 'string') return undefined
+    return raw.store
+  } catch {
+    return undefined
+  }
+}
+
+/** Record a completed relink, so the next start does not purge and reinstall the profile again. */
+function writeStoreMigration(profilePath: string, store: string): void {
+  try {
+    writeFileSync(join(bridgeDir(), 'profile-store.json'), `${JSON.stringify({ profile: profilePath, store, at: Date.now() }, null, 2)}\n`, 'utf8')
+  } catch {
+    // Diagnostics only: the migration still happened, it will simply be repeated next start.
+  }
+}
+
 /** The notification plugin (`dsh-win-notify`) emits `{ title, body, sessionId }`. */
 function showNotification(payload: unknown): void {
   if (typeof payload !== 'object' || payload === null) return
@@ -1596,6 +1625,8 @@ async function boot(): Promise<void> {
   // pnpm's JavaScript entry: run it with our own binary rather than the `.cmd` shim, so
   // an install directory containing spaces cannot break the command line.
   const pnpmEntry = bundled === undefined ? undefined : bundledPnpmEntry()
+  /** pnpm version the bundled runtime ships; decides whether an existing profile needs relinking. */
+  let runtimePnpmVersion: string | undefined
   if (bundled !== undefined) {
     const verification = verifyRuntime({
       root: bundled,
@@ -1620,6 +1651,7 @@ async function boot(): Promise<void> {
       shell: verification.manifest.shell,
     }
     pushLog(`随包运行时校验通过：dsh ${verification.manifest.dsh}，${String(verification.manifest.files)} 个文件`)
+    runtimePnpmVersion = verification.manifest.pnpm
   } else {
     runtimeInfo = { source: 'system' }
     pushLog('未发现随包运行时，改用 PATH 中的 dsh')
@@ -1639,6 +1671,51 @@ async function boot(): Promise<void> {
   pushLog(profileSeed.created
     ? `已创建桌面端 profile：${profileSeed.path}（bundle 列表来自 ${profileSeed.seededFrom}，${String(profileSeed.bundles.length)} 项）`
     : `复用已有桌面端 profile：${profileSeed.path}`)
+
+  // pnpm versions its content store by its own major and rejects a `node_modules` linked from a
+  // different one (`ERR_PNPM_UNEXPECTED_STORE`). A bundled-pnpm upgrade across a major therefore
+  // leaves every existing profile broken for `dsh plugin …` until it is relinked — reported here and
+  // fixed with the same `pnpm install` the profile install path already runs. The lockfile decides
+  // the dependency set; the store only decides where the bytes come from, so this is a migration.
+  //
+  // The record of "already relinked" lives in the shell's own state: pnpm keeps no store version in
+  // the workspace state it writes, and leaves a profile's `.modules.yaml` alone when there was
+  // nothing to install — reading only that file would purge and reinstall the profile on every start.
+  const migratedStore = readStoreMigration(profileSeed.path)
+  const storeMismatch = profileStoreMismatch(profileSeed.path, runtimePnpmVersion ?? '', migratedStore)
+  if (storeMismatch !== undefined) {
+    pushLog(`桌面端 profile 的依赖由 pnpm ${storeMismatch.from} 链接，随包 pnpm 为 ${storeMismatch.to}：需要重新链接一次（不改依赖）`)
+  }
+  // Awaited and done *before* the host starts. pnpm's relink deletes `node_modules` first, so doing it
+  // while `dsh` is running would fail on the files it holds open (Windows refuses to unlink them), and
+  // tying it to the page load would leave a profile that cannot boot unmigrated forever.
+  if (profileSeed !== undefined && storeMismatch !== undefined && pnpmEntry !== undefined) {
+    const seed = profileSeed
+    // pnpm's purge deletes the whole `node_modules`, and only `package.json`/the lockfile come back. A
+    // plugin linked by hand (or by a `dsh plugin` call that never reached `package.json`) is only a
+    // symlink there, while the profile's patch still names it — so the links are restored afterwards.
+    const linkedBefore = linkedPackages(seed.path)
+    pushLog(`正在重新链接桌面端 profile 的依赖（pnpm ${storeMismatch.from} → ${storeMismatch.to}，按锁文件，不改依赖；可能需要几分钟）…`)
+    const relinked = await installProfileDependencies({
+      path: seed.path,
+      nodeExecutable: process.execPath,
+      pnpmEntry,
+      run: runProfileCommand,
+    })
+    pushLog(`重新链接：${relinked.ok ? '完成' : `失败（${relinked.detail}）`}`)
+    if (relinked.ok) {
+      const restored = linkedBefore.filter(entry => !existsSync(join(seed.path, 'node_modules', entry.name)))
+      for (const entry of restored) {
+        try {
+          relinkPackage(seed.path, entry)
+        } catch (error) {
+          pushLog(`本地插件链接恢复失败：${entry.name} — ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      if (restored.length > 0) pushLog(`已恢复 ${String(restored.length)} 个本地插件链接：${restored.map(entry => entry.name).join('、')}`)
+      writeStoreMigration(seed.path, storeMismatch.to)
+    }
+  }
 
   ipcMain.handle(IPC.titlebarState, (event) => {
     if (event.sender !== titleBarView?.webContents) {

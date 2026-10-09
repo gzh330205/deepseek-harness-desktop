@@ -36,6 +36,15 @@ export interface RuntimeManifest {
    * start without them being unpacked, so `scripts/verify-package.mjs` asserts every entry.
    */
   readonly physical?: readonly string[]
+  /**
+   * pnpm version bundled with this runtime.
+   *
+   * Absent in manifests written before the field existed. It matters because pnpm's content store is
+   * versioned by its own major (`store/v10`, `store/v11`) and refuses to reuse a `node_modules`
+   * linked from another one — a bundled pnpm upgrade therefore needs a one-time relink of every
+   * profile, which is why the shell compares this against the profile's `.modules.yaml`.
+   */
+  readonly pnpm?: string
 }
 
 export type RuntimeVerification =

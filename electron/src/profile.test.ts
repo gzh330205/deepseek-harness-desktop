@@ -10,7 +10,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
@@ -21,8 +21,12 @@ import {
   ensureDesktopProfile,
   harnessHomeFrom,
   installProfileDependencies,
+  linkedPackages,
   profileNeedsInstall,
   profilePath,
+  profileStoreMismatch,
+  relinkPackage,
+  storeMajorFromModulesYaml,
 } from '../src/profile.ts'
 
 const workDir = mkdtempSync(join(tmpdir(), 'dsh-profile-test-'))
@@ -171,7 +175,9 @@ test('the bundled pnpm is invoked without a shell and with the app binary', asyn
   assert.equal(calls[0]?.shell, false, '必须不经 shell：路径带空格时会被拆开')
   assert.equal(calls[0]?.command, 'D:\\Program Files\\DSH Desktop Debug\\DSH Desktop Debug.exe')
   assert.match(String(calls[0]?.args[0]), /pnpm\.cjs$/u, 'pnpm 用 JS 入口，不用 .cmd shim')
-  assert.deepEqual(calls[0]?.args.slice(1), ['install'])
+  // The purge confirmation has no TTY to answer it: pnpm aborts with
+  // `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` instead of relinking after a store change.
+  assert.deepEqual(calls[0]?.args.slice(1), ['install', '--config.confirmModulesPurge=false'])
   assert.equal(calls[0]?.cwd, seed.path)
 })
 
@@ -263,4 +269,72 @@ test('a profile without a source to repair from is left alone', () => {
   writeFileSync(join(desktop, 'package.json'), '{}\n', 'utf8')
   assert.equal(repairSeededProfile(home).repaired, false)
   assert.equal(repairSeededProfile(home).missingLinks.length, 0)
+})
+
+test('the store major is read out of pnpm\'s .modules.yaml', () => {
+  // The real file: YAML with JSON-style quoted keys and escaped Windows separators.
+  const text = [
+    'hoistPattern:',
+    '  - "*"',
+    'nodeLinker: hoisted',
+    'storeDir: "C:\\\\Users\\\\gzh33\\\\AppData\\\\Local\\\\pnpm\\\\store\\\\v10"',
+    'virtualStoreDir: "C:\\\\Users\\\\gzh33\\\\.dsh\\\\profiles\\\\dsh-desktop\\\\node_modules\\\\.pnpm"',
+    '',
+  ].join('\n')
+  assert.equal(storeMajorFromModulesYaml(text), '10')
+  assert.equal(storeMajorFromModulesYaml('nodeLinker: hoisted\n'), undefined)
+})
+
+test('a profile linked from another pnpm store is reported for relinking', () => {
+  const home = makeHome()
+  const desktop = profilePath(home)
+  mkdirSync(join(desktop, 'node_modules'), { recursive: true })
+  const modules = (store: string): void => {
+    writeFileSync(join(desktop, 'node_modules', '.modules.yaml'), `storeDir: "${store.replace(/\\/gu, '/')}"\n`, 'utf8')
+  }
+
+  // Nothing installed yet, or an unknown pnpm: no migration.
+  assert.equal(profileStoreMismatch(desktop, '11.7.0'), undefined)
+  writeFileSync(join(desktop, 'node_modules', '.modules.yaml'), 'nodeLinker: hoisted\n', 'utf8')
+  assert.equal(profileStoreMismatch(desktop, '11.7.0'), undefined)
+
+  // Linked from the previous major: relink, and say which way.
+  modules('C:\\Users\\me\\AppData\\Local\\pnpm\\store\\v10')
+  assert.deepEqual(profileStoreMismatch(desktop, '11.7.0'), { from: 'v10', to: 'v11' })
+
+  // Same major (patch upgrades included): nothing to do.
+  modules('C:\\Users\\me\\AppData\\Local\\pnpm\\store\\v11')
+  assert.equal(profileStoreMismatch(desktop, '11.7.0'), undefined)
+  assert.equal(profileStoreMismatch(desktop, '11.9.3'), undefined)
+
+  // A recorded relink keeps a stale `.modules.yaml` from purging the profile on every start: pnpm
+  // leaves that file alone when a profile has nothing to install, so the file alone is not the truth.
+  modules('C:\\Users\\me\\AppData\\Local\\pnpm\\store\\v10')
+  assert.deepEqual(profileStoreMismatch(desktop, '11.7.0', 'v10'), { from: 'v10', to: 'v11' })
+  assert.equal(profileStoreMismatch(desktop, '11.7.0', 'v11'), undefined)
+  // The record is per bundled major: the next major bump migrates again.
+  assert.deepEqual(profileStoreMismatch(desktop, '12.0.0', 'v11'), { from: 'v10', to: 'v12' })
+
+  // An unparsable bundled version must not cause work.
+  assert.equal(profileStoreMismatch(desktop, 'pnpm'), undefined)
+})
+
+test('a relink keeps the local plugin links pnpm\'s purge would remove', () => {
+  const home = makeHome()
+  const desktop = profilePath(home)
+  const source = join(workDir, 'plugin-source')
+  mkdirSync(join(desktop, 'node_modules', '.pnpm'), { recursive: true })
+  mkdirSync(source, { recursive: true })
+  writeFileSync(join(source, 'package.json'), '{"name":"dsh-win-notify"}\n', 'utf8')
+  // A plugin linked by hand: not in package.json, not in the lockfile, but its patch still names it.
+  symlinkSync(source, join(desktop, 'node_modules', 'dsh-win-notify'), process.platform === 'win32' ? 'junction' : 'dir')
+  mkdirSync(join(desktop, 'node_modules', 'regular-dependency'), { recursive: true })
+
+  assert.deepEqual(linkedPackages(desktop).map(entry => entry.name), ['dsh-win-notify'])
+  assert.deepEqual(linkedPackages(join(workDir, 'nonexistent')), [])
+
+  // What pnpm's purge leaves behind, and what the restore does about it.
+  rmSync(join(desktop, 'node_modules', 'dsh-win-notify'), { recursive: true, force: true })
+  relinkPackage(desktop, { name: 'dsh-win-notify', target: source })
+  assert.equal(readlinkSync(join(desktop, 'node_modules', 'dsh-win-notify')), source)
 })
