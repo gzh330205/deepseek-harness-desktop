@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import {
   IPC,
   DESKTOP_PROFILE_NAME,
+  INSTALL_HANDOFF_MS,
   LOAD_MODE_ENV,
   PANEL_ACTIONS,
   PANEL_DROPPED_LOG_CAP,
@@ -79,7 +80,7 @@ import {
 import { blake2b512Chunked } from './blake2b.ts'
 import { verifyMinisign } from './minisign.ts'
 import { PanelBridge, checkSettingsRoundTrip, describeTasks } from './panel-bridge.ts'
-import { applyUserDataOverride, bridgeDir, bundledPnpmEntry, bundledRuntimeRoot, harnessHome, resolveDshEntry, runtimeBinDir, toolRegistrationPath } from './paths.ts'
+import { applyUserDataOverride, bridgeDir, bundledPnpmEntry, bundledRuntimeRoot, harnessHome, resolveDshEntry, runtimeBinDir, toolRegistrationPath, updatesDir } from './paths.ts'
 import {
   ensureDesktopProfile,
   harnessHomeFrom,
@@ -1213,7 +1214,12 @@ function installUpdates(): void {
       if (action === 'check') void updateController?.check(true)
       else if (action === 'download') void updateController?.download()
       else if (action === 'install') void requestInstall()
-      else updateController?.dismiss()
+      else {
+        // "稍后" must actually dismiss: resetting the state published the same content back to the
+        // same open window, so the button looked dead (reported by a user).
+        updateController?.dismiss()
+        updateWindow?.close()
+      }
     },
     isShellDocument: isLauncherSender,
   })
@@ -1222,6 +1228,7 @@ function installUpdates(): void {
 
   updateController = new UpdateController({
     currentVersion: app.getVersion(),
+    updatesDir,
     onState: (state) => { window.publish(state) },
     onAvailable: (version) => {
       pushLog(`发现新版本 ${version}`)
@@ -1231,7 +1238,18 @@ function installUpdates(): void {
       // The installer takes over from here; `close` must not ask again.
       quitAllowed = true
       pendingInstaller = installer
-      app.quit()
+      // Say what is happening while it still can be seen. The NSIS run is silent and this process is
+      // about to exit, so a user who watched the window vanish assumed a working update had failed
+      // (reported). A system notification also outlives us in the Action Center, and the short delay
+      // is the time the update window needs to render the "installing" phase before it goes.
+      const target = updateController?.current.version
+      showNotification({
+        title: `${PRODUCT_NAME} 正在安装更新`,
+        body: target === undefined
+          ? '应用即将关闭以完成安装，装好后会自动重新打开。'
+          : `正在安装 v${target}，应用会自动重新打开。`,
+      })
+      setTimeout(() => { app.quit() }, INSTALL_HANDOFF_MS)
     },
   })
 

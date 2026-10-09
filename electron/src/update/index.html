@@ -20,6 +20,12 @@
     #detail { color: #7f8aa3; font-size: 12px; word-break: break-all; }
     .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.09); overflow: hidden; }
     .bar > i { display: block; height: 100%; width: 0; background: #6c8cff; transition: width .2s ease; }
+    /* The silent NSIS run reports nothing, so the installing phase moves instead of filling. */
+    .bar.busy > i { width: 35%; animation: slide 1.1s ease-in-out infinite; }
+    @keyframes slide {
+      0% { margin-left: -35%; }
+      100% { margin-left: 100%; }
+    }
     footer {
       padding: 14px 22px 18px; display: flex; gap: 10px; justify-content: flex-end;
       -webkit-app-region: no-drag;
@@ -60,6 +66,7 @@
       downloading: '正在下载…',
       verifying: '正在校验…',
       ready: '安装并重启',
+      installing: '正在安装…',
       error: '重试',
       checking: '检查中…',
       idle: '检查更新',
@@ -78,11 +85,14 @@
       detailEl.textContent = state.detail || ''
       versionEl.textContent = state.version ? 'v' + state.version : ''
       const percent = typeof state.percent === 'number' ? state.percent : 0
+      const installing = state.phase === 'installing'
       progressEl.style.width = (state.phase === 'downloading' ? percent : state.phase === 'ready' ? 100 : 0) + '%'
+      document.querySelector('.bar').classList.toggle('busy', installing)
       const busy = state.phase === 'checking' || state.phase === 'downloading' || state.phase === 'verifying'
       primaryEl.textContent = LABELS[state.phase] || '检查更新'
-      primaryEl.disabled = busy || (state.phase === 'idle' && !state.version)
-      laterEl.disabled = state.phase === 'downloading' || state.phase === 'verifying'
+      // Nothing can be cancelled once the installer has been handed the job.
+      primaryEl.disabled = busy || installing || (state.phase === 'idle' && !state.version)
+      laterEl.disabled = busy || installing
     }
 
     if (!api) {

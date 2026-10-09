@@ -234,6 +234,14 @@ export const UPDATE_MANIFEST_URL_ENV = 'DSH_DESKTOP_UPDATE_MANIFEST_URL'
 /** Delay before the automatic startup check, and the interval between later checks. */
 export const UPDATE_STARTUP_DELAY_MS = 8_000
 export const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
+/**
+ * How long the update window stays up after the user starts an installation.
+ *
+ * The handoff itself is instant (the installer waits for this process to exit), so this is purely the
+ * time the "installing" phase needs to be readable before the window disappears — see
+ * `UpdatePhase.installing`.
+ */
+export const INSTALL_HANDOFF_MS = 2_500
 
 /** IPC channels. Product-page channels are deliberately absent: no product IPC exists in P0. */
 export const IPC = {
@@ -333,6 +341,12 @@ export type UpdatePhase =
   | 'downloading'
   | 'verifying'
   | 'ready'
+  /**
+   * Handing over to the installer: the app is about to quit and the silent NSIS run gives no progress
+   * of its own, so this phase exists to say what is happening *before* the window disappears — the
+   * user reported thinking a working update had failed because the screen simply went blank.
+   */
+  | 'installing'
   | 'error'
 
 export interface UpdateState {

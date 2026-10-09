@@ -9,7 +9,6 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { UpdateState } from './constants.ts'
-import { updatesDir } from './paths.ts'
 import {
   discardInstaller,
   downloadInstaller,
@@ -29,6 +28,13 @@ export interface UpdateControllerOptions {
   readonly onAvailable: (version: string) => void
   /** Stop the shell and run the verified installer. */
   readonly onInstall: (installerPath: string) => void
+  /**
+   * Where a downloaded installer is kept.
+   *
+   * Injected rather than imported: `paths.ts` imports Electron, which would make this module
+   * unloadable by the test runner (it strips types and loads plain Node).
+   */
+  readonly updatesDir: () => string
 }
 
 export class UpdateController {
@@ -36,8 +42,15 @@ export class UpdateController {
   private manifest: UpdateManifest | undefined
   private verifiedInstaller: string | undefined
   private inFlight: Promise<void> | undefined
+  /**
+   * Assigned in the body rather than as a parameter property: the test runner strips TypeScript
+   * without transforming it, and parameter properties are not supported in strip-only mode.
+   */
+  private readonly options: UpdateControllerOptions
 
-  constructor(private readonly options: UpdateControllerOptions) {}
+  constructor(options: UpdateControllerOptions) {
+    this.options = options
+  }
 
   get current(): UpdateState {
     return this.state
@@ -93,11 +106,11 @@ export class UpdateController {
     const manifest = this.manifest
     if (manifest === undefined) return this.state
     if (this.verifiedInstaller !== undefined) return this.state
-    const destination = join(updatesDir(), installerFileName(manifest.version))
+    const destination = join(this.options.updatesDir(), installerFileName(manifest.version))
     let lastPercent = -1
     this.setState({ phase: 'downloading', version: manifest.version, percent: 0, message: '正在下载…' })
     try {
-      await mkdir(updatesDir(), { recursive: true })
+      await mkdir(this.options.updatesDir(), { recursive: true })
       await downloadInstaller(manifest.entry.url, destination, ({ received, total }) => {
         if (total <= 0) return
         const percent = Math.min(100, Math.floor((received / total) * 100))
@@ -139,7 +152,16 @@ export class UpdateController {
   install(): boolean {
     const installer = this.verifiedInstaller
     if (installer === undefined) return false
-    this.setState({ phase: 'ready', message: '正在关闭应用并安装…' })
+    // `installing` is its own phase so the window can say what is about to happen: the installer runs
+    // silently (NSIS `/S`) and the app quits, so without this the user just sees the window vanish.
+    const target = this.manifest?.version
+    this.setState({
+      phase: 'installing',
+      ...target === undefined ? {} : { version: target },
+      message: target === undefined
+        ? '正在安装更新，应用即将关闭，装好后会自动打开'
+        : `正在安装 v${target}：应用即将关闭，装好后会自动打开（约 10–60 秒）`,
+    })
     this.options.onInstall(installer)
     return true
   }
