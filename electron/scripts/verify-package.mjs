@@ -114,7 +114,7 @@ for (const required of ['dsh-desktop-shell/index.js', 'dsh-desktop-shell/client.
 }
 
 // The plugin-management path: the shims must be physical, and pnpm's JS must be readable through
-// the archive they point into (the shell passes its path down as DSH_DESKTOP_PNPM_ENTRY).
+// the archive they point into.
 for (const shim of ['pnpm.cmd', 'node.cmd']) {
   if (!existsSync(join(unpackedRoot, 'dsh', 'bin', shim))) fail(`缺少随包 shim：app.asar.unpacked/dsh/bin/${shim}`)
 }
@@ -122,13 +122,18 @@ if (!archived.some(entry => entry.path === 'dsh/node_modules/pnpm/bin/pnpm.cjs')
   fail('app.asar 里缺少 pnpm 入口 node_modules/pnpm/bin/pnpm.cjs')
 }
 
-// Run the packaged shim the way an outside caller does — `pnpm` resolved from PATH with no
-// DSH_DESKTOP_PNPM_ENTRY — because that is exactly how it took down an electron-builder run: the
-// shim looked for pnpm in the unpacked tree, where JavaScript is not.
+// Run the packaged shim the way DSH's plugin installer does: `pnpm` resolved from PATH with a
+// **scrubbed** environment. `dsh-subprocess` drops every `DSH_`-prefixed variable before spawning a
+// child, so the shell's hints are gone and the shim has to find the app by itself. Reproducing that
+// stripped environment is the point of this check — with the variables present it passes even while
+// "install plugin" fails with `cannot find the bundled pnpm` in the UI.
 const appExecutable = join(unpacked, 'DSH Desktop.exe')
 if (!existsSync(appExecutable)) fail('缺少 DSH Desktop.exe')
+const scrubbed = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith('DSH_')),
+)
 const shimVersion = execFileSync(`"${join(unpackedRoot, 'dsh', 'bin', 'pnpm.cmd')}" --version`, {
-  env: { ...process.env, DSH_DESKTOP_NODE_EXECUTABLE: appExecutable, ELECTRON_RUN_AS_NODE: '1', DSH_DESKTOP_PNPM_ENTRY: '' },
+  env: scrubbed,
   windowsHide: true,
   shell: true,
   encoding: 'utf8',

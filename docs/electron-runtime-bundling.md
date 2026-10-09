@@ -343,7 +343,55 @@ npm test           → 46/46 通过（runtime-tree 7 项 + profile 7 项）
 6. 单测 257 项 / 250 通过（7 个既有 blake2b 失败）、`tsc --noEmit` 干净。
 7. 安装包本身也验证过：`electron-builder --win nsis` 出的 0.3.11 包能正常产出（178.3 MiB），其载荷解开后就是第 10.2 节那张对比表。
 
-### 10.4 还没做
+### 10.4 后续：shim 不能依赖环境变量（2026-10-09，插件安装失败）
+
+用户实报「安装插件失败」，界面里是一个 pnpm 退出的安装日志：
+
+```
+$ pnpm add https://github.com/omdsh-dev/dsh-genui     退出码 1
+DSH Desktop: cannot find the bundled pnpm (this shim only works inside DSH Desktop).
+```
+
+这句是**我们 shim 自己的报错**，说明有人从 `PATH` 调到了它，却没有壳注入的那两个变量。根因在 DSH 一行代码里
+（`dsh-subprocess` 的 `scrubbedParentEnv`）：
+
+```js
+for (const [key, value] of Object.entries(process.env))
+  if (value !== undefined && !SENSITIVE_ENV_PATTERN.test(key) && !key.toUpperCase().startsWith("DSH_")) env[key] = value;
+```
+
+**凡 `DSH_` 开头的变量都会被剥掉**（防止 DSH 自己的配置/凭据漏给子进程），而插件安装走的正是
+`execution: 'service'` 这条路（`runProfilePnpm` 里 `...(options.execution === 'cli' ? process.env : scrubbedParentEnv())`）。
+于是：`PATH` 里还有随包 `bin`（能解析到我们的 shim），但 `DSH_DESKTOP_NODE_EXECUTABLE` /
+`DSH_DESKTOP_PNPM_ENTRY` 全没了 → shim 既找不到应用二进制、也找不到 pnpm 的 JS。
+
+**复现**（拿安装版当时的 shim，剥掉 `DSH_*` 后调用）：
+
+```
+> pnpm.cmd --version
+stderr: DSH Desktop: cannot find the bundled pnpm (this shim only works inside DSH Desktop).
+exit  : 1
+```
+
+**修法**：让 shim **一个环境变量都不依赖**——
+
+1. 解释器：`DSH_DESKTOP_NODE_EXECUTABLE` → `%~dp0..\..\..\..\DSH Desktop.exe`（安装根，兼容 debug 通道的
+   `DSH Desktop Debug.exe`）→ `node`（开发树）；
+2. pnpm 入口：`DSH_DESKTOP_PNPM_ENTRY` → 相对路径（开发树）→ `%~dp0..\..\..\app.asar\dsh\node_modules\pnpm\bin\pnpm.cjs`；
+3. **自己设 `ELECTRON_RUN_AS_NODE=1`**（剥过的环境里也没有它；不设就会弹出 GUI 而不是跑脚本）；
+4. `node.cmd` 同样处理（插件的 install 脚本会调 `node`）。
+
+**修复后实测**（打包产物 + **剥掉 `DSH_*` 的环境**）：
+
+| 检查 | 结果 |
+|---|---|
+| `pnpm.cmd --version` | `10.34.2`，exit 0 |
+| `node.cmd -e "console.log(process.version)"` | `v24.18.1`，exit 0 |
+| 用同一个仓库 URL 真装一次（`pnpm add https://github.com/omdsh-dev/dsh-genui`） | pnpm 正常跑起来（10.6 s）；随后被 **pnpm 10 自己的构建脚本策略**拦下（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）——那是 DSH 的 `allowBuilds` 审批流程该管的事，与本 shim 无关 |
+
+`verify-package.mjs` 的这一项检查也改成**在剥掉 `DSH_*` 的环境里实跑打包后的 shim**，专门守住这条路径。
+
+### 10.5 还没做
 
 - 官方 NSIS 层还有三件事（`windows-directory-installer.mjs`）：目标目录相同时**跳过旧版卸载**、先解到暂存目录再**目录改名上位**、自研带进度的解包插件。asar 之后载荷只剩 1 个大文件 + 58 个小文件，这三件事的收益已经很小。
 - 更新仍是整包下载；差分更新是另一件事（官方有 `installed-update-*` 一套）。

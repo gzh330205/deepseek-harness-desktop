@@ -249,50 +249,61 @@ log('    ✔ --version 与 web --help 均正常')
 // own binary, so `pnpm` inside a profile runs on the packaged Electron in Node mode —
 // no second Node runtime on the machine. `node` is shimmed too because plugin install
 // scripts expect it.
+//
+// **Nothing here may depend on those variables existing.** DSH scrubs every `DSH_`-prefixed variable
+// out of the environment it hands to children (`scrubbedParentEnv` in `dsh-subprocess`), and its
+// plugin installer runs `pnpm add` through exactly that path: the variables are gone while `PATH`
+// still finds this shim. That is how "install plugin" failed with `cannot find the bundled pnpm`
+// even though the app was running and healthy. So the shim locates the app binary from its own
+// location and sets `ELECTRON_RUN_AS_NODE` itself; the variables stay as a first-choice hint (they
+// are more precise in a prepared, unpacked tree).
 const shimDir = join(output, 'bin')
 mkdirSync(shimDir, { recursive: true })
-// Branch order matters, and every branch has a job:
-//   1. the shell's exact entry (DSH_DESKTOP_PNPM_ENTRY) — what actually ships, since the packaged
-//      runtime keeps pnpm's JavaScript *inside* app.asar while this shim is a real file beside it;
-//   2. the prepared tree's relative path — development, where the runtime is an ordinary directory;
-//   3. the ASAR derived from this file's own location — for anything that resolves `pnpm` from PATH
-//      without our variables (a build tool, the user's own shell). Without it those callers got
-//      `Cannot find module …app.asar.unpacked\dsh\node_modules\pnpm\bin\pnpm.cjs`, which took down
-//      an entire electron-builder run;
-//   4. a plain, explicit failure rather than a confusing module error.
+/** Resolve the app binary the same way in both shims: hint, then the install root, then plain node. */
+const appBinary = [
+  'set "DSH_NODE=%DSH_DESKTOP_NODE_EXECUTABLE%"',
+  'rem %~dp0 is <install>\\resources\\app.asar.unpacked\\dsh\\bin, so the app binary is four levels up.',
+  'rem Both product names this repository ships: the release channel and the debug channel.',
+  'if not defined DSH_NODE if exist "%~dp0..\\..\\..\\..\\DSH Desktop.exe" set "DSH_NODE=%~dp0..\\..\\..\\..\\DSH Desktop.exe"',
+  'if not defined DSH_NODE if exist "%~dp0..\\..\\..\\..\\DSH Desktop Debug.exe" set "DSH_NODE=%~dp0..\\..\\..\\..\\DSH Desktop Debug.exe"',
+]
 writeFileSync(join(shimDir, 'pnpm.cmd'), [
   '@echo off',
-  'rem Bundled pnpm: runs on the app\'s own Electron in Node mode.',
-  'if defined DSH_DESKTOP_PNPM_ENTRY if defined DSH_DESKTOP_NODE_EXECUTABLE (',
-  '  "%DSH_DESKTOP_NODE_EXECUTABLE%" "%DSH_DESKTOP_PNPM_ENTRY%" %*',
-  '  goto :eof',
+  'setlocal',
+  'rem Bundled pnpm: runs on the app\'s own Electron in Node mode. See prepare-runtime.mjs.',
+  ...appBinary,
+  'set "DSH_PNPM_JS=%DSH_DESKTOP_PNPM_ENTRY%"',
+  'if not defined DSH_PNPM_JS set "DSH_PNPM_JS=%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs"',
+  'rem `if exist` cannot see inside app.asar (one file, not a directory), so the packaged location is',
+  'rem taken on trust once the prepared tree\'s relative path is absent.',
+  'if not exist "%DSH_PNPM_JS%" set "DSH_PNPM_JS=%~dp0..\\..\\..\\app.asar\\dsh\\node_modules\\pnpm\\bin\\pnpm.cjs"',
+  'rem Without this the app binary would open the GUI instead of running the script.',
+  'set "ELECTRON_RUN_AS_NODE=1"',
+  'if not defined DSH_NODE goto :plainNode',
+  '"%DSH_NODE%" "%DSH_PNPM_JS%" %*',
+  'goto :done',
+  ':plainNode',
+  'if not exist "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" (',
+  '  echo DSH Desktop: cannot find the bundled pnpm (this shim only works inside DSH Desktop). 1>&2',
+  '  exit /b 1',
   ')',
-  'if exist "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" (',
-  '  if defined DSH_DESKTOP_NODE_EXECUTABLE (',
-  '    "%DSH_DESKTOP_NODE_EXECUTABLE%" "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
-  '    goto :eof',
-  '  )',
-  '  node "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
-  '  goto :eof',
-  ')',
-  'rem `if exist` cannot see inside app.asar (it is one file, not a directory), so this branch is',
-  'rem taken on trust: with the app binary in hand, that IS where pnpm lives in a packaged install.',
-  'if defined DSH_DESKTOP_NODE_EXECUTABLE (',
-  '  "%DSH_DESKTOP_NODE_EXECUTABLE%" "%~dp0..\\..\\..\\app.asar\\dsh\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
-  '  goto :eof',
-  ')',
-  'echo DSH Desktop: cannot find the bundled pnpm (this shim only works inside DSH Desktop). 1>&2',
-  'exit /b 1',
+  'rem A prepared tree next to a development checkout: an ordinary node is enough.',
+  'node "%DSH_PNPM_JS%" %*',
+  ':done',
   '',
 ].join('\r\n'), 'utf8')
 writeFileSync(join(shimDir, 'node.cmd'), [
   '@echo off',
-  'rem Node shell for plugin install scripts; the app binary in Node mode.',
-  'if defined DSH_DESKTOP_NODE_EXECUTABLE (',
-  '  "%DSH_DESKTOP_NODE_EXECUTABLE%" %*',
-  ') else (',
+  'setlocal',
+  'rem Node shell for plugin install scripts; the app binary in Node mode. Same rule as pnpm.cmd:',
+  'rem the environment may have been scrubbed of our DSH_-prefixed variables.',
+  ...appBinary,
+  'set "ELECTRON_RUN_AS_NODE=1"',
+  'if not defined DSH_NODE (',
   '  node %*',
+  '  exit /b %ERRORLEVEL%',
   ')',
+  '"%DSH_NODE%" %*',
   '',
 ].join('\r\n'), 'utf8')
 
