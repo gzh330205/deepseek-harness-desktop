@@ -166,6 +166,18 @@ const PRUNE_FILE = [
   /\.gypi$/u,                 // node-gyp build configuration
   /\.vcxproj(\.filters)?$/u,
   /^binding\.sln$/u,
+  /**
+   * What electron-builder never copies, mirrored here.
+   *
+   * `app-builder-lib` has a hardcoded `excludedNames` / `excludedExts` list (`.git`, `.gitkeep`,
+   * `.gitignore`, `.npmignore`, `pnpm-lock.yaml`, `package-lock.json`, `__pycache__`, `*.d.ts`,
+   * `*.obj`, …) and silently skips those entries. The manifest decides what the runtime *is*, and
+   * `verify-package.mjs` compares it against the archive, so any file we count but builder drops
+   * makes the packaged check fail — pnpm 11 ships `…/undici/lib/llhttp/.gitkeep`, which is exactly
+   * how this was found. Pruning them here keeps `清单 == 实际进包` true by construction.
+   */
+  /^(\.git|\.hg|\.svn|CVS|RCS|SCCS|__pycache__|\.DS_Store|thumbs\.db|\.gitignore|\.gitkeep|\.gitattributes|\.npmignore|\.idea|\.vs|\.flowconfig|\.jshintrc|\.eslintrc|\.circleci|\.yarn-integrity|\.yarn-metadata\.json|yarn-error\.log|yarn\.lock|package-lock\.json|npm-debug\.log|pnpm-lock\.yaml|bun\.lock|bun\.lockb|appveyor\.yml|\.travis\.yml|circle\.yml|\.nyc_output|\.husky|\.github|electron-builder\.env)$/u,
+  /\.(iml|hprof|orig|pyc|pyo|rbc|swp|csproj|sln|suo|xproj|cc|mk|a|o|obj|forge-meta)$/u,
 ]
 /** Extensions that are executed, dlopen'd, or read by a shell: they cannot live in an ASAR. */
 const PHYSICAL_EXTENSIONS = ['.exe', '.dll', '.node', '.com', '.cmd', '.bat', '.ps1', '.sh', '.so', '.dylib']
@@ -267,6 +279,10 @@ const appBinary = [
   'if not defined DSH_NODE if exist "%~dp0..\\..\\..\\..\\DSH Desktop.exe" set "DSH_NODE=%~dp0..\\..\\..\\..\\DSH Desktop.exe"',
   'if not defined DSH_NODE if exist "%~dp0..\\..\\..\\..\\DSH Desktop Debug.exe" set "DSH_NODE=%~dp0..\\..\\..\\..\\DSH Desktop Debug.exe"',
 ]
+// No parenthesised blocks anywhere in these shims: `cmd` parses a whole `( … )` block before running
+// it, so a stray bracket in an echoed message breaks the script even on a branch that is never taken
+// (an error line containing "(this shim only works inside DSH Desktop)" did exactly that, and only in
+// the prepared tree, because the packaged layout never reaches that branch). `goto` labels instead.
 writeFileSync(join(shimDir, 'pnpm.cmd'), [
   '@echo off',
   'setlocal',
@@ -274,35 +290,34 @@ writeFileSync(join(shimDir, 'pnpm.cmd'), [
   ...appBinary,
   'set "DSH_PNPM_JS=%DSH_DESKTOP_PNPM_ENTRY%"',
   'if not defined DSH_PNPM_JS set "DSH_PNPM_JS=%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs"',
-  'rem `if exist` cannot see inside app.asar (one file, not a directory), so the packaged location is',
-  'rem taken on trust once the prepared tree\'s relative path is absent.',
+  'rem `if exist` cannot see inside app.asar - it is one file, not a directory - so the packaged',
+  'rem location is taken on trust once the prepared tree\'s relative path is absent.',
   'if not exist "%DSH_PNPM_JS%" set "DSH_PNPM_JS=%~dp0..\\..\\..\\app.asar\\dsh\\node_modules\\pnpm\\bin\\pnpm.cjs"',
   'rem Without this the app binary would open the GUI instead of running the script.',
   'set "ELECTRON_RUN_AS_NODE=1"',
-  'if not defined DSH_NODE goto :plainNode',
+  'if defined DSH_NODE goto :runWithApp',
+  'if exist "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" goto :runWithNode',
+  'echo DSH Desktop: cannot find the bundled pnpm - this shim only works inside DSH Desktop. 1>&2',
+  'exit /b 1',
+  ':runWithApp',
   '"%DSH_NODE%" "%DSH_PNPM_JS%" %*',
-  'goto :done',
-  ':plainNode',
-  'if not exist "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" (',
-  '  echo DSH Desktop: cannot find the bundled pnpm (this shim only works inside DSH Desktop). 1>&2',
-  '  exit /b 1',
-  ')',
+  'goto :eof',
   'rem A prepared tree next to a development checkout: an ordinary node is enough.',
+  ':runWithNode',
   'node "%DSH_PNPM_JS%" %*',
-  ':done',
   '',
 ].join('\r\n'), 'utf8')
 writeFileSync(join(shimDir, 'node.cmd'), [
   '@echo off',
   'setlocal',
   'rem Node shell for plugin install scripts; the app binary in Node mode. Same rule as pnpm.cmd:',
-  'rem the environment may have been scrubbed of our DSH_-prefixed variables.',
+  'rem the environment may have been scrubbed of our DSH_-prefixed variables, and no `( … )` blocks.',
   ...appBinary,
   'set "ELECTRON_RUN_AS_NODE=1"',
-  'if not defined DSH_NODE (',
-  '  node %*',
-  '  exit /b %ERRORLEVEL%',
-  ')',
+  'if defined DSH_NODE goto :runWithApp',
+  'node %*',
+  'goto :eof',
+  ':runWithApp',
   '"%DSH_NODE%" %*',
   '',
 ].join('\r\n'), 'utf8')
@@ -335,11 +350,15 @@ const entryPath = join(output, entryRelative)
 if (!existsSync(entryPath)) fail(`随包运行时缺少入口 ${entryRelative}`)
 
 const files = []
+/** The manifest describes the tree; it is not part of it. Re-running prepare leaves the previous
+ *  run's copy behind, and counting it made the packaged file count off by one — which
+ *  `verify-package.mjs` then refused (`清单声明 N + 1`). */
+const MANIFEST_FILENAME = 'desktop-runtime.json'
 const collect = (directory) => {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name)
     if (entry.isDirectory()) collect(path)
-    else if (entry.isFile()) files.push(relative(output, path).split(sep).join('/'))
+    else if (entry.isFile() && entry.name !== MANIFEST_FILENAME) files.push(relative(output, path).split(sep).join('/'))
   }
 }
 collect(output)

@@ -72,6 +72,11 @@ export default {
     // The DSH runtime, packed into the ASAR (`resources/app.asar/dsh/**`). The second entry is the
     // same workaround `extraResources` needed: electron-builder excludes a source directory's root
     // `node_modules`, and the exit code is still 0 when it does — `verify-package.mjs` catches it.
+    //
+    // Note that builder *also* silently skips its own hardcoded `excludedNames`/`excludedExts`
+    // (`.gitkeep`, `.gitignore`, `pnpm-lock.yaml`, `*.obj`, …). `prepare-runtime.mjs` prunes exactly
+    // that set so the manifest counts only what can actually be packed; otherwise the packaged
+    // file-count check fails with the tree and the archive disagreeing by those entries.
     { from: 'runtime/dsh', to: 'dsh', filter: ['**/*'] },
     { from: 'runtime/dsh/node_modules', to: 'dsh/node_modules', filter: ['**/*'] },
   ],
