@@ -65,14 +65,35 @@ test('a collapsed panel parks the view instead of showing a sliver', () => {
   assert.ok(BROWSER_HIDDEN_RECT.x < -1000)
 })
 
-test('a bare host means HTTPS and only HTTP(S) is accepted', () => {
+test('a bare host means HTTPS and HTTP(S) is accepted', () => {
   assert.deepEqual(normalizeAddress('example.com'), { ok: true, url: 'https://example.com/' })
   assert.deepEqual(normalizeAddress('  http://example.com/a?b=1  '), { ok: true, url: 'http://example.com/a?b=1' })
   assert.deepEqual(normalizeAddress('https://127.0.0.1:8080/x'), { ok: true, url: 'https://127.0.0.1:8080/x' })
 })
 
+test('local pages open, as a file URL or as the path tools print', () => {
+  // Generated pages (HTML explainers, saved reports) are handed around as paths, and their names
+  // contain spaces and `#` — the parser has to encode those, not choke on them.
+  assert.deepEqual(
+    normalizeAddress('file:///C:/Users/gzh33/.answer-me-with-html/pages/report.html'),
+    { ok: true, url: 'file:///C:/Users/gzh33/.answer-me-with-html/pages/report.html' },
+  )
+  assert.deepEqual(
+    normalizeAddress('C:\\Users\\gzh33\\.answer-me-with-html\\pages\\报告 v2#1.html'),
+    { ok: true, url: 'file:///C:/Users/gzh33/.answer-me-with-html/pages/%E6%8A%A5%E5%91%8A%20v2%231.html' },
+  )
+  assert.deepEqual(
+    normalizeAddress('c:/tmp/page.html'),
+    { ok: true, url: 'file:///c:/tmp/page.html' },
+  )
+  // A share is a network read, not a local file.
+  const share = normalizeAddress('file://server/share/page.html')
+  assert.equal(share.ok, false)
+  if (!share.ok) assert.match(share.reason, /网络共享/u)
+})
+
 test('dangerous or ambiguous input is refused with a reason', () => {
-  for (const raw of ['', '   ', 'file:///C:/secret.txt', 'javascript:alert(1)', 'data:text/html,<b>x</b>', 'about:blank', 'chrome://settings']) {
+  for (const raw of ['', '   ', 'javascript:alert(1)', 'data:text/html,<b>x</b>', 'about:blank', 'chrome://settings', 'dsh-app://app/']) {
     const result = normalizeAddress(raw)
     assert.equal(result.ok, false, `expected ${raw} to be refused`)
     if (!result.ok) assert.ok(result.reason.length > 0)
@@ -83,11 +104,13 @@ test('dangerous or ambiguous input is refused with a reason', () => {
   assert.equal(self.ok, false)
 })
 
-test('navigation policy allows only HTTP(S)', () => {
+test('navigation policy allows HTTP(S) and local files, nothing else', () => {
   assert.equal(isAllowedBrowserNavigation('https://example.com/'), true)
   assert.equal(isAllowedBrowserNavigation('http://example.com/'), true)
-  assert.equal(isAllowedBrowserNavigation('file:///etc/passwd'), false)
+  assert.equal(isAllowedBrowserNavigation('file:///C:/page.html'), true)
+  assert.equal(isAllowedBrowserNavigation('file://server/share/page.html'), false)
   assert.equal(isAllowedBrowserNavigation('dsh-app://app/'), false)
+  assert.equal(isAllowedBrowserNavigation('javascript:alert(1)'), false)
   assert.equal(isAllowedBrowserNavigation('not a url'), false)
 })
 

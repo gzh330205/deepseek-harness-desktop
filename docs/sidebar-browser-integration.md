@@ -29,7 +29,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| [browser-geometry.ts](../electron/src/browser-geometry.ts) | 矩形解析/夹紧/标题栏偏移、地址规范化（裸主机补 HTTPS、只放行 HTTP(S)、拒内嵌凭据与 DSH 自身 origin）、导航策略、失败文案 |
+| [browser-geometry.ts](../electron/src/browser-geometry.ts) | 矩形解析/夹紧/标题栏偏移、地址规范化（裸主机补 HTTPS、放行 HTTP(S) 与**本机文件**、拒内嵌凭据与 DSH 自身 origin）、导航策略、失败文案 |
 | [browser-view.ts](../electron/src/browser-view.ts) | `BrowserViewManager`：单个 `WebContentsView`、独立持久分区 `persist:dsh-desktop-browser`、离屏隐藏、导航/开窗/权限策略、事件→状态推送、面板命令白名单、**M2 的 agent 操作** |
 | [constants.ts](../electron/src/constants.ts) | `dsh-desktop:browser-command` / `browser-state` |
 | [preload.ts](../electron/src/preload.ts) | 只对 loopback DSH 页面暴露 `__DSH_DESKTOP_BROWSER__`（一个 `command` + 一个 `subscribe`）；访客页面无 preload |
@@ -763,6 +763,36 @@ A/B: tabs                  → 各自只看到自己那一页
 **已知边界**：DSH 的 `sidebarRight` 绑定"屏幕上那个会话"，所以当 agent 在**后台会话**里要求显示页面、
 而该会话的 store 尚未被采纳时，`openTabIn` 是 no-op，我们核对后退回 `openTab`（打开你在看的那个
 会话）。同会话（正常情形）不受影响。
+
+### 4.11.10 M25：地址栏也接受本机页面（`file://` 与 `C:\…` 路径）
+
+用户实报：`answer-me-with-html` 这类插件产出的 HTML 报告是本地文件（
+`file:///C:/Users/gzh33/.answer-me-with-html/pages/…html`），而侧边栏浏览器只放行 http/https，打不开。
+
+改了三处：
+
+1. `normalizeAddress`：放行 `file:`；并且**接受直接粘贴的本机路径**（`C:\Users\…\x.html`、`c:/tmp/x.html`）。
+   路径不是 URL —— `new URL('C:\\x')` 会把 `c:` 当成 scheme 解析出垃圾，所以先识别盘符路径，再用
+   `url.pathname = …` 赋值（而不是字符串拼接），让 URL 解析器自己去百分号编码：生成页面的文件名里
+   空格、`#`、`?`、中文都很常见，实测
+   `C:\…\报告 v2#1.html` → `file:///C:/…/%E6%8A%A5%E5%91%8A%20v2%231.html`。
+2. `isAllowedBrowserNavigation`（`will-navigate` 策略）：放行 `file:`；`window.open` 的处理沿用同一判断。
+3. 文案：地址栏占位、空状态、`navigate` 工具描述、内置技能都写明可以给本机页面。
+
+**只放行本机文件**：`file://server/share/x.html` 是 SMB 读取（离开本机），一律拒绝并给出原因。
+其它 scheme（`javascript:`/`data:`/`dsh-app:`）照旧拒绝。
+
+安全性：这一步放大的是「能**显示**什么」，不是「页面能**碰到**什么」——视图仍然是独立持久分区 +
+`sandbox: true` + 无 preload + 无 Node，而 Chromium 本身不允许 `file:` 文档读取其它本地文件。
+
+真机验证（dev 实例，端口 41733）：
+
+| 输入 | 结果 |
+|---|---|
+| `C:\Users\gzh33\.answer-me-with-html\pages\群智能会话-…-102551.html` | 打开成功 387 ms，`snapshot` 43 ms，面板可见 |
+| `file:///C:/Users/gzh33/.answer-me-with-html/pages/微信消息发送-…-095900.html` | 打开成功；标题、**47 个可交互元素（带 `[n]` 索引）**、正文全文均可读（102 KB 的解释器页面完整渲染） |
+| `file://server/share/x.html` | 拒绝：`只支持本机文件，不支持 file:// 网络共享` |
+| `javascript:alert(1)` | 拒绝：`只支持 http/https 与本机文件地址` |
 
 ### 4.11.9 M24：`@` 菜单一直转圈 —— 我们注册的 source 违反了 DSH 的 Promise 契约
 

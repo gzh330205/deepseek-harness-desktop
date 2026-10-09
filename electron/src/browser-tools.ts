@@ -219,13 +219,17 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: 'navigate',
     description:
-      '在桌面端自带的侧边栏浏览器里打开一个 http/https 网址并等待加载完成。不带 scheme 的主机名补全为 https。' +
+      '在桌面端自带的侧边栏浏览器里打开一个 http/https 网址，或本机页面（file:/// URL 或 C:\\… 这样的绝对路径，例如插件产出的 HTML 报告），并等待加载完成。' +
+      '不带 scheme 的主机名补全为 https。' +
       '默认会把它显示给用户（打开右侧栏的「浏览器」标签），用户看到的就是你正在操作的这一页。' +
-      '加载后用 snapshot 读取页面结构，或直接 click/type 操作。会新建页面、产生真实网络请求。',
+      '加载后用 snapshot 读取页面结构，或直接 click/type 操作。会新建页面；网络地址会产生真实网络请求。',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { ...TEXT_SCHEMA, description: '要打开的网址，例如 example.com 或 https://example.com/a' },
+        url: {
+          ...TEXT_SCHEMA,
+          description: '要打开的地址，例如 example.com、https://example.com/a，或 file:///C:/Users/me/.answer-me-with-html/pages/x.html（也接受 C:\\Users\\…\\x.html 这样的本机路径）',
+        },
         show: {
           type: 'boolean',
           description:

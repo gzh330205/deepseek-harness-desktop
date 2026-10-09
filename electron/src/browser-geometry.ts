@@ -121,19 +121,53 @@ export type AddressResult =
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:/iu
 
+/** A drive-absolute Windows path (`C:\dir\page.html`, `C:/dir/page.html`). */
+const WINDOWS_PATH = /^[a-zA-Z]:[\\/]/u
+
+/**
+ * Turn an absolute local path into a `file:` URL.
+ *
+ * Tools and plugins hand out plain paths (`C:\Users\…\.answer-me-with-html\pages\x.html`), and a
+ * path is not a URL: `new URL('C:\\x')` reads `c:` as a scheme and produces nonsense. Assigning
+ * `pathname` instead of interpolating lets the URL parser percent-encode what file names actually
+ * contain — spaces, `#`, `?` — which generated page names routinely do.
+ */
+function fileUrlFromPath(raw: string): string | undefined {
+  if (!WINDOWS_PATH.test(raw)) return undefined
+  const url = new URL('file:///')
+  url.pathname = raw.replace(/\\/gu, '/')
+  return url.href
+}
+
+/**
+ * Whether a `file:` URL points at this machine.
+ *
+ * `file://host/share/x` is an SMB path: it leaves the machine, which is a different thing from
+ * showing a page that is already on disk.
+ */
+function isLocalFileUrl(url: URL): boolean {
+  return url.hostname === '' || url.hostname === 'localhost'
+}
+
 /**
  * Turn whatever the user typed into a URL the browser view may load.
  *
- * Rules (mirroring OneCode's address bar): a bare host means HTTPS; only HTTP(S) is
- * accepted; embedded credentials are refused because they end up in history and logs; and
- * this document's own origin is refused so the panel can never be pointed at the DSH UI.
+ * Rules (mirroring OneCode's address bar): a bare host means HTTPS; HTTP(S) and **local files** are
+ * accepted; embedded credentials are refused because they end up in history and logs; and this
+ * document's own origin is refused so the panel can never be pointed at the DSH UI.
+ *
+ * Local files are in because the panel is where generated pages get read: HTML explainers, saved
+ * reports, exported documents. The view is sandboxed (no preload, no Node, own partition) and
+ * Chromium already refuses to let a `file:` document read other local files, so this widens what can
+ * be *displayed*, not what a page can reach.
  */
 export function normalizeAddress(raw: string, applicationOrigin?: string): AddressResult {
   const trimmed = raw.trim()
   if (trimmed === '') return { ok: false, reason: '请输入网址' }
 
-  let candidate = trimmed
-  if (!SCHEME.test(candidate)) candidate = `https://${candidate}`
+  const asFilePath = fileUrlFromPath(trimmed)
+  let candidate = asFilePath ?? trimmed
+  if (asFilePath === undefined && !SCHEME.test(candidate)) candidate = `https://${candidate}`
 
   let url: URL
   try {
@@ -142,11 +176,15 @@ export function normalizeAddress(raw: string, applicationOrigin?: string): Addre
     return { ok: false, reason: '无法解析这个网址' }
   }
 
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return { ok: false, reason: '只支持 http/https 地址' }
-  }
   if (url.username !== '' || url.password !== '') {
     return { ok: false, reason: '地址里不能带用户名或密码' }
+  }
+  if (url.protocol === 'file:') {
+    if (!isLocalFileUrl(url)) return { ok: false, reason: '只支持本机文件，不支持 file:// 网络共享' }
+    return { ok: true, url: url.href }
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, reason: '只支持 http/https 与本机文件地址' }
   }
   if (url.hostname === '') return { ok: false, reason: '地址缺少主机名' }
   if (applicationOrigin !== undefined && applicationOrigin !== '' && url.origin === applicationOrigin) {
@@ -155,11 +193,12 @@ export function normalizeAddress(raw: string, applicationOrigin?: string): Addre
   return { ok: true, url: url.href }
 }
 
-/** Navigation policy for the browser view: HTTP(S) only, everything else is cancelled. */
+/** Navigation policy for the browser view: HTTP(S) and local files; everything else is cancelled. */
 export function isAllowedBrowserNavigation(url: string): boolean {
   try {
     const parsed = new URL(url)
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return true
+    return parsed.protocol === 'file:' && isLocalFileUrl(parsed)
   } catch {
     return false
   }
