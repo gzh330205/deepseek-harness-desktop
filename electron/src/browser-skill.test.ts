@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { BROWSER_SKILL } from '../../src-tauri/resources/dsh-desktop-shell/browser-skill.js'
+import { BROWSER_SKILL } from '../resources/dsh-desktop-shell/browser-skill.js'
 
 /** `SKILL_NAME` in `@deepseek-ai/dsh-skill`. */
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u

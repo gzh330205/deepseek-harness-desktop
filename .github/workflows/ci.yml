@@ -1,5 +1,8 @@
 name: CI
 
+# The Tauri shell is gone; this validates the Electron shell only. Releases are cut locally
+# (`electron/scripts/release-electron.mjs`), not from CI.
+
 on:
   push:
     branches: [main]
@@ -8,16 +11,24 @@ on:
 jobs:
   verify:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: electron
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
+          cache-dependency-path: electron/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      - run: pnpm exec tsc --noEmit
+      # The runtime under `electron/runtime` is a build artifact and is absent on a fresh clone, so
+      # only the tests that need it may be skipped here; `pnpm runtime:prepare` is a local step.
+      - name: Tests
+        run: pnpm exec electron scripts/run-tests.mjs
+        env:
+          ELECTRON_RUN_AS_NODE: '1'

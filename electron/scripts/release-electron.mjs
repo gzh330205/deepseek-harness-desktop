@@ -79,7 +79,7 @@ if (manifest.version !== version) {
 }
 
 // The Tauri shell must not be publishing the same version.
-const tauriConf = JSON.parse(readFileSync(join(repoRoot, 'src-tauri', 'tauri.conf.json'), 'utf8'))
+const tauriConf = JSON.parse(readFileSync(join(repoRoot, 'electron', 'update-key.json'), 'utf8'))
 if (tauriConf.version === version) {
   process.stdout.write(`提示：Tauri 壳当前版本也是 ${version}；两者的 Release 资产会落在同一个 tag 上。\n`)
 }
@@ -127,7 +127,7 @@ execFileSync(process.execPath, [
 
 // 3. Sign with the Tauri/minisign key. Empty password is this key's configuration, and
 //    going through a shell would swallow the empty argument, so call the CLI directly.
-const keyPath = resolve(repoRoot, process.env.DSH_DESKTOP_SIGNING_KEY_PATH ?? 'src-tauri/keys/dsh-desktop.key')
+const keyPath = resolve(repoRoot, process.env.DSH_DESKTOP_SIGNING_KEY_PATH ?? 'electron/keys/dsh-desktop.key')
 if (!existsSync(keyPath)) fail(`缺少签名私钥：${keyPath}`)
 process.stdout.write('==> tauri signer sign\n')
 execFileSync(process.execPath, [
@@ -147,7 +147,7 @@ if (!existsSync(signaturePath)) fail(`缺少签名文件：${signaturePath}`)
 const signature = readFileSync(signaturePath, 'utf8').trim()
 
 // 4. Verify what we are about to publish, with the public key that ships in the app.
-const verified = await verifyMinisign(artifact, signature, tauriConf.plugins.updater.pubkey)
+const verified = await verifyMinisign(artifact, signature, tauriConf.pubkey)
 if (verified.ok !== true) fail(`自校验失败，拒绝发布：${verified.reason}`)
 process.stdout.write('==> 签名自校验通过\n')
 

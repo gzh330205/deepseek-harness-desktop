@@ -3,7 +3,7 @@
  * a click shows and focuses the window, and the context menu offers show/about/quit.
  */
 
-import { Menu, Tray, nativeImage } from 'electron'
+import { Menu, Tray, app, nativeImage } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -15,9 +15,9 @@ export function resolveIconPath(): string | undefined {
   const candidates = [
     join(process.resourcesPath, 'tray.ico'),
     join(process.resourcesPath, 'icon.png'),
-    join(process.resourcesPath, '..', 'src-tauri', 'icons', 'icon.ico'),
-    join(process.resourcesPath, '..', 'src-tauri', 'icons', 'whale-original.png'),
-    join(process.cwd(), '..', 'src-tauri', 'icons', 'whale-original.png'),
+    // Development: the icons live in `electron/build/icons` (electron-builder's buildResources).
+    join(app.getAppPath(), 'build', 'icons', 'icon.ico'),
+    join(app.getAppPath(), 'build', 'icons', 'whale-original.png'),
   ]
   return candidates.find(candidate => existsSync(candidate))
 }

@@ -90,13 +90,13 @@ export default {
   asarUnpack: asarUnpackPatterns(physicalRuntimeFiles, 'runtime/dsh'),
   extraResources: [
     // The DSH panel plugin travels with the installer and is injected via --patch.
-    { from: '../src-tauri/resources/dsh-desktop-shell', to: 'dsh-desktop-shell' },
+    { from: 'resources/dsh-desktop-shell', to: 'dsh-desktop-shell' },
     // Tray and window icons (tray.ts reads these from process.resourcesPath).
-    { from: '../src-tauri/icons/icon.png', to: 'icon.png' },
-    { from: '../src-tauri/icons/icon.ico', to: 'tray.ico' },
+    { from: 'build/icons/icon.png', to: 'icon.png' },
+    { from: 'build/icons/icon.ico', to: 'tray.ico' },
   ],
   win: {
-    icon: '../src-tauri/icons/icon.ico',
+    icon: 'build/icons/icon.ico',
     target: [{ target: 'nsis', arch: ['x64'] }],
     // No code-signing certificate: the minisign signature in latest.json is the gate.
     forceCodeSigning: false,

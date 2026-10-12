@@ -1,7 +1,7 @@
 /**
  * Reference-chip contract for the browser panel's element picker.
  *
- * The panel plugin (`src-tauri/resources/dsh-desktop-shell/client.js`) is plain ESM loaded by
+ * The panel plugin (`electron/resources/dsh-desktop-shell/client.js`) is plain ESM loaded by
  * DSH, so this test runner cannot execute it. What it *can* do is pin the contract it depends
  * on, because every piece of that contract lives in DSH itself and was read out of DSH's
  * bundles (documented in `docs/sidebar-browser-integration.md` §4.1):
@@ -28,7 +28,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
-const client = readFileSync(new URL('../../src-tauri/resources/dsh-desktop-shell/client.js', import.meta.url), 'utf8')
+const client = readFileSync(new URL('../resources/dsh-desktop-shell/client.js', import.meta.url), 'utf8')
 
 test('the panel registers an element reference source with a codec', () => {
   assert.match(client, /inputTriggers\.registerSource\(source\)/u)

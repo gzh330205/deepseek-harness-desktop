@@ -21,7 +21,7 @@ import { compareVersions } from './gates.ts'
 import { verifyMinisign, type MinisignResult } from './minisign.ts'
 
 /**
- * The public key from `src-tauri/tauri.conf.json`, injected at build time by
+ * The public key from `electron/update-key.json`, injected at build time by
  * `build.mjs` so the private key's counterpart has exactly one source of truth.
  */
 declare const __DSH_UPDATE_PUBKEY__: string

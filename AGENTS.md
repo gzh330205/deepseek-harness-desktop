@@ -2,7 +2,7 @@
 
 ## 0. 先读这一节：仓库里现在有**两个**桌面壳
 
-**在跑的是 Electron 壳**（`electron/`，v0.3.6 起为 `releases/latest`），Tauri 壳（`src-tauri/`，v0.2.31）是**待退役的旧版**。
+**唯一的桌面壳是 Electron 壳**（`electron/`）。Tauri 壳（原 `src-tauri/`，最后发布 v0.2.31）**已退役并从仓库移除**；已装旧版的自动迁移仍由 `latest.json` 与安装器的 `/UPDATE` 桥接保留，签名私钥在 `electron/keys/dsh-desktop.key`（另存于 `%USERPROFILE%\.dsh-desktop-keys`）。
 
 | | Electron 壳（当前） | Tauri 壳（旧版） |
 |---|---|---|

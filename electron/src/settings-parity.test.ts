@@ -22,8 +22,8 @@ function read(relative: string): string {
   return readFileSync(new URL(relative, import.meta.url), 'utf8')
 }
 
-const pluginHost = read('../../src-tauri/resources/dsh-desktop-shell/index.js')
-const pluginClient = read('../../src-tauri/resources/dsh-desktop-shell/client.js')
+const pluginHost = read('../resources/dsh-desktop-shell/index.js')
+const pluginClient = read('../resources/dsh-desktop-shell/client.js')
 const shellSettingsPage = read('../src/settings-ui/index.html')
 
 test('the plugin host half knows the browser switch', () => {

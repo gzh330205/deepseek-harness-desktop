@@ -14,3 +14,7 @@ electron/release/
 electron/runtime/
 electron/.runtime-build/
 electron/release-debug/
+
+# Electron 壳的 minisign 私钥（唯一副本另存于 %USERPROFILE%\.dsh-desktop-keys）
+electron/keys/*.key
+!electron/keys/*.key.pub

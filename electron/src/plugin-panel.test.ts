@@ -1,7 +1,7 @@
 /**
  * The panel plugin, executed and rendered in a minimal host.
  *
- * `src-tauri/resources/dsh-desktop-shell/client.js` is loaded by DSH through
+ * `electron/resources/dsh-desktop-shell/client.js` is loaded by DSH through
  * `window.__ModuleLoader__`, so nothing in this repository ever ran it — and that is how a
  * one-line ordering mistake shipped a **white sidebar** (a `useEffect` dependency array
  * referenced a `const` declared further down the component; dependency arrays are evaluated
@@ -20,7 +20,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
-const SOURCE = readFileSync(new URL('../../src-tauri/resources/dsh-desktop-shell/client.js', import.meta.url), 'utf8')
+const SOURCE = readFileSync(new URL('../resources/dsh-desktop-shell/client.js', import.meta.url), 'utf8')
 /** The launch overlay, because it is where DSH's own browser tab type is disabled. */
 const OVERLAY_SOURCE = readFileSync(new URL('./desktop-files.ts', import.meta.url), 'utf8')
 

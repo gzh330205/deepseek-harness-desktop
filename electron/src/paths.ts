@@ -86,7 +86,7 @@ export function pluginEntryPath(): string | undefined {
   if (override !== undefined && override !== '' && existsSync(override)) return override
   const packaged = join(process.resourcesPath, DSH_PLUGIN_DIR_NAME, 'index.js')
   if (existsSync(packaged)) return packaged
-  const development = join(app.getAppPath(), '..', 'src-tauri', 'resources', DSH_PLUGIN_DIR_NAME, 'index.js')
+  const development = join(app.getAppPath(), 'resources', DSH_PLUGIN_DIR_NAME, 'index.js')
   return existsSync(development) ? development : undefined
 }
 

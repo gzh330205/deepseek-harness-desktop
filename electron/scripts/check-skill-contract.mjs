@@ -48,7 +48,7 @@ if (nodeModules === undefined) {
 
 const { Context } = await import(pathToFileURL(join(nodeModules, '@deepseek-ai', 'cordis', 'lib', 'index.js')).href)
 const skillPackage = await import(pathToFileURL(join(nodeModules, '@deepseek-ai', 'dsh-skill', 'lib', 'index.js')).href)
-const { BROWSER_SKILL } = await import(pathToFileURL(join(repoRoot, 'src-tauri', 'resources', 'dsh-desktop-shell', 'browser-skill.js')).href)
+const { BROWSER_SKILL } = await import(pathToFileURL(join(repoRoot, 'electron', 'resources', 'dsh-desktop-shell', 'browser-skill.js')).href)
 
 /** Mount the real registry on a real Cordis context — the same composition `dsh web` builds. */
 async function mountRegistry() {

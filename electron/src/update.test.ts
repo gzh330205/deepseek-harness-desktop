@@ -21,9 +21,9 @@ import { downloadInstaller, fetchManifest, installerFileName, isNewer, verifyIns
 
 const fixture = (name: string): Buffer => readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)))
 const conf = JSON.parse(
-  readFileSync(fileURLToPath(new URL('../../src-tauri/tauri.conf.json', import.meta.url)), 'utf8'),
-) as { plugins: { updater: { pubkey: string } } }
-const publicKey = conf.plugins.updater.pubkey
+  readFileSync(fileURLToPath(new URL('../update-key.json', import.meta.url)), 'utf8'),
+) as { pubkey: string }
+const publicKey = conf.pubkey
 const signature = fixture('artifact.txt.sig').toString('utf8')
 
 const workDir = mkdtempSync(join(tmpdir(), 'dsh-update-test-'))

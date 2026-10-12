@@ -1,5 +1,5 @@
 /**
- * Minisign verification against the key already deployed in `src-tauri/tauri.conf.json`.
+ * Minisign verification against the key deployed in `electron/update-key.json`.
  *
  * Why this exists: `electron-updater` on Windows verifies the downloaded installer
  * with Authenticode against `publisherName` from `app-update.yml`, and returns early

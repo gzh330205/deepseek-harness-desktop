@@ -24,10 +24,10 @@ import { verifyMinisign } from '../src/minisign.ts'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(root, '..')
 const sizeMiB = Number(process.argv[2] ?? '8')
-const keyPath = resolve(repoRoot, process.env.DSH_DESKTOP_SIGNING_KEY_PATH ?? 'src-tauri/keys/dsh-desktop.key')
+const keyPath = resolve(repoRoot, process.env.DSH_DESKTOP_SIGNING_KEY_PATH ?? 'electron/keys/dsh-desktop.key')
 const password = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? ''
-const conf = JSON.parse(readFileSync(join(repoRoot, 'src-tauri', 'tauri.conf.json'), 'utf8'))
-const publicKey = conf.plugins.updater.pubkey
+const conf = JSON.parse(readFileSync(join(repoRoot, 'electron', 'update-key.json'), 'utf8'))
+const publicKey = conf.pubkey
 
 const workDir = mkdtempSync(join(tmpdir(), 'dsh-minisign-'))
 const artifactPath = join(workDir, 'DSH Desktop_0.3.0_x64-setup.exe')

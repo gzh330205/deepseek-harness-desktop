@@ -1,6 +1,6 @@
 # DSH Desktop — Electron 壳（P0）
 
-Tauri 壳（`../src-tauri/`）的 Electron 替代实现。两者**当前并存**：`src-tauri/` 未做任何改动，仍在正常构建与发布；本目录是迁移的 P0 脚手架。
+本目录是 DSH Desktop 的**唯一**桌面壳（Tauri 壳已退役并从仓库移除；旧版客户的自动迁移仍由 `latest.json` 与安装器的 `/UPDATE` 桥接保留）。
 
 技术验证结论与证据见 [docs/electron-p0-verification.md](../docs/electron-p0-verification.md)，迁移全案见 [docs/tauri-to-electron-migration.md](../docs/tauri-to-electron-migration.md)。
 
@@ -9,7 +9,7 @@ Tauri 壳（`../src-tauri/`）的 Electron 替代实现。两者**当前并存**
 - 单实例锁（第二次启动聚焦已有窗口）
 - 启动前三道闸门：`dsh --version` ≥ `0.1.2-alpha.2`、`dsh --help` 含 `--patch`、固定端口可用（占用时报出 PID/进程名与两条出路）
 - 以 **Electron Node 模式**启动 `dsh web --patch <overlay> --host 127.0.0.1 --port <port> --no-open`（不需要系统 Node，也不需要 `cmd.exe` shim）
-- 每次启动重写 overlay，注入 `../src-tauri/resources/dsh-desktop-shell/`（面板插件零改动复用）
+- 每次启动重写 overlay，注入 `resources/dsh-desktop-shell/`（面板插件）
 - 三种加载模式：`cookie`（默认）、`token`（对齐 Tauri 版行为）、`proxy`（S2 实验，已否决）
 - **更新通道**：读共享的 `latest.json` → 版本比较 → 带进度下载 → **minisign 校验落盘字节** → `/S --updated --force-run` 安装；更新窗口是本壳唯一能触发下载/安装的 UI
 - **面板桥（P2）**：DSH 设置页「桌面端」可用——preload 提供窄 `__TAURI__` 事件兼容层，插件零改动；5 个白名单动作 + 状态回推
@@ -101,7 +101,7 @@ pnpm release:dry        # 发布演习：签名 + 自校验 + 生成 latest.json
 
 决议与完整证据见 [docs/update-channel-design.md](../docs/update-channel-design.md)。要点：
 
-- 信任根沿用现有的 **minisign 密钥对**（私钥 `src-tauri/keys/dsh-desktop.key`，公钥在 `tauri.conf.json`），不采购代码签名证书。
+- 信任根沿用现有的 **minisign 密钥对**（私钥 `electron/keys/dsh-desktop.key`（唯一副本另存于 `%USERPROFILE%\.dsh-desktop-keys`），公钥在 `electron/update-key.json`），不采购代码签名证书。
 - **一份 `latest.json`** 同时服务 Tauri 老客户端与 Electron 新客户端。
 - `electron-updater` 在 `app-update.yml` 没有 `publisherName` 时**静默跳过验签**，所以它不能作为完整性依据；安装前必须由本模块的 `src/minisign.ts` 校验落盘字节。
 - 老用户无感迁移：用同一把私钥给 electron-builder 的 NSIS 产物签名，写进老 `latest.json`。

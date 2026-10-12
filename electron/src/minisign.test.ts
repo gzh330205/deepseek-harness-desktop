@@ -2,7 +2,7 @@
  * Minisign verification tests, using a real signature produced by
  * `tauri signer sign` with this repository's own key over
  * `fixtures/artifact.txt`. Nothing here is secret: the signature verifies against the
- * public key that already ships in `src-tauri/tauri.conf.json`.
+ * public key that ships in `electron/update-key.json`.
  *
  * Run: node --test src/minisign.test.ts
  */
@@ -28,10 +28,10 @@ const javaScriptDigest = async (content: Buffer): Promise<Uint8Array> => {
 
 const fixture = (name: string): Buffer => readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)))
 const conf = JSON.parse(
-  readFileSync(fileURLToPath(new URL('../../src-tauri/tauri.conf.json', import.meta.url)), 'utf8'),
-) as { plugins: { updater: { pubkey: string } } }
+  readFileSync(fileURLToPath(new URL('../update-key.json', import.meta.url)), 'utf8'),
+) as { pubkey: string }
 
-const publicKey = conf.plugins.updater.pubkey
+const publicKey = conf.pubkey
 const artifact = fixture('artifact.txt')
 const signature = fixture('artifact.txt.sig').toString('utf8')
 

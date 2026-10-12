@@ -1,5 +1,5 @@
 /**
- * The three startup gates, ported from `src-tauri/src/lib.rs`.
+ * The three startup gates, ported from the retired Tauri shell.
  *
  * 1. `dsh --version` is at or above {@link MINIMUM_DSH_VERSION}
  * 2. `dsh --help` advertises `--patch`

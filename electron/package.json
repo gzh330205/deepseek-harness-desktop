@@ -3,7 +3,7 @@
   "productName": "DSH Desktop",
   "version": "0.3.20",
   "private": true,
-  "description": "Electron shell for DSH Desktop (migrating from the Tauri shell in src-tauri/)",
+  "description": "Electron shell for DSH Desktop (the Tauri shell has been retired)",
   "license": "MIT",
   "author": {
     "name": "DSH Desktop contributors"
