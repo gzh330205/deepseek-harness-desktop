@@ -124,14 +124,41 @@ if (!archived.some(entry => entry.path === 'dsh/node_modules/pnpm/bin/pnpm.cjs')
 
 // Run the packaged shim the way DSH's plugin installer does: `pnpm` resolved from PATH with a
 // **scrubbed** environment. `dsh-subprocess` drops every `DSH_`-prefixed variable before spawning a
-// child, so the shell's hints are gone and the shim has to find the app by itself. Reproducing that
-// stripped environment is the point of this check — with the variables present it passes even while
-// "install plugin" fails with `cannot find the bundled pnpm` in the UI.
+// child, so the shell's hints are gone and the shim has to find its binaries by itself. Reproducing
+// that stripped environment is the point of this check — with the variables present it passes even
+// while "install plugin" fails with `cannot find the bundled pnpm` in the UI.
 const appExecutable = join(unpacked, 'DSH Desktop.exe')
 if (!existsSync(appExecutable)) fail('缺少 DSH Desktop.exe')
 const scrubbed = Object.fromEntries(
   Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith('DSH_')),
 )
+
+// The bundled **real** node, and the reason it exists: it is a console-subsystem program, so the
+// `cmd.exe` hops of a package script inherit the hidden console DSH created instead of allocating a
+// new one (which Windows Terminal turns into a window). It can only do that job if pnpm's JS is on
+// disk — a real node cannot read an ASAR — so both halves are asserted together, by running pnpm on
+// the bundled node with no Electron, no `ELECTRON_RUN_AS_NODE` and no `DSH_*` hints.
+const packagedNode = join(unpackedRoot, 'dsh', 'bin', 'node.exe')
+if (!existsSync(packagedNode)) fail('缺少随包 node：app.asar.unpacked/dsh/bin/node.exe')
+if (typeof packaged.nodeRuntime !== 'string' || packaged.nodeRuntime === '') fail('运行时清单没有 nodeRuntime')
+const packagedNodeVersion = execFileSync(packagedNode, ['--version'], { windowsHide: true, encoding: 'utf8' }).trim()
+if (packagedNodeVersion !== `v${packaged.nodeRuntime}`) {
+  fail(`随包 node 版本与清单不符：清单 ${packaged.nodeRuntime}，实际 ${packagedNodeVersion}`)
+}
+const unpackedPnpm = join(unpackedRoot, 'dsh', 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
+if (!existsSync(unpackedPnpm)) {
+  fail('pnpm 的 JS 没有解包：真实 node 读不了 app.asar，打包态下 pnpm 会直接失败')
+}
+const unpackedPnpmVersion = execFileSync(packagedNode, [unpackedPnpm, '--version'], {
+  env: scrubbed,
+  windowsHide: true,
+  encoding: 'utf8',
+}).trim()
+if (!/^\d+\.\d+\.\d+/u.test(unpackedPnpmVersion)) fail(`随包 node 无法直接运行随包 pnpm，输出：${unpackedPnpmVersion}`)
+if (unpackedPnpmVersion !== packaged.pnpm) {
+  fail(`解包后的 pnpm 版本与清单不符：清单 ${String(packaged.pnpm)}，实际 ${unpackedPnpmVersion}`)
+}
+
 const shimVersion = execFileSync(`"${join(unpackedRoot, 'dsh', 'bin', 'pnpm.cmd')}" --version`, {
   env: scrubbed,
   windowsHide: true,
@@ -143,5 +170,5 @@ if (!/^\d+\.\d+\.\d+/u.test(shimVersion)) fail(`打包后的 pnpm shim 不可用
 process.stdout.write(
   `打包校验通过：dsh ${packaged.dsh}（Electron ${packaged.electron}）、asar 内 ${String(archived.length)} 个文件、`
   + `关键文件 ${String(Object.keys(packaged.critical).length)} 个、物理落盘 ${String(packaged.physical.length)} 个、`
-  + `pnpm shim ${shimVersion}\n`,
+  + `node ${packagedNodeVersion}、pnpm ${shimVersion}（shim）/ ${unpackedPnpmVersion}（node 直跑）\n`,
 )

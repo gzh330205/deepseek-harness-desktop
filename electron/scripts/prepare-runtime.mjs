@@ -22,7 +22,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isForeignPlatformPath } from './runtime-policy.mjs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -255,29 +255,96 @@ try {
 }
 log('    ✔ --version 与 web --help 均正常')
 
-// 3c. Shims that make the bundled tools reachable from the dsh child's PATH.
+// 3c. Bundle a real `node.exe`, and let pnpm run on it instead of on the app's Electron.
 //
-// The shell prepends this directory to PATH and sets DSH_DESKTOP_NODE_EXECUTABLE to its
-// own binary, so `pnpm` inside a profile runs on the packaged Electron in Node mode —
-// no second Node runtime on the machine. `node` is shimmed too because plugin install
-// scripts expect it.
+// The app binary is a **GUI-subsystem** program: it has no console, so every `cmd.exe` a package
+// script starts allocates a brand-new console — and with Windows Terminal as the default terminal app
+// that is a window popping over the user's work, one per hop (`pnpm`'s script shell, `nest --shell`,
+// …). DSH's own spawns are hidden, and `windowsHide` gives a child a console *without a window*, so
+// what is missing is a **console-subsystem** process that inherits that console and passes it down.
+// That is what a real node is; Electron can never be it.
+//
+// Two consequences are deliberate and were measured before choosing this:
+//   · +88 MB unpacked (≈ +21 MB in the installer and in every update download) — the price of not
+//     depending on whatever node the user happens to have;
+//   · pnpm's own JS must leave the ASAR, because a real node cannot read an archive at all
+//     (`PHYSICAL_JS_TREES` below), which is why the shims prefer the unpacked entry.
+const nodeRuntimeVersion = pin.node
+if (targetPlatform !== 'win32' || targetArch !== 'x64') {
+  fail(`随包 node 目前只覆盖 win32-x64，当前目标是 ${targetPlatform}-${targetArch}`)
+}
+const nodeZipName = `node-v${nodeRuntimeVersion}-win-x64.zip`
+const downloads = join(staging, 'downloads')
+mkdirSync(downloads, { recursive: true })
+const nodeArchive = join(downloads, nodeZipName)
+const sha256File = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
+const fetchText = async (url) => {
+  const response = await fetch(url)
+  if (!response.ok) fail(`下载失败 ${url}：HTTP ${String(response.status)}`)
+  return response.text()
+}
+// The official checksum list is the only thing making this download trustworthy; a pinned version
+// without a verified digest would be a supply-chain hole in the installer.
+const shasums = await fetchText(`https://nodejs.org/dist/v${nodeRuntimeVersion}/SHASUMS256.txt`)
+const expectedNodeSha = new RegExp(`^([0-9a-f]{64})\\s+\\*?${nodeZipName.replace(/\./gu, '\\.')}`, 'mu').exec(shasums)?.[1]
+if (expectedNodeSha === undefined) fail(`SHASUMS256.txt 里找不到 ${nodeZipName}`)
+if (existsSync(nodeArchive) && sha256File(nodeArchive) !== expectedNodeSha) {
+  log('==> 缓存的 node 压缩包校验不符，重新下载')
+  rmSync(nodeArchive, { force: true })
+}
+if (!existsSync(nodeArchive)) {
+  log(`==> 下载 node ${nodeRuntimeVersion}（${nodeZipName}）`)
+  const response = await fetch(`https://nodejs.org/dist/v${nodeRuntimeVersion}/${nodeZipName}`)
+  if (!response.ok) fail(`下载 node 失败：HTTP ${String(response.status)}`)
+  const buffer = Buffer.from(await response.arrayBuffer())
+  const actual = createHash('sha256').update(buffer).digest('hex')
+  if (actual !== expectedNodeSha) fail(`node 压缩包校验失败：期望 ${expectedNodeSha}，实际 ${actual}`)
+  writeFileSync(nodeArchive, buffer)
+}
+if (sha256File(nodeArchive) !== expectedNodeSha) fail('node 压缩包校验失败（缓存）')
+// `tar` (bsdtar) reads the zip and takes exactly the one member needed: npm and npx stay out of the
+// installer, pnpm is already bundled.
+const shimDir = join(output, 'bin')
+mkdirSync(shimDir, { recursive: true })
+const nodeStaging = join(staging, 'node-extract')
+rmSync(nodeStaging, { recursive: true, force: true })
+mkdirSync(nodeStaging, { recursive: true })
+try {
+  execFileSync('tar', ['-xf', nodeArchive, '-C', nodeStaging, `node-v${nodeRuntimeVersion}-win-x64/node.exe`], { windowsHide: true })
+} catch (error) {
+  fail(`解压 node.exe 失败：\n${String(error)}`)
+}
+const nodeExecutable = join(shimDir, 'node.exe')
+renameSync(join(nodeStaging, `node-v${nodeRuntimeVersion}-win-x64`, 'node.exe'), nodeExecutable)
+rmSync(nodeStaging, { recursive: true, force: true })
+const printedNode = execFileSync(nodeExecutable, ['--version'], { windowsHide: true }).toString().trim()
+if (printedNode !== `v${nodeRuntimeVersion}`) fail(`随包 node 版本不符：期望 v${nodeRuntimeVersion}，实际 ${printedNode}`)
+log(`==> 随包 node ${nodeRuntimeVersion}（${mib(statSync(nodeExecutable).size)}）`)
+
+// 3d. Shims that make the bundled tools reachable from the dsh child's PATH.
+//
+// The shell prepends this directory to PATH so `pnpm` and `node` inside a profile resolve here.
+// Both shims prefer the bundled `node.exe` (console subsystem: it inherits the hidden console DSH
+// created, so the `cmd.exe` hops of package scripts stop opening windows) and fall back to the app
+// binary in Node mode when it is missing.
 //
 // **Nothing here may depend on those variables existing.** DSH scrubs every `DSH_`-prefixed variable
 // out of the environment it hands to children (`scrubbedParentEnv` in `dsh-subprocess`), and its
 // plugin installer runs `pnpm add` through exactly that path: the variables are gone while `PATH`
 // still finds this shim. That is how "install plugin" failed with `cannot find the bundled pnpm`
-// even though the app was running and healthy. So the shim locates the app binary from its own
-// location and sets `ELECTRON_RUN_AS_NODE` itself; the variables stay as a first-choice hint (they
-// are more precise in a prepared, unpacked tree).
-const shimDir = join(output, 'bin')
-mkdirSync(shimDir, { recursive: true })
-/** Resolve the app binary the same way in both shims: hint, then the install root, then plain node. */
+// even though the app was running and healthy. So the shim locates both binaries from its own
+// location; the variables stay as a last resort for a prepared, unpacked tree.
+/** Resolve the node to run scripts on: bundled first, then the app binary, then plain PATH node. */
 const appBinary = [
+  'rem A console-subsystem node keeps the invisible console this shim inherited - see prepare-runtime.mjs.',
+  'set "DSH_NODE=%~dp0node.exe"',
+  'if exist "%DSH_NODE%" goto :haveNode',
   'set "DSH_NODE=%DSH_DESKTOP_NODE_EXECUTABLE%"',
   'rem %~dp0 is <install>\\resources\\app.asar.unpacked\\dsh\\bin, so the app binary is four levels up.',
   'rem Both product names this repository ships: the release channel and the debug channel.',
   'if not defined DSH_NODE if exist "%~dp0..\\..\\..\\..\\DSH Desktop.exe" set "DSH_NODE=%~dp0..\\..\\..\\..\\DSH Desktop.exe"',
   'if not defined DSH_NODE if exist "%~dp0..\\..\\..\\..\\DSH Desktop Debug.exe" set "DSH_NODE=%~dp0..\\..\\..\\..\\DSH Desktop Debug.exe"',
+  ':haveNode',
 ]
 // No parenthesised blocks anywhere in these shims: `cmd` parses a whole `( … )` block before running
 // it, so a stray bracket in an echoed message breaks the script even on a branch that is never taken
@@ -286,14 +353,16 @@ const appBinary = [
 writeFileSync(join(shimDir, 'pnpm.cmd'), [
   '@echo off',
   'setlocal',
-  'rem Bundled pnpm: runs on the app\'s own Electron in Node mode. See prepare-runtime.mjs.',
+  'rem Bundled pnpm, on the bundled console-subsystem node. See prepare-runtime.mjs.',
   ...appBinary,
   'set "DSH_PNPM_JS=%DSH_DESKTOP_PNPM_ENTRY%"',
   'if not defined DSH_PNPM_JS set "DSH_PNPM_JS=%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs"',
   'rem `if exist` cannot see inside app.asar - it is one file, not a directory - so the packaged',
-  'rem location is taken on trust once the prepared tree\'s relative path is absent.',
+  'rem location is taken on trust once the prepared tree\'s relative path is absent. That fallback is',
+  'rem only usable by the app binary: the bundled node cannot read an archive, which is why the',
+  'rem packaged pnpm JS is in `app.asar.unpacked` (see PHYSICAL_JS_TREES).',
   'if not exist "%DSH_PNPM_JS%" set "DSH_PNPM_JS=%~dp0..\\..\\..\\app.asar\\dsh\\node_modules\\pnpm\\bin\\pnpm.cjs"',
-  'rem Without this the app binary would open the GUI instead of running the script.',
+  'rem Only the app-binary fallback needs this; a real node ignores it.',
   'set "ELECTRON_RUN_AS_NODE=1"',
   'if defined DSH_NODE goto :runWithApp',
   'if exist "%~dp0..\\node_modules\\pnpm\\bin\\pnpm.cjs" goto :runWithNode',
@@ -310,8 +379,8 @@ writeFileSync(join(shimDir, 'pnpm.cmd'), [
 writeFileSync(join(shimDir, 'node.cmd'), [
   '@echo off',
   'setlocal',
-  'rem Node shell for plugin install scripts; the app binary in Node mode. Same rule as pnpm.cmd:',
-  'rem the environment may have been scrubbed of our DSH_-prefixed variables, and no `( … )` blocks.',
+  'rem Node shell for package scripts; the bundled node, or the app binary as a fallback. Same rules as',
+  'rem pnpm.cmd: the environment may have been scrubbed of our DSH_-prefixed variables, and no `( … )` blocks.',
   ...appBinary,
   'set "ELECTRON_RUN_AS_NODE=1"',
   'if defined DSH_NODE goto :runWithApp',
@@ -342,6 +411,16 @@ const shimCheckViaEnv = execFileSync(`"${join(shimDir, 'pnpm.cmd')}" --version`,
 }).toString().trim()
 if (!/^\d+\.\d+\.\d+/u.test(shimCheckViaEnv)) fail(`随包 pnpm shim 的 DSH_DESKTOP_PNPM_ENTRY 分支不可用，输出：${shimCheckViaEnv}`)
 log(`    ✔ 随包 pnpm shim 可用（DSH_DESKTOP_PNPM_ENTRY 分支，pnpm ${shimCheckViaEnv}）`)
+// The invariant the whole "package scripts stop opening console windows" design rests on: a **real**
+// node executes the bundled pnpm. If pnpm ever moves back into the ASAR this fails here — at build
+// time — instead of at the user's first `pnpm run`, where the symptom is a cmd window and an error
+// about an unreadable path. Deliberately run without any of our environment hints.
+const directPnpm = execFileSync(nodeExecutable, [pnpmEntryPath, '--version'], {
+  env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  windowsHide: true,
+}).toString().trim()
+if (!/^\d+\.\d+\.\d+/u.test(directPnpm)) fail(`随包 node 无法直接运行随包 pnpm，输出：${directPnpm}`)
+log(`    ✔ 随包 node 可直接运行随包 pnpm（${directPnpm}）`)
 // The ASAR branch only exists in the packaged layout (it is derived from the shim's own location),
 // so `verify-package.mjs` exercises it against `release/win-unpacked` instead.
 
@@ -389,8 +468,31 @@ for (const file of files) {
 // What electron-builder must keep outside `app.asar`. Extension first (the common case), then a
 // magic-byte sniff for the rare extension-less binary — the sniff only runs where the extension
 // says nothing, so it costs ~600 four-byte reads.
+//
+// `PHYSICAL_JS_TREES` is the second reason a file can be physical: JS that a **real** node executes
+// has to be readable by it, and a real node cannot read an ASAR at all. pnpm is the case in point —
+// running it on the bundled node is what keeps package scripts from opening console windows, so its
+// entry point and its bundle must both be on disk. `verify-package.mjs` runs the unpacked pair to
+// prove it, which is also what makes a future "download the runtime into the ASAR" regression loud.
+const PHYSICAL_JS_TREES = ['node_modules/pnpm/bin/', 'node_modules/pnpm/dist/']
 const physical = files.filter((file) => {
   if (foreign(file)) return false
+  const inJsTrees = PHYSICAL_JS_TREES.some(tree => file.startsWith(tree))
+  // A 0-byte file can never be physical: electron-builder writes the ASAR index entry for an empty
+  // unpacked file but never creates the file itself, so `verify-package.mjs` would fail with
+  // "asarUnpack 漏了 …（空文件）" — which is exactly how pnpm's vendored node-gyp was found
+  // (`gyp/pylib/gyp/generator/__init__.py`, `packaging/py.typed`: Python markers with no role when
+  // absent). Empty files elsewhere are fine: they pack into the archive like any other.
+  if (statSync(join(output, file)).size === 0) {
+    // …except code that only a real node can run: it cannot read the archive, so an empty module
+    // there would be unreachable, and a silent `MODULE_NOT_FOUND` at plugin-install time is worse
+    // than a build failure.
+    if (inJsTrees && /\.(js|cjs|mjs|json|node|wasm)$/iu.test(file)) {
+      fail(`pnpm 树里有 0 字节的代码文件 ${file}：既无法解包（builder 不写空文件），真实 node 也读不了 asar。`)
+    }
+    return false
+  }
+  if (inJsTrees) return true
   const lower = file.toLowerCase()
   if (PHYSICAL_EXTENSIONS.some(extension => lower.endsWith(extension))) return true
   const name = file.slice(file.lastIndexOf('/') + 1)
@@ -405,7 +507,10 @@ const manifest = {
   pnpm: pnpmVersion,
   electron: electronVersion,
   v8,
+  /** The Electron process's own node — what `dsh` itself runs on. */
   node: process.versions.node,
+  /** The real `node.exe` packaged in `bin/`, used for pnpm and package scripts. */
+  nodeRuntime: nodeRuntimeVersion,
   platform: targetPlatform,
   arch: targetArch,
   entry: entryRelative,

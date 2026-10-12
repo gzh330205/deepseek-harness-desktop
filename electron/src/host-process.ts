@@ -14,7 +14,7 @@
 
 import { type ChildProcess, spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
-import { delimiter, dirname } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 
 import {
   DSH_BRIDGE_DIR_ENV,
@@ -119,11 +119,13 @@ export class DshHostProcess {
         // A dedicated harness home keeps the shell's runtime away from the user's
         // own `~/.dsh` profile, locks, and node_modules (spike S3).
         ...harnessHome() === undefined ? {} : { DSH_HOME: harnessHome() as string },
-        // Make the bundled pnpm/node shims findable: dsh resolves `pnpm` from PATH, and
-        // the shims run on this same binary in Node mode.
+        // Make the bundled pnpm/node shims findable: dsh resolves `pnpm` from PATH, and the shims
+        // run tools on the bundled console-subsystem node. That node is named here as well, for
+        // anything that treats this variable as "the node to use" — a GUI-subsystem Electron in Node
+        // mode has no console, and every `cmd.exe` below it would then open a console window.
         ...binDir === undefined ? {} : {
           PATH: `${binDir}${delimiter}${process.env.PATH ?? process.env.Path ?? ''}`,
-          DSH_DESKTOP_NODE_EXECUTABLE: process.execPath,
+          DSH_DESKTOP_NODE_EXECUTABLE: existsSync(join(binDir, 'node.exe')) ? join(binDir, 'node.exe') : process.execPath,
         },
         // The shim cannot resolve pnpm by a relative path when the runtime lives in the ASAR.
         ...this.options.pnpmEntry === undefined ? {} : { [DSH_PNPM_ENTRY_ENV]: this.options.pnpmEntry },
