@@ -131,7 +131,7 @@ const keyPath = resolve(repoRoot, process.env.DSH_DESKTOP_SIGNING_KEY_PATH ?? 'e
 if (!existsSync(keyPath)) fail(`缺少签名私钥：${keyPath}`)
 process.stdout.write('==> tauri signer sign\n')
 execFileSync(process.execPath, [
-  join(repoRoot, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'signer', 'sign', artifactPath,
+  join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'signer', 'sign', artifactPath,
 ], {
   cwd: repoRoot,
   stdio: ['ignore', 'ignore', 'inherit'],
