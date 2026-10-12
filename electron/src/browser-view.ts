@@ -1188,11 +1188,18 @@ export class BrowserViewManager {
     return { ok: true }
   }
 
-  /** Focus the page (the panel clicked into its stage). */
+  /**
+   * Activate the page: the panel switched to its tab, or reused it for a new navigation.
+   *
+   * Deliberately does **not** call `contents.focus()`. The panel activates a tab on every agent
+   * navigation, and taking native focus there steals the caret from whatever the user was typing in
+   * the DSH page — reported as "在输入框打字时焦点老是丢失，被右侧页面刷新占用". Nothing here needs
+   * it: keyboard input to the page goes through CDP (`browser-input.ts`), which targets the page
+   * without focusing its view, and a user who clicks inside the page focuses it themselves.
+   */
   focus(): BrowserCommandResult {
     const contents = this.contents
     if (contents === undefined) return { ok: false, reason: '浏览器视图不可用' }
-    contents.focus()
     return { ok: true }
   }
 

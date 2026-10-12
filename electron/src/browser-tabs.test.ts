@@ -467,3 +467,16 @@ test('the agent drives the tab the user already has open, instead of a hidden du
   // No background tab was created behind the user's back.
   assert.equal(fakes.has(AGENT_TAB_ID), false)
 })
+
+import { readFileSync } from 'node:fs'
+
+test('activating a browser tab never takes native focus', () => {
+  // The panel activates a tab on every agent navigation (`sidebar.focus(existing.id)`), so a
+  // `contents.focus()` here would take the caret away from whatever the user is typing in the DSH
+  // page — reported as "在输入框打字时焦点老是丢失，被右侧页面刷新占用". Keyboard input to the page goes
+  // through CDP and does not need native focus.
+  const source = readFileSync(new URL('./browser-view.ts', import.meta.url), 'utf8')
+  const activate = /focus\(\): BrowserCommandResult \{[\s\S]*?\n {2}\}/u.exec(source)
+  assert.ok(activate !== null, '浏览器视图的 focus() 不见了')
+  assert.doesNotMatch(activate[0], /contents\.focus\(\)/u, '激活 tab 不得抢系统焦点')
+})
