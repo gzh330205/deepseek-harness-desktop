@@ -46,3 +46,5 @@ Status: implemented
 - **端到端**（`DSH_DESKTOP_MARKET_E2E=1` 开启，默认跳过）：真实随包 node + pnpm 把 `dsh-win-notify@0.1.0` 装进临时 profile → 断言 `dependencies` 与 `dsh.profile.bundles` 双双写入 → 卸载后双双复原；不存在的版本 → 失败被分类且 profile 未被改动。实测两条通过（1460ms / 1741ms）。
 - 套件：299 条 / 292 通过 / 7 条既有 blake2b 失败；`tsc` 干净。
 - 打包：`verify-package` 新增断言（市场页面、preload 桥、main.js 的市场频道必须在 asar 内），`build` + `--dir` + `verify-package` + 打包态 smoke 全通过。
+- **窗口能真的打开**（`scripts/smoke-market.mjs`）：壳支持 `DSH_DESKTOP_OPEN_MARKET=1` 的验证钩子在启动时开窗，窗口在 `ready-to-show` 与 `did-finish-load` 各记一行日志，smoke 断言两行都出现、且没有 `did-fail-load`。实测输出 `{"ok":true,"markers":["market window ready","market page loaded"]}` —— 而且全程**没有用到 DSH 服务**，这正是"市场必须是壳的面板而不是 DSH 页面里的插件"的实测依据。
+  （`DSH_DESKTOP_OPEN_MARKET` 是验证钩子，不是用户功能：菜单项本身仍需要人点。）

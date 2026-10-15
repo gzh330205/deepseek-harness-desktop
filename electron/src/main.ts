@@ -1602,6 +1602,14 @@ async function boot(): Promise<void> {
   const entry = resolveDshEntry()
 
   mainWindow = createMainWindow()
+  // Verification hook, not a user feature: `DSH_DESKTOP_OPEN_MARKET=1` opens the market window as
+  // soon as the shell is up, so the packaged smoke can prove the window and its page really come up
+  // (the menu item itself needs a human to click it). It also demonstrates the property the market
+  // was built for: it opens without the DSH service being involved at all.
+  if (process.env.DSH_DESKTOP_OPEN_MARKET === '1') {
+    marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
+    marketWindow.open()
+  }
   proxyDocumentHost = proxyOriginMode === 'loopback' ? `127.0.0.1:${String(port)}` : 'app'
   installProxyHandler({
     host: () => hostOrigin,

@@ -82,7 +82,17 @@ export class MarketWindow {
       },
     })
     window.setMenuBarVisibility(false)
-    window.once('ready-to-show', () => { window.show() })
+    window.once('ready-to-show', () => {
+      window.show()
+      this.#options.log('market window ready')
+    })
+    // The page is a plain file with an inline script; if it fails to load (or its script throws), the
+    // window would look "open" but empty. These two lines are what makes that observable from
+    // `shell.log` — the packaged smoke asserts them instead of trusting the window's existence.
+    window.webContents.on('did-finish-load', () => { this.#options.log('market page loaded') })
+    window.webContents.on('did-fail-load', (_event, code, description) => {
+      this.#options.log(`market page failed to load: ${String(code)} ${description}`)
+    })
     void window.loadFile(join(this.#options.appRoot, 'dist', 'market', 'index.html'))
     return window
   }
