@@ -12,6 +12,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 
+import { MARKET_IPC } from './market-ipc.ts'
 import {
   IPC,
   type ShellMenuName,
@@ -69,6 +70,27 @@ if (isSettingsDocument()) {
     save: (input: unknown) => ipcRenderer.invoke(IPC.settingsSave, input) as Promise<{ ok: boolean; reason?: string; changed?: string[]; restartRequired?: boolean }>,
     close: () => ipcRenderer.invoke(IPC.settingsClose) as Promise<boolean>,
     restart: () => ipcRenderer.invoke(IPC.settingsRestart) as Promise<boolean>,
+  }))
+}
+
+/**
+ * The market window: search, install, update, remove, plus the two things a failing install needs —
+ * the profile path and a way to hand us the raw pnpm output. The page itself has no network access
+ * (`CSP default-src 'none'`), so every registry request goes through the main process.
+ */
+function isMarketDocument(): boolean {
+  return location.protocol === 'file:' && location.pathname.replace(/\\/gu, '/').endsWith('/market/index.html')
+}
+
+if (isMarketDocument()) {
+  contextBridge.exposeInMainWorld('__DSH_MARKET__', Object.freeze({
+    search: (query: string) => ipcRenderer.invoke(MARKET_IPC.search, query) as Promise<unknown>,
+    installed: () => ipcRenderer.invoke(MARKET_IPC.installed) as Promise<{ items: { name: string; spec: string }[] }>,
+    act: (action: string, name: string, version?: string) =>
+      ipcRenderer.invoke(MARKET_IPC.act, action, name, version ?? '') as Promise<unknown>,
+    profileDir: () => ipcRenderer.invoke(MARKET_IPC.profileDir) as Promise<string>,
+    copyDiagnostics: (text: string) => ipcRenderer.invoke(MARKET_IPC.copyDiagnostics, text) as Promise<{ ok: boolean }>,
+    close: () => ipcRenderer.invoke(MARKET_IPC.close) as Promise<boolean>,
   }))
 }
 
