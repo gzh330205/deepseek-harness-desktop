@@ -16,8 +16,11 @@ import {
   fetchJson,
   readProfileManifest,
   runPnpm,
+  specSource,
+  compareVersions,
   writeProfileManifest,
 } from './market-service.ts'
+import { appendMarketLog, readMarketLog } from './market-log.ts'
 
 /** A `fetch` double: fixed status/body, and it records the request. */
 function fakeFetch(status: number, body: unknown, statusText = '') {
@@ -151,4 +154,51 @@ test('the window page request reaches the registry as offset and size', async ()
   assert.match(urls[0] ?? '', /from=40/u)
   assert.match(urls[0] ?? '', /size=\d+/u)
   assert.match(urls[0] ?? '', /text=dsh/u)
+})
+
+test('a registry spec is comparable, a checkout or a git revision is not', () => {
+  for (const spec of ['1.2.3', '^1.2.3', '~0.11.4', '>=2.0.0', 'v1.0.0']) assert.equal(specSource(spec), 'registry', spec)
+  for (const spec of ['link:../x', 'file:./y', 'github:owner/repo', 'git+https://example.invalid/r.git', 'workspace:*', '']) assert.equal(specSource(spec), 'other', spec)
+})
+
+test('version comparison reads the way a user reads versions', () => {
+  assert.equal(compareVersions('1.2.10', '1.2.3'), 1)
+  assert.equal(compareVersions('1.2.3', '1.2.10'), -1)
+  assert.equal(compareVersions('1.2.0', '1.2'), 0)
+  assert.equal(compareVersions('1.2.3', '1.2.3'), 0)
+  assert.equal(compareVersions('1.2.3', '1.2.3-beta.1'), 1, 'a release beats its prerelease')
+  assert.equal(compareVersions('1.2.3-beta.1', '1.2.3'), -1)
+})
+
+test('the action log round-trips and survives a truncated line', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-market-log-'))
+  appendMarketLog(dir, { at: '2026-10-15T00:00:00.000Z', action: 'install', name: 'dsh-cost-meter', spec: 'dsh-cost-meter@1.8.26', ok: true, code: 0, output: 'Done in 2s' })
+  appendMarketLog(dir, { at: '2026-10-15T00:01:00.000Z', action: 'install', name: 'nope', spec: 'nope@9.9.9', ok: false, code: 1, kind: 'not-found', message: 'registry 上没有这个包', output: 'ERR_PNPM_FETCH_404' })
+  const entries = readMarketLog(dir, 10)
+  assert.equal(entries.length, 2)
+  assert.equal(entries[1]?.kind, 'not-found')
+  assert.match(entries[1]?.output ?? '', /ERR_PNPM_FETCH_404/u)
+  // A crash mid-write leaves a partial line; the log must still be readable.
+  writeFileSync(join(dir, 'market.log'), '{"at":"2026-10-15T00:02:00.000Z"' + String.fromCharCode(10), { flag: 'a' })
+  assert.equal(readMarketLog(dir, 10).length, 2)
+})
+
+test('checkUpdates compares registry versions and refuses to guess for checkouts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-market-profile-'))
+  writeProfileManifest(dir, { dependencies: { 'dsh-cost-meter': '^1.8.26', 'dsh-plugin-kit': 'link:D:/x' } })
+  const service = new MarketService({
+    profileDir: dir,
+    runtimeRoot: dir,
+    appExecutable: 'x',
+    fetchJsonImpl: url => Promise.resolve(url.includes('dsh-cost-meter') ? { 'dist-tags': { latest: '1.9.0' } } : { 'dist-tags': { latest: '1.0.2' } }),
+  })
+  const statuses = await service.checkUpdates()
+  const meter = statuses.find(entry => entry.name === 'dsh-cost-meter')
+  assert.equal(meter?.current, '1.8.26')
+  assert.equal(meter?.latest, '1.9.0')
+  assert.equal(meter?.hasUpdate, true)
+  const kit = statuses.find(entry => entry.name === 'dsh-plugin-kit')
+  assert.equal(kit?.source, 'other')
+  assert.equal(kit?.hasUpdate, false)
+  assert.match(kit?.reason ?? '', /无法比较/u)
 })

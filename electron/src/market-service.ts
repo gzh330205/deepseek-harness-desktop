@@ -16,8 +16,9 @@ import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { searchMarketPackages, type MarketSearchResult } from './market-catalog.ts'
+import { packumentUrl, searchMarketPackages, type MarketSearchResult } from './market-catalog.ts'
 import type { MarketSearchRequest } from './market-ipc.ts'
+import { appendMarketLog, marketLogPath, readMarketLog, type MarketLogEntry } from './market-log.ts'
 import {
   runMarketAction,
   resolveMarketRuntime,
@@ -159,6 +160,8 @@ export interface MarketServiceOptions {
   readonly runPnpmImpl?: MarketInstallOptions['runPnpm']
   /** Progress/log sink (the window's activity line). */
   readonly log?: (line: string) => void
+  /** Directory for the action log (the shell's log directory); omit to keep no file log. */
+  readonly logDir?: string
 }
 
 /**
@@ -243,7 +246,8 @@ export class MarketService {
       environment,
       appBinary: runtime.appBinary,
     }))
-    return runMarketAction(action, name, {
+    const started = Date.now()
+    const result = await runMarketAction(action, name, {
       profileDir,
       nodeExecutable: runtime.nodeExecutable,
       pnpmEntry: runtime.pnpmEntry,
@@ -252,5 +256,147 @@ export class MarketService {
       writeManifest: manifest => { writeProfileManifest(profileDir, manifest) },
       runPnpm: run,
     }, version)
+    // Recorded even when it succeeded: "it worked yesterday" is only checkable if successes are logged.
+    this.#record({
+      at: new Date().toISOString(),
+      action,
+      name,
+      spec: result.spec,
+      ok: result.ok,
+      code: result.code,
+      ms: Date.now() - started,
+      ...(result.failure === undefined ? {} : { kind: result.failure.kind, message: result.failure.message }),
+      ...(result.output === '' ? {} : { output: result.output }),
+    })
+    return result
   }
+
+  /** The tail of the action log, newest last (the window shows this). */
+  log(limit = 50): readonly MarketLogEntry[] {
+    const dir = this.#options.logDir
+    return dir === undefined ? [] : readMarketLog(dir, limit)
+  }
+
+  /** Where the action log lives, for the window to show (empty when file logging is off). */
+  logPath(): string {
+    const dir = this.#options.logDir
+    return dir === undefined ? '' : marketLogPath(dir)
+  }
+
+  /**
+   * Compare every installed plugin against the registry.
+   *
+   * Only registry specs can be compared: a `link:`/`file:` dependency is the user own checkout and a
+   * `github:` one carries no version at all. Those are reported as "cannot compare" rather than
+   * silently looking up to date — a wrong "up to date" is worse than an honest "unknown".
+   */
+  async checkUpdates(): Promise<readonly MarketUpdateStatus[]> {
+    const getJson = this.#options.fetchJsonImpl ?? (url => fetchJson(url))
+    const statuses: MarketUpdateStatus[] = []
+    for (const entry of this.installed()) {
+      const source = specSource(entry.spec)
+      if (source !== 'registry') {
+        statuses.push({ name: entry.name, current: entry.spec, hasUpdate: false, source, reason: '不是 registry 版本，无法比较' })
+        continue
+      }
+      const current = stripRangePrefix(entry.spec)
+      try {
+        const document = await getJson(packumentUrl(entry.name))
+        const latest = latestVersion(document)
+        statuses.push({
+          name: entry.name,
+          current,
+          ...(latest === undefined ? {} : { latest }),
+          hasUpdate: latest !== undefined && compareVersions(latest, current) > 0,
+          source: 'registry',
+        })
+      } catch (error) {
+        statuses.push({ name: entry.name, current, hasUpdate: false, source: 'registry', reason: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    return statuses
+  }
+
+  /** Append one entry to the action log, if file logging is configured. */
+  #record(entry: MarketLogEntry): void {
+    const dir = this.#options.logDir
+    if (dir === undefined) return
+    appendMarketLog(dir, entry)
+  }
+}
+/** How one installed plugin compares to the registry. */
+export interface MarketUpdateStatus {
+  readonly name: string
+  /** What the profile declares (`^1.2.3`, a version, or a link/git spec). */
+  readonly current: string
+  /** Latest version the registry reports, when it could be determined. */
+  readonly latest?: string
+  readonly hasUpdate: boolean
+  /** `registry` can be compared; anything else cannot. */
+  readonly source: 'registry' | 'other'
+  /** Why it could not be compared, or what went wrong while checking. */
+  readonly reason?: string
+}
+
+/**
+ * Classify a dependency spec by whether a registry version can be compared against it.
+ *
+ * A registry spec is a version or a version range (`1.2.3`, `^1.2.3`, `~1.2.3`, `>=1.2.3`).
+ * `link:`/`file:` point at a checkout and `github:`/`git+…` at a revision: neither has a "latest"
+ * to compare with, and pretending they are up to date would be a lie the user cannot see through.
+ */
+export function specSource(spec: string): 'registry' | 'other' {
+  const trimmed = spec.trim()
+  if (trimmed === '') return 'other'
+  if (/^(link|file|portal|workspace|git|git\+|https?):/iu.test(trimmed)) return 'other'
+  const rest = stripRangePrefix(trimmed)
+  const first = rest.slice(0, 1)
+  return first >= '0' && first <= '9' ? 'registry' : 'other'
+}
+
+/**
+ * Drop the range decoration a version spec may carry, so the first digit is where a version starts.
+ *
+ * Written as a scan rather than a character-class regex on purpose: this file is edited by scripts as
+ * often as by hand, and a `\\d`/`\\s` that survives one escaping layer too many silently turns a
+ * working classifier into "everything is incomparable".
+ *
+ * @param spec - A dependency spec such as `^1.2.3`, `>=2.0.0` or `v1.0.0`.
+ * @returns The spec without leading `^ ~ > < = v` and spaces.
+ */
+export function stripRangePrefix(spec: string): string {
+  const decoration = '^~><=vV '
+  let index = 0
+  while (index < spec.length && decoration.includes(spec.slice(index, index + 1))) index += 1
+  return spec.slice(index)
+}
+
+/**
+ * Compare two versions the way a user reads them: numerically, release over prerelease.
+ *
+ * Deliberately small — this only decides whether to *offer* an update, and a wrong "yes" costs one
+ * click, while a wrong "no" is the failure mode worth avoiding. Build metadata is ignored (as in
+ * semver) and a missing part counts as zero (`1.2` == `1.2.0`).
+ */
+export function compareVersions(left: string, right: string): number {
+  const parse = (value: string) => {
+    const [core = '', pre = ''] = value.trim().replace(/^v/u, '').split('-', 2)
+    const parts = core.split('.').map(part => Number.parseInt(part, 10))
+    return { parts: [0, 1, 2].map(index => Number.isFinite(parts[index]) ? (parts[index] as number) : 0), pre }
+  }
+  const a = parse(left); const b = parse(right)
+  for (let index = 0; index < 3; index++) {
+    if (a.parts[index] !== b.parts[index]) return (a.parts[index] as number) > (b.parts[index] as number) ? 1 : -1
+  }
+  if (a.pre === b.pre) return 0
+  if (a.pre === '') return 1
+  if (b.pre === '') return -1
+  return a.pre.localeCompare(b.pre)
+}
+
+/** The version a packument calls latest, if it says so. */
+function latestVersion(document: unknown): string | undefined {
+  if (document === null || typeof document !== 'object') return undefined
+  const latest = (document as { 'dist-tags'?: { latest?: unknown } })[ 'dist-tags' ]?.latest
+  return typeof latest === 'string' && latest !== '' ? latest : undefined
 }
