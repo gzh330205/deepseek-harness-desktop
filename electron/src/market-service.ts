@@ -17,6 +17,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { searchMarketPackages, type MarketSearchResult } from './market-catalog.ts'
+import type { MarketSearchRequest } from './market-ipc.ts'
 import {
   runMarketAction,
   resolveMarketRuntime,
@@ -179,10 +180,22 @@ export class MarketService {
     return this.#options.profileDir
   }
 
-  /** Search the catalog (admission applied). */
-  search(query: string): Promise<MarketSearchResult> {
+  /**
+   * Search one page of the catalog.
+   *
+   * The registry is walked (and its noise filtered) by `searchMarketPackages`; this only forwards the
+   * window's page/filter choices, because the window owns what the user asked for.
+   */
+  search(request: MarketSearchRequest): Promise<MarketSearchResult> {
     const getJson = this.#options.fetchJsonImpl ?? (url => fetchJson(url))
-    return searchMarketPackages(query, { getJson })
+    return searchMarketPackages(request.query, {
+      getJson,
+      from: request.from ?? 0,
+      limit: request.pageSize ?? 20,
+      sort: request.sort ?? 'relevance',
+      // `exactOptionalPropertyTypes` is on, so an absent filter must be an absent key.
+      ...(request.clientOnly === true ? { filter: { clientOnly: true } } : {}),
+    })
   }
 
   /** Install an exact version. */

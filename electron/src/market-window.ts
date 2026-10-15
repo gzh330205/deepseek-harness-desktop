@@ -120,12 +120,19 @@ export class MarketWindow {
       return run()
     }
 
-    ipcMain.handle(MARKET_IPC.search, (event, query: unknown): Promise<MarketSearchResponse> | MarketSearchResponse =>
+    ipcMain.handle(MARKET_IPC.search, (event, raw: unknown): Promise<MarketSearchResponse> | MarketSearchResponse =>
       guard(event, async () => {
-        const text = typeof query === 'string' ? query : ''
+        const request = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+        const sort = request.sort === 'updated' || request.sort === 'name' || request.sort === 'relevance' ? request.sort : 'relevance'
         try {
-          const result = await service.search(text)
-          return { ok: true, packages: result.packages, skipped: result.skipped }
+          const result = await service.search({
+            query: typeof request.query === 'string' ? request.query : '',
+            from: typeof request.from === 'number' && Number.isFinite(request.from) ? Math.max(0, request.from) : 0,
+            pageSize: typeof request.pageSize === 'number' && Number.isFinite(request.pageSize) ? Math.min(60, Math.max(1, request.pageSize)) : 20,
+            sort,
+            clientOnly: request.clientOnly === true,
+          })
+          return { ok: true, packages: result.packages, skipped: result.skipped, page: result.page }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           log(`插件市场：查询失败 ${message}`)

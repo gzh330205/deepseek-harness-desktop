@@ -128,3 +128,27 @@ function marketEnvironment(): NodeJS.ProcessEnv {
 
 // Keep mkdirSync referenced: the temp helpers above create nested paths in some environments.
 void mkdirSync
+
+test('the window page request reaches the registry as offset and size', async () => {
+  const profileDir = mkdtempSync(join(tmpdir(), 'dsh-market-profile-'))
+  const urls: string[] = []
+  const service = new MarketService({
+    profileDir,
+    runtimeRoot: profileDir,
+    appExecutable: 'x',
+    // A transport double: record what would be fetched, and answer with an empty registry page so the
+    // call returns quickly. What matters here is the URL, not the payload.
+    fetchJsonImpl: (url: string) => {
+      urls.push(url)
+      return Promise.resolve({ objects: [] })
+    },
+  })
+  const result = await service.search({ query: 'dsh', from: 40, pageSize: 20, sort: 'name', clientOnly: true })
+  assert.equal(result.packages.length, 0)
+  // Two different knobs, deliberately: `from` is the registry offset the window asked for, and
+  // `size` is how many *candidates* we confirm per registry page (the admitted page size is a
+  // separate, smaller number, because most candidates are not plugins).
+  assert.match(urls[0] ?? '', /from=40/u)
+  assert.match(urls[0] ?? '', /size=\d+/u)
+  assert.match(urls[0] ?? '', /text=dsh/u)
+})

@@ -25,6 +25,18 @@ export const MARKET_IPC = {
   close: 'market:close',
 } as const
 
+/** What the window asks for: a query plus the page it wants and how to narrow it. */
+export interface MarketSearchRequest {
+  readonly query: string
+  /** Registry offset (page * size). */
+  readonly from?: number
+  /** Registry hits confirmed per request; the window asks for more when filling a page. */
+  readonly pageSize?: number
+  readonly sort?: 'relevance' | 'updated' | 'name'
+  /** Only plugins that also inject a browser half (`dsh.client`). */
+  readonly clientOnly?: boolean
+}
+
 /** One catalog entry as the renderer sees it. */
 export interface MarketSearchResponse {
   readonly ok: boolean
@@ -38,6 +50,8 @@ export interface MarketSearchResponse {
     readonly client: boolean
   }[]
   readonly skipped: readonly { readonly name: string; readonly reason: string }[]
+  /** Where this page sits in the catalog, so the window can offer a next/previous page. */
+  readonly page?: { readonly from: number; readonly size: number; readonly hasMore: boolean; readonly scanned: number }
   /** Present when the query itself failed (network, registry); `packages` is then empty. */
   readonly failure?: MarketFailure
   readonly output?: string

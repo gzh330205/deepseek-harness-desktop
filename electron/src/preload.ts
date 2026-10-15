@@ -84,7 +84,7 @@ function isMarketDocument(): boolean {
 
 if (isMarketDocument()) {
   contextBridge.exposeInMainWorld('__DSH_MARKET__', Object.freeze({
-    search: (query: string) => ipcRenderer.invoke(MARKET_IPC.search, query) as Promise<unknown>,
+    search: (request: unknown) => ipcRenderer.invoke(MARKET_IPC.search, request) as Promise<unknown>,
     installed: () => ipcRenderer.invoke(MARKET_IPC.installed) as Promise<{ items: { name: string; spec: string }[] }>,
     act: (action: string, name: string, version?: string) =>
       ipcRenderer.invoke(MARKET_IPC.act, action, name, version ?? '') as Promise<unknown>,
