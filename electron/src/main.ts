@@ -97,6 +97,7 @@ import { describeRuntimeFailure, verifyRuntime } from './runtime-tree.ts'
 import { ensureServicePort, readShellSettings, type ShellSettings } from './settings.ts'
 import { mergeSettingsInput, type SettingsInput } from './settings-shape.ts'
 import { SettingsWindow, type SettingsSnapshot, type SettingsSaveResult } from './settings-window.ts'
+import { createMarketWindow } from './market-open.ts'
 import { titleBarPalette } from './constants.ts'
 import { createTray, resolveIconPath } from './tray.ts'
 import { UpdateController } from './update-controller.ts'
@@ -147,6 +148,7 @@ let stopping = false
 let pendingInstaller: string | undefined
 let updateWindow: UpdateWindow | undefined
 let settingsWindow: SettingsWindow | undefined
+let marketWindow: ReturnType<typeof createMarketWindow> | undefined
 let updateController: UpdateController | undefined
 let updateTimer: NodeJS.Timeout | undefined
 let status: LauncherStatus = { phase: 'checking', message: '正在检查启动条件…' }
@@ -1021,6 +1023,12 @@ function appMenuTemplate(): Electron.MenuItemConstructorOptions[] {
     },
     { label: '导出诊断信息…', click: () => { void exportSupportBundle() } },
     { type: 'separator' },
+    // The market is a shell surface, not a DSH page: installing a plugin is what you reach for when
+    // the harness itself is misbehaving. Created on first click, so the app pays nothing until used.
+    { label: '插件市场…', click: () => {
+      marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
+      marketWindow.open()
+    } },
     { label: '设置…', click: () => { settingsWindow?.open() } },
     { label: `关于 ${PRODUCT_NAME}`, click: () => { showAbout() } },
   ]
