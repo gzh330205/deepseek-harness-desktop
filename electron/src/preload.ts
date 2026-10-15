@@ -89,6 +89,14 @@ if (isMarketDocument()) {
     act: (action: string, name: string, version?: string) =>
       ipcRenderer.invoke(MARKET_IPC.act, action, name, version ?? '') as Promise<unknown>,
     profileDir: () => ipcRenderer.invoke(MARKET_IPC.profileDir) as Promise<string>,
+    updates: () => ipcRenderer.invoke(MARKET_IPC.updates) as Promise<unknown>,
+    log: (limit?: number) => ipcRenderer.invoke(MARKET_IPC.log, limit) as Promise<unknown>,
+    /** Main tells the window which view to show (the 插件 menu opens the installed one). */
+    onView: (listener: (view: string) => void): (() => void) => {
+      const handler = (_event: unknown, view: unknown): void => { listener(typeof view === 'string' ? view : 'market') }
+      ipcRenderer.on(MARKET_IPC.view, handler)
+      return () => { ipcRenderer.removeListener(MARKET_IPC.view, handler) }
+    },
     copyDiagnostics: (text: string) => ipcRenderer.invoke(MARKET_IPC.copyDiagnostics, text) as Promise<{ ok: boolean }>,
     close: () => ipcRenderer.invoke(MARKET_IPC.close) as Promise<boolean>,
   }))

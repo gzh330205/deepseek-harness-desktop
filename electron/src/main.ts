@@ -1004,6 +1004,14 @@ function reloadProductDocument(): void {
  */
 function pluginsMenuTemplate(): Electron.MenuItemConstructorOptions[] {
   return [
+    { label: '插件市场…', click: () => {
+      marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
+      marketWindow.open('market')
+    } },
+    { label: '已安装的插件…', click: () => {
+      marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
+      marketWindow.open('installed')
+    } },
   ]
 }
 const MENU_TEMPLATES: Record<ShellMenuName, () => Electron.MenuItemConstructorOptions[]> = {
@@ -1034,12 +1042,6 @@ function appMenuTemplate(): Electron.MenuItemConstructorOptions[] {
     },
     { label: '导出诊断信息…', click: () => { void exportSupportBundle() } },
     { type: 'separator' },
-    // The market is a shell surface, not a DSH page: installing a plugin is what you reach for when
-    // the harness itself is misbehaving. Created on first click, so the app pays nothing until used.
-    { label: '插件市场…', click: () => {
-      marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
-      marketWindow.open()
-    } },
     { label: '设置…', click: () => { settingsWindow?.open() } },
     { label: `关于 ${PRODUCT_NAME}`, click: () => { showAbout() } },
   ]

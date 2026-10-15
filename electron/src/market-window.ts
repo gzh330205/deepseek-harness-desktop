@@ -15,7 +15,7 @@
 import { BrowserWindow, clipboard, ipcMain } from 'electron'
 import { join } from 'node:path'
 
-import { MARKET_IPC, type MarketActionResultResponse, type MarketSearchResponse } from './market-ipc.ts'
+import { MARKET_IPC, type MarketActionResultResponse, type MarketLogResponse, type MarketSearchResponse, type MarketUpdateStatusResponse, type MarketView } from './market-ipc.ts'
 import type { MarketService } from './market-service.ts'
 import type { MarketAction } from './market-install.ts'
 
@@ -44,18 +44,29 @@ export class MarketWindow {
     this.#options = options
   }
 
-  /** Show the window, creating it on first use. */
-  open(): void {
+  /**
+   * Show the window, creating it on first use.
+   *
+   * @param view - Which view to show; the 插件 menu opens `installed` directly.
+   */
+  open(view: MarketView = 'market'): void {
     this.#register()
     const existing = this.#window
     if (existing !== undefined && !existing.isDestroyed()) {
       existing.show()
       existing.focus()
+      // The renderer owns what it displays, so switching views is a message, not a reload: a reload
+      // would throw away the search the user is looking at.
+      existing.webContents.send(MARKET_IPC.view, view)
       return
     }
     const window = this.#create()
     this.#window = window
     window.on('closed', () => { this.#window = undefined })
+    if (view !== 'market') {
+      // First creation: the view rides in the URL, so the page's very first render is already right.
+      void window.loadFile(join(this.#options.appRoot, 'dist', 'market', 'index.html'), { hash: view })
+    }
   }
 
   /** Close the window if it exists. */
@@ -160,6 +171,16 @@ export class MarketWindow {
       }))
 
     ipcMain.handle(MARKET_IPC.profileDir, (event) => guard(event, () => service.profileDir))
+
+    // The installed view's two questions: "is anything newer?" and "what happened last time?".
+    ipcMain.handle(MARKET_IPC.updates, (event): Promise<readonly MarketUpdateStatusResponse[]> =>
+      Promise.resolve(guard(event, () => service.checkUpdates())))
+
+    ipcMain.handle(MARKET_IPC.log, (event, limit: unknown): MarketLogResponse =>
+      guard(event, () => {
+        const wanted = typeof limit === 'number' && Number.isFinite(limit) ? Math.min(400, Math.max(1, Math.trunc(limit))) : 50
+        return { entries: service.log(wanted), path: service.logPath() }
+      }))
 
     ipcMain.handle(MARKET_IPC.copyDiagnostics, (event, text: unknown) =>
       guard(event, () => {
