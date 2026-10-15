@@ -994,10 +994,21 @@ function reloadProductDocument(): void {
  * row — so the strip's button pops this up instead. The actions are unchanged, and the
  * recovery ones stay one click away, which is why the bar was not simply dropped.
  */
-/** The menus the strip's buttons can open. One entry today: Ctrl+C/V/X/A/Z already work in
- * web content on Windows, so an 编辑 menu only duplicated the keyboard. */
+/** The menus the strip's buttons can open. 编辑 is deliberately absent: Ctrl+C/V/X/A/Z already work
+ * in web content on Windows, so such a menu only duplicated the keyboard. */
+/**
+ * The plugins menu: its own top-level entry, because the market is about the runtime's contents
+ * rather than about the app's own behaviour — burying it under 应用 made people hunt for it.
+ *
+ * Created on first click, so the app pays nothing until the window is actually wanted.
+ */
+function pluginsMenuTemplate(): Electron.MenuItemConstructorOptions[] {
+  return [
+  ]
+}
 const MENU_TEMPLATES: Record<ShellMenuName, () => Electron.MenuItemConstructorOptions[]> = {
   app: appMenuTemplate,
+  plugins: pluginsMenuTemplate,
 }
 
 /**

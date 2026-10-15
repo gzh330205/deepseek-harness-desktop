@@ -40,7 +40,7 @@ export function titleBarPalette(useDarkColors: boolean): { background: string; s
   return useDarkColors ? TITLEBAR_THEME.dark : TITLEBAR_THEME.light
 }
 /** Menus reachable from the title bar's buttons. */
-export type ShellMenuName = 'app'
+export type ShellMenuName = 'app' | 'plugins'
 /**
  * How long the port gate keeps waiting for the port to come free, and how often it retries.
  * Covers the one launch where the outgoing Tauri process is still dying: its `dsh` child
