@@ -154,103 +154,6 @@ function normalizeNoProxy(raw) {
  * 避免拼错字段名时静默丢配置。
  * @returns {{patch?: object, error?: string}}
  */
-function validatePatch(patch) {
-  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
-    return { error: '设置必须是对象' };
-  }
-  const next = {};
-  for (const key of Object.keys(patch)) {
-    if (!['closeBehavior', 'proxy', 'service', 'updates', 'browser'].includes(key)) {
-      return { error: `未知设置项：${key}` };
-    }
-  }
-
-  if (patch.closeBehavior !== undefined) {
-    if (!CLOSE_BEHAVIORS.includes(patch.closeBehavior)) {
-      return { error: 'closeBehavior 取值无效' };
-    }
-    next.closeBehavior = patch.closeBehavior;
-  }
-
-  if (patch.proxy !== undefined) {
-    const proxy = patch.proxy;
-    if (proxy === null || typeof proxy !== 'object' || Array.isArray(proxy)) {
-      return { error: 'proxy 必须是对象' };
-    }
-    const enabled = proxy.enabled === undefined ? false : proxy.enabled;
-    if (typeof enabled !== 'boolean') return { error: 'proxy.enabled 必须是布尔值' };
-    const https = normalizeProxyUrl(proxy.httpsProxy ?? '', 'HTTPS 代理地址');
-    if (https.error !== undefined) return { error: https.error };
-    const http = normalizeProxyUrl(proxy.httpProxy ?? '', 'HTTP 代理地址');
-    if (http.error !== undefined) return { error: http.error };
-    if (enabled && https.value === '' && http.value === '') {
-      return { error: '已启用代理，但至少需要填写一个代理地址' };
-    }
-    next.proxy = {
-      enabled,
-      httpsProxy: https.value,
-      httpProxy: http.value,
-      noProxy: normalizeNoProxy(proxy.noProxy),
-    };
-  }
-
-  if (patch.service !== undefined) {
-    const service = patch.service;
-    if (service === null || typeof service !== 'object' || Array.isArray(service)) {
-      return { error: 'service 必须是对象' };
-    }
-    const port = Number(service.port);
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      return { error: '端口必须是 1024–65535 之间的整数' };
-    }
-    next.service = { port };
-  }
-
-  if (patch.updates !== undefined) {
-    const updates = patch.updates;
-    if (updates === null || typeof updates !== 'object' || Array.isArray(updates)) {
-      return { error: 'updates 必须是对象' };
-    }
-    const result = {};
-    for (const key of ['checkDesktopOnStart', 'checkDshOnStart']) {
-      if (updates[key] === undefined) continue;
-      if (typeof updates[key] !== 'boolean') return { error: `updates.${key} 必须是布尔值` };
-      result[key] = updates[key];
-    }
-    next.updates = result;
-  }
-
-  if (patch.browser !== undefined) {
-    const browser = patch.browser;
-    if (browser === null || typeof browser !== 'object' || Array.isArray(browser)) {
-      return { error: 'browser 必须是对象' };
-    }
-    if (browser.enabled === undefined && browser.agentTools === undefined) {
-      next.browser = {};
-    } else {
-      const nextBrowser = {};
-      if (browser.enabled !== undefined) {
-        if (typeof browser.enabled !== 'boolean') return { error: 'browser.enabled 必须是布尔值' };
-        nextBrowser.enabled = browser.enabled;
-      }
-      if (browser.agentTools !== undefined) {
-        if (!TOOL_SURFACES.includes(browser.agentTools)) {
-          return { error: `browser.agentTools 必须是 ${TOOL_SURFACES.join(' / ')} 之一` };
-        }
-        nextBrowser.agentTools = browser.agentTools;
-      }
-      if (browser.autoReleaseSeconds !== undefined) {
-        if (typeof browser.autoReleaseSeconds !== 'number' || !Number.isFinite(browser.autoReleaseSeconds)) {
-          return { error: 'browser.autoReleaseSeconds 必须是数字（秒）' };
-        }
-        nextBrowser.autoReleaseSeconds = browser.autoReleaseSeconds;
-      }
-      next.browser = nextBrowser;
-    }
-  }
-
-  return { patch: next };
-}
 
 /** 补齐缺失字段并把旧版文件（无 revision/service/updates）升级为当前形状。 */
 function withDefaults(raw) {
@@ -298,12 +201,6 @@ async function readSettings(bridgeDir) {
 }
 
 /** 原子写：临时文件 + rename，避免 DSH/桌面壳同时读到半个文件。 */
-async function writeSettings(bridgeDir, settings) {
-  const target = join(bridgeDir, SETTINGS_FILENAME);
-  const temp = `${target}.${randomBytes(6).toString('hex')}.tmp`;
-  await writeFile(temp, JSON.stringify(settings, null, 2), 'utf8');
-  await rename(temp, target);
-}
 
 /**
  * 聚合「现在停掉 DSH 会打断什么」（A1）。

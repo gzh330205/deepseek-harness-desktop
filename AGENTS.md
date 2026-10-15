@@ -18,7 +18,7 @@
 
 ## 1. 项目概述（Tauri 壳，旧版）
 
-基于 **Tauri 2**（Rust 外壳 + Vite/TypeScript 前端）的 DeepSeek Harness（DSH）桌面端。应用**总是启动自己托管的 DSH Web 服务**（仅 loopback，固定端口 `41729`，可用环境变量 `DSH_DESKTOP_PORT` 覆盖），随后把 WebView 导航至该地址；不再发现或复用本机已有的 DSH 实例。启动前先过三道闸门——DSH 版本 ≥ 认证基线、`dsh --help` 含 `--patch`、固定端口可用——任一不满足都不启动服务，并在启动页给出原因与升级入口。桌面端还会通过 `--patch` overlay 向 DSH 注入自带的面板插件 `dsh-desktop-shell`：**DSH 设置页 → 桌面端** 就是桌面壳的设置界面，设置的真相源是桌面壳的 `shell-settings.json`。仓库：`https://github.com/gzh330205/deepseek-harness-desktop`（**必须保持公开**，桌面程序的自动更新依赖匿名下载 Release 资产）。
+基于 **Tauri 2**（Rust 外壳 + Vite/TypeScript 前端）的 DeepSeek Harness（DSH）桌面端。应用**总是启动自己托管的 DSH Web 服务**（仅 loopback，固定端口 `41729`，可用环境变量 `DSH_DESKTOP_PORT` 覆盖），随后把 WebView 导航至该地址；不再发现或复用本机已有的 DSH 实例。启动前先过三道闸门——DSH 版本 ≥ 认证基线、`dsh --help` 含 `--patch`、固定端口可用——任一不满足都不启动服务，并在启动页给出原因与升级入口。桌面端还会通过 `--patch` overlay 向 DSH 注入自带的面板插件 `dsh-desktop-shell`：桌面壳的设置界面是**壳自己的设置窗口**（`electron/src/settings-window.ts`），设置的真相源是桌面壳的 `shell-settings.json`。仓库：`https://github.com/gzh330205/deepseek-harness-desktop`（**必须保持公开**，桌面程序的自动更新依赖匿名下载 Release 资产）。
 
 ## 2. 关键约束（改动前必读）
 
@@ -34,7 +34,7 @@
 - **客户端插件必须 fail-loud 安全**：client 半的 `apply` 若抛错或长时间 pending，整个 DSH 页面会变成 `Failed to load plugins`。必须全程 try/catch、只 inject 标准 web 组合里必然存在的服务、任何失败都降级为「无面板」。
 - 应用图标使用 `src-tauri/icons/whale-original.png` 及其派生资产，不要替换。
 - 主窗口 `dragDropEnabled` 必须保持 `false`（Windows 下 Tauri 原生拖拽会拦截前端 HTML5 drag/drop）。
-- **只保留「关于」一个原生辅助窗口**（固定尺寸、不可最大化、只留标题栏关闭按钮）；桌面设置窗口已删除，设置统一走 DSH 设置页的「桌面端」页，不要在关于窗口内加设置表单或更新内容。
+- **设置只有一个入口**：壳自己的设置窗口（`electron/src/settings-window.ts` + `IPC.settingsGet/Save`）。插件注入的 DSH 设置页「桌面端」已移除，**不要**再往 DSH 设置页里加桌面端设置——两套界面必然漂移。
 - 更新顺序：启动前置门禁通过 → 启动 DSH 服务 → 进入 DSH 页面后先静默检查桌面更新（检查期间不弹窗，仅发现新版本时弹出居中的 `desktop-update` 窗口，下载安装期间锁定主窗口）→ 桌面无更新或用户选择“暂不更新”后才检查 DSH 更新（同样静默检查，有更新则弹出居中的 `dsh-update-prompt` 窗口询问是否更新；用户选择更新后，右下角 `update-overlay` 无边框小窗口显示更新进度，更新完成后再回到居中弹窗询问立即重启或稍后重启；更新期间不阻塞 DSH 使用）。两个启动检查的开关由 DSH 面板的 `updates.checkDesktopOnStart` / `updates.checkDshOnStart` 控制。
 - 启动时主窗口保持 `visible: false`，由前端 `show_launcher` 命令在首帧绘制后显示，避免空白窗口。
 - Windows 下所有子进程（dsh.cmd、netstat、taskkill 等）必须使用 `CREATE_NO_WINDOW` 隐藏控制台窗口。
@@ -120,7 +120,7 @@ bash scripts/release.sh <version>   # 一键发布（见第 3 节）
 ## 5. 关键文件
 
 - `src-tauri/src/lib.rs`：DSH 子进程管理、启动三道闸门与固定端口、overlay/facts 注入与令牌脱敏、托盘、关于/更新浮层窗口、Tauri 命令与 DSH 面板事件桥、update 状态机。
-- `src-tauri/resources/dsh-desktop-shell/`：随安装包分发的 DSH 面板插件（`index.js` host 半：事实/设置读写 API；`client.js` client 半：DSH 设置页「桌面端」）。经 `--patch` overlay 注入，不写用户 profile。
+- `electron/resources/dsh-desktop-shell/`：随安装包分发的 DSH 面板插件（`index.js` host 半：事实/状态与面板 API；`client.js` client 半：侧栏浏览器 UI）。经 `--patch` overlay 注入，不写用户 profile。
 - `src-tauri/tauri.conf.json`：窗口、`bundle.resources`（含面板插件）、NSIS 配置、updater 公钥与端点、版本号。
 - `src/main.ts`：启动页/错误页、WebView 导航、关于窗口的运行状态展示；进入 DSH 前触发桌面更新检查窗口。（桌面设置窗口已删除，设置统一在 DSH 设置页「桌面端」。）
 - `docs/desktop-dsh-integration.md`：桌面端与 DSH 一体化的设计、安全模型与 P0 实测结论。
