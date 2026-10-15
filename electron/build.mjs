@@ -54,6 +54,7 @@ await build({
 await cp(resolve(root, 'src/launcher'), resolve(out, 'launcher'), { recursive: true })
 await cp(resolve(root, 'src/titlebar'), resolve(out, 'titlebar'), { recursive: true })
 await cp(resolve(root, 'src/settings-ui'), resolve(out, 'settings'), { recursive: true })
+await cp(resolve(root, 'src/market-ui'), resolve(out, 'market'), { recursive: true })
 // The strip shows the same logo the window and tray use.
 await copyFile(resolve(root, 'build', 'icons', '32x32.png'), resolve(out, 'titlebar', 'icon.png'))
 // The launcher page shows the product logo. Ship the real artwork (a Tauri-generated

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <!-- No network for this document: everything goes through the shell (__DSH_MARKET__), so the page
+       cannot be talked into fetching or framing anything on its own. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>DSH Desktop 插件市场</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115; --panel: #161a22; --fg: #e8ebf2; --muted: #8d97ab;
+      --line: rgba(255,255,255,.10); --field: #0b0d12; --accent: #4c6ef5; --danger: #f07a7a; --ok: #3fb27f;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f3f3f3; --panel: #ffffff; --fg: #1f1f1f; --muted: #666e7a;
+        --line: rgba(0,0,0,.12); --field: #ffffff; --accent: #3b5bdb; --danger: #c0392b; --ok: #1f7a4d;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; display: flex; flex-direction: column;
+      background: var(--bg); color: var(--fg);
+      font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      user-select: none;
+    }
+    header { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
+    h1 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+    p.hint { margin: 0; color: var(--muted); font-size: 12px; }
+    .search { display: flex; gap: 8px; padding: 12px 18px 6px; }
+    input[type="search"] {
+      flex: 1; padding: 7px 10px; color: var(--fg); background: var(--field);
+      border: 1px solid var(--line); border-radius: 6px; font: inherit;
+    }
+    button {
+      padding: 6px 12px; color: var(--fg); background: var(--field); font: inherit;
+      border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+    }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: .5; cursor: default; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.link { background: none; border: none; color: var(--accent); padding: 2px 4px; text-decoration: underline; }
+    main { flex: 1; overflow: auto; padding: 8px 18px 14px; }
+    .item { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: var(--panel); }
+    .item h2 { margin: 0; font-size: 13px; font-weight: 600; word-break: break-all; }
+    .item h2 .ver { color: var(--muted); font-weight: 400; margin-left: 6px; }
+    .badge { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; color: var(--muted); }
+    .badge.on { color: var(--ok); border-color: var(--ok); }
+    .item p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+    .chips { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
+    .actions { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+    #activity { border-top: 1px solid var(--line); padding: 8px 18px; font-size: 12px; color: var(--muted); min-height: 30px; }
+    #failure { margin: 0 18px 8px; border: 1px solid var(--danger); border-radius: 8px; padding: 10px 12px; background: var(--panel); }
+    #failure[hidden] { display: none; }
+    #failure strong { color: var(--danger); }
+    #failure p { margin: 6px 0 0; }
+    details { margin: 0 18px 10px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    pre {
+      max-height: 240px; overflow: auto; margin: 8px 0 0; padding: 10px;
+      background: var(--field); border: 1px solid var(--line); border-radius: 6px;
+      font: 11px/1.5 "Cascadia Mono", Consolas, monospace; user-select: text; white-space: pre-wrap; word-break: break-all;
+    }
+    footer { display: flex; align-items: center; gap: 10px; padding: 10px 18px 14px; border-top: 1px solid var(--line); }
+    footer .grow { flex: 1; color: var(--muted); font-size: 12px; }
+    ul.skipped { margin: 6px 0 0 6px; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
+    ul.skipped li { margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>插件市场</h1>
+    <p class="hint">插件直接装进当前 profile（<span id="profile">…</span>），装完重启应用生效。列表只收录声明了 <code>dsh</code> 字段的插件。</p>
+  </header>
+
+  <div class="search">
+    <input id="query" type="search" placeholder="搜索插件（名称、关键词，留空看热门）" autocomplete="off" />
+    <button id="go" class="primary">搜索</button>
+  </div>
+
+  <main id="list"></main>
+
+  <div id="failure" hidden>
+    <strong id="failure-title"></strong>
+    <p id="failure-hint"></p>
+    <div class="actions">
+      <button id="copy">复制诊断信息</button>
+    </div>
+    <details id="raw-wrap" hidden>
+      <summary>pnpm 的完整输出</summary>
+      <pre id="raw"></pre>
+    </details>
+  </div>
+
+  <details id="skipped-wrap" hidden>
+    <summary id="skipped-summary"></summary>
+    <ul class="skipped" id="skipped"></ul>
+  </details>
+
+  <div id="activity">就绪</div>
+
+  <footer>
+    <span class="grow" id="count"></span>
+    <button id="close">关闭</button>
+  </footer>
+
+  <script>
+    // Everything the page needs comes from the shell; nothing here talks to the network directly.
+    const api = window.__DSH_MARKET__
+    const el = id => document.getElementById(id)
+    const list = el('list')
+    let items = []
+    let installed = new Map()
+    let busy = false
+    let lastDiagnostics = ''
+
+    function note(text) { el('activity').textContent = text }
+
+    function showFailure(result) {
+      const failure = result && result.failure ? result.failure : { message: '操作失败' }
+      el('failure-title').textContent = `${result.action === 'uninstall' ? '卸载' : result.action === 'update' ? '更新' : '安装'}失败：${result.name}`
+      el('failure-hint').textContent = failure.hint ? `${failure.message} —— ${failure.hint}` : failure.message
+      const raw = result.output || ''
+      el('raw').textContent = raw
+      el('raw-wrap').hidden = raw.trim() === ''
+      el('failure').hidden = false
+      lastDiagnostics = [
+        `action=${result.action} name=${result.name} spec=${result.spec} code=${String(result.code)} kind=${failure.kind}`,
+        raw,
+      ].join('\n')
+    }
+
+    function render() {
+      list.replaceChildren()
+      for (const item of items) {
+        const card = document.createElement('div')
+        card.className = 'item'
+        const title = document.createElement('h2')
+        title.textContent = item.name
+        const version = document.createElement('span')
+        version.className = 'ver'
+        version.textContent = item.version
+        title.append(version)
+        const here = installed.get(item.name)
+        const badge = document.createElement('span')
+        badge.className = here ? 'badge on' : 'badge'
+        badge.textContent = here ? '已安装' : '未安装'
+        title.append(badge)
+        if (item.client) {
+          const clientBadge = document.createElement('span')
+          clientBadge.className = 'badge'
+          clientBadge.textContent = '含界面'
+          title.append(clientBadge)
+        }
+        card.append(title)
+        if (item.description) {
+          const description = document.createElement('p')
+          description.textContent = item.description
+          card.append(description)
+        }
+        if (item.keywords && item.keywords.length > 0) {
+          const chips = document.createElement('div')
+          chips.className = 'chips'
+          for (const keyword of item.keywords) {
+            const chip = document.createElement('span')
+            chip.className = 'chip'
+            chip.textContent = keyword
+            chips.append(chip)
+          }
+          card.append(chips)
+        }
+        const actions = document.createElement('div')
+        actions.className = 'actions'
+        const label = here ? '重新安装' : '安装'
+        const installButton = document.createElement('button')
+        installButton.textContent = label
+        installButton.className = 'primary'
+        installButton.addEventListener('click', () => act('install', item.name, item.version))
+        actions.append(installButton)
+        if (here && here.spec !== item.spec) {
+          const updateButton = document.createElement('button')
+          updateButton.textContent = `更新到 ${item.version}`
+          updateButton.addEventListener('click', () => act('update', item.name, item.version))
+          actions.append(updateButton)
+        }
+        if (here) {
+          const removeButton = document.createElement('button')
+          removeButton.textContent = '卸载'
+          removeButton.addEventListener('click', () => act('uninstall', item.name))
+          actions.append(removeButton)
+        }
+        card.append(actions)
+        list.append(card)
+      }
+      el('count').textContent = items.length === 0 ? '' : `${items.length} 个插件`
+    }
+
+    async function refreshInstalled() {
+      const result = await api.installed()
+      installed = new Map((result.items || []).map(entry => [entry.name, { spec: entry.spec }]))
+    }
+
+    async function search() {
+      if (busy) return
+      busy = true
+      el('go').disabled = true
+      el('failure').hidden = true
+      note('正在查询 registry…')
+      try {
+        const result = await api.search(el('query').value)
+        if (!result.ok) {
+          showFailure({ action: 'install', name: 'registry', spec: '', code: null, output: result.output || '', failure: result.failure })
+          items = []
+        } else {
+          items = result.packages || []
+          const skipped = result.skipped || []
+          el('skipped-wrap').hidden = skipped.length === 0
+          el('skipped-summary').textContent = `已忽略 ${skipped.length} 个不匹配的结果（点开看原因）`
+          const ul = el('skipped')
+          ul.replaceChildren()
+          for (const entry of skipped) {
+            const li = document.createElement('li')
+            li.textContent = `${entry.name} —— ${entry.reason}`
+            ul.append(li)
+          }
+          note(`找到 ${items.length} 个可安装插件`)
+        }
+      } catch (error) {
+        note(`查询失败：${error && error.message ? error.message : String(error)}`)
+        items = []
+      } finally {
+        await refreshInstalled().catch(() => {})
+        render()
+        busy = false
+        el('go').disabled = false
+      }
+    }
+
+    async function act(action, name, version) {
+      if (busy) return
+      busy = true
+      el('go').disabled = true
+      note(`${action === 'uninstall' ? '正在卸载' : action === 'update' ? '正在更新' : '正在安装'} ${name} …`)
+      try {
+        const result = await api.act(action, name, version)
+        if (result.ok) {
+          note(`${name} ${action === 'uninstall' ? '已卸载' : '已安装'}（重启应用后生效）`)
+          el('failure').hidden = true
+          await refreshInstalled()
+          render()
+        } else {
+          showFailure(result)
+          note('失败，详情见下方')
+        }
+      } catch (error) {
+        note(`失败：${error && error.message ? error.message : String(error)}`)
+      } finally {
+        busy = false
+        el('go').disabled = false
+      }
+    }
+
+    el('go').addEventListener('click', () => void search())
+    el('query').addEventListener('keydown', event => { if (event.key === 'Enter') void search() })
+    el('close').addEventListener('click', () => api.close())
+    el('copy').addEventListener('click', async () => {
+      await api.copyDiagnostics(lastDiagnostics)
+      note('诊断信息已复制到剪贴板')
+    })
+
+    void (async () => {
+      const where = await api.profileDir().catch(() => '')
+      el('profile').textContent = where || '(未知)'
+      await refreshInstalled().catch(() => {})
+      await search()
+    })()
+  </script>
+</body>
+</html>
