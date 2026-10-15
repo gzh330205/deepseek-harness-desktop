@@ -80,6 +80,11 @@
     <p class="hint">插件直接装进当前 profile（<span id="profile">…</span>），装完重启应用生效。列表只收录声明了 <code>dsh</code> 字段的插件。</p>
   </header>
 
+  <div class="tabs">
+    <button id="tab-market" data-view="market" class="primary">插件市场</button>
+    <button id="tab-installed" data-view="installed">已安装的插件</button>
+  </div>
+
   <div class="search">
     <input id="query" type="search" placeholder="搜索插件（名称、关键词，留空看热门）" autocomplete="off" />
     <button id="go" class="primary">搜索</button>
@@ -118,6 +123,26 @@
     <summary id="skipped-summary"></summary>
     <ul class="skipped" id="skipped"></ul>
   </details>
+
+  <!-- The installed view: same profile, same window. Everything here answers "what do I already have,
+       is anything newer, and what happened the last time I installed something". -->
+  <section id="installed-view" hidden>
+    <div class="controls">
+      <button id="check" class="primary">检查更新</button>
+      <span class="grow"></span>
+      <span id="installed-count"></span>
+    </div>
+    <div id="installed-list"></div>
+    <details id="log-wrap" open>
+      <summary id="log-summary">动作日志</summary>
+      <p class="hint" id="log-path"></p>
+      <pre id="log-entries"></pre>
+      <div class="actions">
+        <button id="refresh-log">刷新日志</button>
+        <button id="copy-log">复制日志</button>
+      </div>
+    </details>
+  </section>
 
   <div id="activity">就绪</div>
 
@@ -300,6 +325,97 @@
       }
     }
 
+    // Which view is showing. The shell owns the menu, so it can switch us (插件 → 已安装的插件…).
+    let view = location.hash.replace('#', '') === 'installed' ? 'installed' : 'market'
+    let updateStatuses = []
+
+    function switchView(next) {
+      view = next === 'installed' ? 'installed' : 'market'
+      const onInstalled = view === 'installed'
+      for (const id of ['query', 'go', 'sort', 'clientOnly', 'prev', 'next', 'pageInfo']) {
+        const node = el(id)
+        if (node) node.style.display = onInstalled ? 'none' : ''
+      }
+      el('list').hidden = onInstalled
+      el('installed-view').hidden = !onInstalled
+      el('tab-market').classList.toggle('primary', !onInstalled)
+      el('tab-installed').classList.toggle('primary', onInstalled)
+      note(onInstalled ? '已安装的插件（改完需重启应用生效）' : '插件市场')
+      if (onInstalled) void refreshInstalledView()
+    }
+
+    function versionLine(entry) {
+      if (entry.source !== 'registry') return entry.current + '（' + (entry.reason || '不是 registry 版本') + '）'
+      if (entry.latest === undefined || entry.latest === '') return entry.current + '（registry 未报告最新版）'
+      if (entry.hasUpdate) return entry.current + ' → ' + entry.latest
+      return entry.current + '（已是最新）'
+    }
+
+    function renderInstalled() {
+      const host = el('installed-list')
+      host.replaceChildren()
+      el('installed-count').textContent = updateStatuses.length === 0 ? '没有已安装的插件' : String(updateStatuses.length) + ' 个已安装'
+      for (const entry of updateStatuses) {
+        const card = document.createElement('div')
+        card.className = 'item'
+        const title = document.createElement('h2')
+        title.textContent = entry.name
+        const badge = document.createElement('span')
+        badge.className = entry.hasUpdate ? 'badge on' : 'badge'
+        badge.textContent = entry.hasUpdate ? '有新版' : entry.source === 'registry' ? '已最新' : '无法比较'
+        title.append(badge)
+        card.append(title)
+        const line = document.createElement('p')
+        line.textContent = versionLine(entry)
+        card.append(line)
+        const actions = document.createElement('div')
+        actions.className = 'actions'
+        if (entry.hasUpdate && entry.latest !== undefined) {
+          const update = document.createElement('button')
+          update.className = 'primary'
+          update.textContent = '更新到 ' + entry.latest
+          update.addEventListener('click', () => void act('update', entry.name, entry.latest))
+          actions.append(update)
+        }
+        const remove = document.createElement('button')
+        remove.textContent = '卸载'
+        remove.addEventListener('click', () => void act('uninstall', entry.name))
+        actions.append(remove)
+        card.append(actions)
+        host.append(card)
+      }
+    }
+
+    async function refreshLog() {
+      const result = await api.log(80).catch(() => ({ entries: [], path: '' }))
+      el('log-path').textContent = result.path ? '日志文件：' + result.path : '未启用文件日志'
+      const lines = (result.entries || []).map(entry => {
+        const outcome = entry.ok ? 'ok' : 'FAILED' + (entry.kind ? ' (' + entry.kind + ')' : '')
+        const ms = entry.ms === undefined ? '' : ' ' + String(entry.ms) + 'ms'
+        const head = entry.at + '  ' + entry.action + '  ' + entry.name + '  ' + entry.spec + '  ' + outcome + ms
+        return entry.ok ? head : head + String.fromCharCode(10) + (entry.message || '') + String.fromCharCode(10) + (entry.output || '')
+      })
+      el('log-entries').textContent = lines.length === 0 ? '（还没有动作记录）' : lines.join(String.fromCharCode(10) + String.fromCharCode(10))
+    }
+
+    async function refreshInstalledView() {
+      note('正在检查已安装插件的版本…')
+      updateStatuses = await api.updates().catch(() => [])
+      renderInstalled()
+      await refreshLog().catch(() => {})
+      note('已安装 ' + String(updateStatuses.length) + ' 个插件')
+    }
+
+    el('tab-market').addEventListener('click', () => switchView('market'))
+    el('tab-installed').addEventListener('click', () => switchView('installed'))
+    el('check').addEventListener('click', () => void refreshInstalledView())
+    el('refresh-log').addEventListener('click', () => void refreshLog())
+    el('copy-log').addEventListener('click', async () => {
+      await api.copyDiagnostics(el('log-entries').textContent || '')
+      note('动作日志已复制到剪贴板')
+    })
+    if (typeof api.onView === 'function') api.onView(next => switchView(next))
+
     el('go').addEventListener('click', () => void search(true))
     el('query').addEventListener('keydown', event => { if (event.key === 'Enter') void search(true) })
 el('prev').addEventListener('click', () => { if (page.from > 0) { page.from = Math.max(0, page.from - page.pageSize); void search(false) } })
@@ -316,7 +432,8 @@ el('clientOnly').addEventListener('change', () => void search(true))
       const where = await api.profileDir().catch(() => '')
       el('profile').textContent = where || '(未知)'
       await refreshInstalled().catch(() => {})
-      await search(true)
+      if (view === 'installed') switchView('installed')
+      else await search(true)
     })()
   </script>
 </body>
