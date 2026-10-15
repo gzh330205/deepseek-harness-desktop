@@ -2476,20 +2476,11 @@ window.__ModuleLoader__.load({
           'dsh-desktop-shell: dictionaries',
         );
         const t = ctx.locale.bind(NS);
-        ctx.slots.inject('settings.section', () =>
-          ctx.slots.register(
-            {
-              name: 'settings.section',
-              id: 'desktop',
-              order: 18,
-              label: () => t('title'),
-              locale: NS,
-              inject: () => ({ t }),
-            },
-            DesktopSection,
-          ),
-        );
-        console.log('[dsh-desktop-shell][client] settings.section 已注册');
+        // The DSH settings page («桌面端») used to be registered here as a `settings.section`. It is
+        // gone on purpose: the desktop shell now has its own native settings window
+        // (`electron/src/settings-window.ts`, writing `shell-settings.json` directly), so a second
+        // settings surface inside DSH only invited drift between two UIs for one document. The
+        // sidebar browser, shortcuts, session hooks and agent tools below are unaffected.
         // 侧边栏浏览器：**先注册，再按设置撤销**。
         //
         // 以前是「await 设置成功后才注册」，而那个 await 是一次网络往返：请求挂住时面板永远

@@ -671,63 +671,6 @@ export function apply(ctx, config) {
           return sendJson(res, result.ok ? 200 : 409, result);
         }
 
-        if (req.method === 'PUT' && url.pathname === `${ROUTE}/settings`) {
-          if (!tokenValid(req)) {
-            return sendJson(res, 403, { ok: false, error: 'invalid-token' });
-          }
-          const contentType = String(req.headers['content-type'] ?? '');
-          if (!contentType.toLowerCase().startsWith('application/json')) {
-            return sendJson(res, 415, { ok: false, error: 'json-required' });
-          }
-          let body;
-          try {
-            body = await readJsonBody(req);
-          } catch (error) {
-            return sendJson(res, 400, {
-              ok: false,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-          const current = await readSettings(bridgeDir);
-          const expected = Number(body.revision);
-          if (!Number.isInteger(expected) || expected !== current.revision) {
-            return sendJson(res, 409, {
-              ok: false,
-              error: 'revision-conflict',
-              settings: current,
-              revision: current.revision,
-            });
-          }
-          const validated = validatePatch(body.patch);
-          if (validated.error !== undefined) {
-            return sendJson(res, 400, { ok: false, error: validated.error, settings: current });
-          }
-          const patch = validated.patch ?? {};
-          const next = {
-            ...current,
-            ...patch,
-            proxy: patch.proxy === undefined ? current.proxy : { ...current.proxy, ...patch.proxy },
-            service: patch.service === undefined ? current.service : { ...current.service, ...patch.service },
-            updates: patch.updates === undefined ? current.updates : { ...current.updates, ...patch.updates },
-            browser: patch.browser === undefined ? current.browser : { ...current.browser, ...patch.browser },
-            revision: current.revision + 1,
-          };
-          try {
-            await writeSettings(bridgeDir, next);
-          } catch (error) {
-            return sendJson(res, 500, {
-              ok: false,
-              error: 'settings-write-failed',
-              detail: error instanceof Error ? error.message : String(error),
-            });
-          }
-          return sendJson(res, 200, {
-            ok: true,
-            settings: next,
-            revision: next.revision,
-            pendingRestart: !sameProxy(next.proxy, runningProxy()),
-          });
-        }
 
         return sendJson(res, 404, { ok: false, error: 'not-found' });
       },
