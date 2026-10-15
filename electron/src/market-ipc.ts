@@ -21,6 +21,8 @@ export const MARKET_IPC = {
   updates: 'market:updates',
   /** The tail of the action log, plus where the file lives. */
   log: 'market:log',
+  /** Contradictions this profile can be proven to have. */
+  diagnose: 'market:diagnose',
   /** Main → renderer: switch the visible view (the 插件 menu opens the installed one). */
   view: 'market:view',
   /** The profile directory the actions run against (shown in the header). */
@@ -50,6 +52,15 @@ export interface MarketUpdateStatusResponse {
   /** `registry` can be compared; anything else (link/file/git) cannot. */
   readonly source: 'registry' | 'other'
   readonly reason?: string
+}
+
+/** One proven contradiction, as the window shows it. */
+export interface MarketDiagnosisFinding {
+  readonly severity: 'error' | 'warn' | 'info'
+  readonly code: string
+  readonly subject: string
+  readonly message: string
+  readonly hint?: string
 }
 
 /** The action-log tail plus its file path. */

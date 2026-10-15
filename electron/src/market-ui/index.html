@@ -133,6 +133,14 @@
       <span id="installed-count"></span>
     </div>
     <div id="installed-list"></div>
+    <details id="diagnose-wrap" open>
+      <summary id="diagnose-summary">冲突诊断</summary>
+      <div id="diagnose-list"></div>
+      <div class="actions">
+        <button id="refresh-diagnose">重新诊断</button>
+        <button id="copy-diagnose">复制诊断结果</button>
+      </div>
+    </details>
     <details id="log-wrap" open>
       <summary id="log-summary">动作日志</summary>
       <p class="hint" id="log-path"></p>
@@ -398,11 +406,49 @@
       el('log-entries').textContent = lines.length === 0 ? '（还没有动作记录）' : lines.join(String.fromCharCode(10) + String.fromCharCode(10))
     }
 
+    let diagnosis = []
+
+    function renderDiagnosis() {
+      const host = el('diagnose-list')
+      host.replaceChildren()
+      const errors = diagnosis.filter(entry => entry.severity === 'error').length
+      const warns = diagnosis.filter(entry => entry.severity === 'warn').length
+      el('diagnose-summary').textContent = diagnosis.length === 0
+        ? '冲突诊断：没有发现可证明的问题'
+        : '冲突诊断：' + String(errors) + ' 个错误、' + String(warns) + ' 个警告，共 ' + String(diagnosis.length) + ' 条'
+      for (const entry of diagnosis) {
+        const row = document.createElement('div')
+        row.className = 'item'
+        const title = document.createElement('h2')
+        title.textContent = entry.subject
+        const badge = document.createElement('span')
+        badge.className = entry.severity === 'error' ? 'badge on' : 'badge'
+        badge.textContent = entry.severity === 'error' ? '错误' : entry.severity === 'warn' ? '警告' : '提示'
+        title.append(badge)
+        row.append(title)
+        const message = document.createElement('p')
+        message.textContent = entry.message
+        row.append(message)
+        if (entry.hint) {
+          const hint = document.createElement('p')
+          hint.textContent = '建议：' + entry.hint
+          row.append(hint)
+        }
+        host.append(row)
+      }
+    }
+
+    async function refreshDiagnosis() {
+      diagnosis = await api.diagnose().catch(() => [])
+      renderDiagnosis()
+    }
+
     async function refreshInstalledView() {
       note('正在检查已安装插件的版本…')
       updateStatuses = await api.updates().catch(() => [])
       renderInstalled()
       await refreshLog().catch(() => {})
+      await refreshDiagnosis().catch(() => {})
       note('已安装 ' + String(updateStatuses.length) + ' 个插件')
     }
 
@@ -410,6 +456,11 @@
     el('tab-installed').addEventListener('click', () => switchView('installed'))
     el('check').addEventListener('click', () => void refreshInstalledView())
     el('refresh-log').addEventListener('click', () => void refreshLog())
+    el('refresh-diagnose').addEventListener('click', () => void refreshDiagnosis())
+    el('copy-diagnose').addEventListener('click', async () => {
+      await api.copyDiagnostics(JSON.stringify(diagnosis, null, 2))
+      note('诊断结果已复制到剪贴板')
+    })
     el('copy-log').addEventListener('click', async () => {
       await api.copyDiagnostics(el('log-entries').textContent || '')
       note('动作日志已复制到剪贴板')

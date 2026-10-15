@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { packumentUrl, searchMarketPackages, type MarketSearchResult } from './market-catalog.ts'
 import type { MarketSearchRequest } from './market-ipc.ts'
 import { appendMarketLog, marketLogPath, readMarketLog, type MarketLogEntry } from './market-log.ts'
+import { diagnoseConflicts, readConflictWorld, type ConflictFinding, type StoreFacts } from './market-conflict.ts'
 import {
   runMarketAction,
   resolveMarketRuntime,
@@ -317,6 +318,16 @@ export class MarketService {
     return statuses
   }
 
+  /**
+   * Diagnose this profile: contradictions provable from local files.
+   *
+   * The store comparison is the interesting one — it is the same mismatch the shell relinks at startup,
+   * so seeing it here means the relink did not take effect (or the app has not been restarted since).
+   */
+  diagnose(): readonly ConflictFinding[] {
+    const store = readStoreFacts(this.#options.runtimeRoot, this.#options.profileDir)
+    return diagnoseConflicts(readConflictWorld(this.#options.profileDir, { store }))
+  }
   /** Append one entry to the action log, if file logging is configured. */
   #record(entry: MarketLogEntry): void {
     const dir = this.#options.logDir
@@ -399,4 +410,32 @@ function latestVersion(document: unknown): string | undefined {
   if (document === null || typeof document !== 'object') return undefined
   const latest = (document as { 'dist-tags'?: { latest?: unknown } })[ 'dist-tags' ]?.latest
   return typeof latest === 'string' && latest !== '' ? latest : undefined
+}
+/**
+ * Read the two store facts a mismatch needs, each best-effort.
+ *
+ * `modulesMajor` comes from the profile's `node_modules/.modules.yaml` (pnpm writes the store it used);
+ * `pnpmMajor` from the bundled pnpm's own version. Either missing means "cannot tell", and the
+ * diagnosis must then stay silent rather than guess.
+ */
+function readStoreFacts(runtimeRoot: string, profileDir: string): StoreFacts {
+  let modulesMajor: string | undefined
+  try {
+    const match = /store\/v(\d+)/u.exec(readFileSync(join(profileDir, 'node_modules', '.modules.yaml'), 'utf8'))
+    if (match?.[1] !== undefined) modulesMajor = match[1]
+  } catch {
+    // No modules file yet: nothing to compare against.
+  }
+  let pnpmMajor: string | undefined
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(join(runtimeRoot, 'node_modules', 'pnpm', 'package.json'), 'utf8'))
+    const version = (manifest as { version?: unknown }).version
+    if (typeof version === 'string' && version !== '') pnpmMajor = version.split('.')[0]
+  } catch {
+    // Bundled pnpm's version unreadable: skip the comparison.
+  }
+  return {
+    ...(modulesMajor === undefined ? {} : { modulesMajor }),
+    ...(pnpmMajor === undefined ? {} : { pnpmMajor }),
+  }
 }

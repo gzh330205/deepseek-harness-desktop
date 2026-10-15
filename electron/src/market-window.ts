@@ -189,6 +189,8 @@ export class MarketWindow {
         return { ok: true }
       }))
 
+    // Diagnosis reads local files only, so it is safe to run whenever the installed view opens.
+    ipcMain.handle(MARKET_IPC.diagnose, (event) => guard(event, () => service.diagnose()))
     ipcMain.handle(MARKET_IPC.close, (event) => guard(event, () => {
       this.close()
       return true
