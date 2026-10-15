@@ -1756,7 +1756,10 @@ async function boot(): Promise<void> {
     if (event.sender !== titleBarView?.webContents) {
       throw new Error('dsh desktop: rejected title bar IPC from an unowned renderer')
     }
-    if (name !== 'app') return false
+    // Every menu the strip may open is one the templates table knows. This check used to be a
+    // hardcoded 'app', so adding a menu silently produced a button that did nothing — add new
+    // names here too (and the Record<ShellMenuName, …> type insists the template exists).
+    if (name !== 'app' && name !== 'plugins') return false
     const rect = typeof anchor === 'object' && anchor !== null ? anchor as Record<string, unknown> : undefined
     const valid = rect !== undefined
       && typeof rect.x === 'number' && typeof rect.y === 'number' && typeof rect.height === 'number'
