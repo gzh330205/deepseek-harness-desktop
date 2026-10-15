@@ -54,6 +54,30 @@ const { readAsar } = createRequire(createRequire(import.meta.url).resolve('elect
 )
 const archive = await readAsar(asarPath)
 
+// The market window is a shell surface. If its page, its bridge or its menu entry is missing from the
+// archive, the menu item opens an empty window — the same class of silent packaging loss this script
+// exists for (a source directory that electron-builder quietly left out, exit code still 0).
+const marketPage = join('dist', 'market', 'index.html')
+let marketHtml = ''
+try {
+  marketHtml = (await archive.readFile(marketPage)).toString('utf8')
+} catch (error) {
+  fail(`app.asar 里没有市场窗口页面 ${marketPage}：${String(error)}`)
+}
+if (!marketHtml.includes('__DSH_MARKET__')) fail('市场窗口页面没有引用 __DSH_MARKET__ 桥')
+// `dist/main.js` is checked through the IPC channel names rather than the menu label: esbuild emits
+// ASCII by default, so the Chinese label is written as `\uXXXX` escapes and a literal match would
+// fail on a perfectly good build.
+for (const [entry, needle] of [['dist/preload.cjs', '__DSH_MARKET__'], ['dist/main.js', 'market:search'], ['dist/main.js', 'market:profile-dir']]) {
+  let text = ''
+  try {
+    text = (await archive.readFile(join(...entry.split('/')))).toString('utf8')
+  } catch (error) {
+    fail(`app.asar 里缺少 ${entry}：${String(error)}`)
+  }
+  if (!text.includes(needle)) fail(`${entry} 里没有 ${needle}（市场入口没进包）`)
+}
+
 const manifestInsideAsar = join('dsh', 'desktop-runtime.json')
 let packaged
 try {
