@@ -14,6 +14,7 @@ import { test } from 'node:test'
 import {
   diagnoseConflicts,
   readConflictWorld,
+  readPatchKeys,
   type ConflictFinding,
   type ConflictWorld,
 } from './market-conflict.ts'
@@ -153,4 +154,36 @@ test('the reader fills the world from a profile on disk, and stays read-only', (
   assert.deepEqual(codes(findings).sort(), ['missing-install', 'not-registered', 'orphan-install'])
   // Read-only: a second read sees exactly the same world.
   assert.deepEqual(readConflictWorld(dir).installed.map(fact => fact.name).sort(), names)
+})
+test('a plugin patching its own hook is not an overlap', () => {
+  const findings = diagnoseConflicts(world({
+    dependencies: { 'a-plugin': '1.0.0', 'b-plugin': '1.0.0' },
+    bundles: ['a-plugin', 'b-plugin'],
+    installed: [
+      { name: 'a-plugin', spec: '1.0.0', version: '1.0.0', present: true, declaresDsh: true, patches: ['hook-a'] },
+      { name: 'b-plugin', spec: '1.0.0', version: '1.0.0', present: true, declaresDsh: true, patches: ['hook-b'] },
+    ],
+  }))
+  assert.deepEqual(findings, [])
+})
+
+test('two plugins that both declare the same hook are reported as a capability overlap', () => {
+  const findings = diagnoseConflicts(world({
+    dependencies: { 'a-plugin': '1.0.0', 'b-plugin': '1.0.0' },
+    bundles: ['a-plugin', 'b-plugin'],
+    installed: [
+      { name: 'a-plugin', spec: '1.0.0', version: '1.0.0', present: true, declaresDsh: true, patches: ['@deepseek-ai/dsh-client-ui-sidebar-right'] },
+      { name: 'b-plugin', spec: '1.0.0', version: '1.0.0', present: true, declaresDsh: true, patches: ['@deepseek-ai/dsh-client-ui-sidebar-right'] },
+    ],
+  }))
+  assert.deepEqual(codes(findings), ['capability-overlap'])
+  assert.match(findings[0]?.message ?? '', /a-plugin、b-plugin/u)
+})
+test('readPatchKeys takes the indentation-0 keys and ignores comments and nested content', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-market-patch-'))
+  const body = ['# a comment', '# another', 'service-a:', '  nested: 1', '', 'service-b:', '  still: nested'].join(String.fromCharCode(10))
+  writeFileSync(join(dir, 'cordis.patch.yml'), body, 'utf8')
+  assert.deepEqual(readPatchKeys(join(dir, 'cordis.patch.yml')), ['service-a', 'service-b'])
+  // An unreadable patch file must yield no claims, not a throw: the diagnosis has to survive it.
+  assert.deepEqual(readPatchKeys(join(dir, 'absent.yml')), [])
 })

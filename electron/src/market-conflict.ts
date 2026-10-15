@@ -25,6 +25,12 @@ export interface InstalledFact {
   readonly present: boolean
   /** Whether the installed copy declares `dsh` (i.e. is really a plugin). */
   readonly declaresDsh?: boolean
+  /**
+   * Top-level keys of the plugin's own patch file (`dsh.bundle.patch`), i.e. the services it declares
+   * it patches. This is the only capability claim that can be read without executing the plugin, and
+   * therefore the only one worth diagnosing.
+   */
+  readonly patches?: readonly string[]
 }
 
 /** Where the pnpm store disagreement stands, if it could be read. */
@@ -62,6 +68,7 @@ export interface ConflictFinding {
     | 'workspace-takeover'
     | 'store-mismatch'
     | 'version-drift'
+    | 'capability-overlap'
   /** What the finding is about (plugin name, or a path for environment findings). */
   readonly subject: string
   /** One line, phrased for the user. */
@@ -195,6 +202,27 @@ export function diagnoseConflicts(world: ConflictWorld): readonly ConflictFindin
     })
   }
 
+  // Capability overlap, provable form: two plugins whose own patch files touch the same top-level key
+  // are both claiming the same hook. Reported as a warning because DSH allows several patches on one
+  // service — the point is that the user should know two plugins meet there.
+  const patchedBy = new Map<string, string[]>()
+  for (const fact of world.installed) {
+    for (const key of fact.patches ?? []) {
+      const owners = patchedBy.get(key) ?? []
+      owners.push(fact.name)
+      patchedBy.set(key, owners)
+    }
+  }
+  for (const [key, owners] of patchedBy) {
+    if (owners.length < 2) continue
+    findings.push({
+      severity: 'warn',
+      code: 'capability-overlap',
+      subject: key,
+      message: `${owners.length} 个插件都声明要改同一个挂点 ${key}：${owners.join('、')}`,
+      hint: '如果不是有意叠加，检查这些插件的补丁是否互相覆盖',
+    })
+  }
   const rank = { error: 0, warn: 1, info: 2 } as const
   return findings.sort((left, right) => rank[left.severity] - rank[right.severity])
 }
@@ -208,12 +236,18 @@ function readInstalledFact(profileDir: string, name: string, spec: string): Inst
     const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'))
     const record = manifest !== null && typeof manifest === 'object' ? manifest as Record<string, unknown> : {}
     const version = typeof record.version === 'string' ? record.version : undefined
+    const dsh = record.dsh
+    const patch = dsh !== null && typeof dsh === 'object'
+      ? (dsh as { bundle?: { patch?: unknown } }).bundle?.patch
+      : undefined
+    const patches = typeof patch === 'string' && patch !== '' ? readPatchKeys(join(packageDir, patch)) : []
     return {
       name,
       spec,
       ...(version === undefined ? {} : { version }),
       present: true,
-      declaresDsh: record.dsh !== null && typeof record.dsh === 'object',
+      declaresDsh: dsh !== null && typeof dsh === 'object',
+      ...(patches.length === 0 ? {} : { patches }),
     }
   } catch {
     // A package.json we cannot parse is itself worth reporting as "not a plugin we can trust".
@@ -298,4 +332,33 @@ export function hasWorkspaceMarker(directory: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Top-level keys of a patch file, without a YAML parser.
+ *
+ * A DSH patch (`cordis.patch.yml`) names the service or path it patches as an indentation-0 key; the
+ * body underneath is indentation-carrying content. That is enough to answer "which hooks does this
+ * plugin declare", and it keeps the diagnosis dependency-free — a full YAML parse would fail on the
+ * plugins whose patch file uses anchors, and a failed parse is exactly the case where a silent
+ * "no conflict" would be worse than not checking.
+ *
+ * @param patchPath - Absolute path of the patch file named by `dsh.bundle.patch`.
+ * @returns The keys, deduplicated, or an empty list when the file cannot be read.
+ */
+export function readPatchKeys(patchPath: string): readonly string[] {
+  let text = ''
+  try {
+    text = readFileSync(patchPath, 'utf8')
+  } catch {
+    return []
+  }
+  const keys: string[] = []
+  for (const line of text.split(/\r?\n/u)) {
+    if (line === '' || line.startsWith('#') || line.startsWith(' ') || line.startsWith('\t')) continue
+    const match = /^([^\s:#][^:]*):/u.exec(line)
+    const key = match?.[1]?.trim()
+    if (key !== undefined && key !== '' && !keys.includes(key)) keys.push(key)
+  }
+  return keys
 }
