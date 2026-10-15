@@ -68,6 +68,22 @@ test('the real runtime installs a plugin into a profile and uninstalls it again'
   }
 })
 
+test('the live registry answers a search and admission still applies', { skip: enabled ? false : 'set DSH_DESKTOP_MARKET_E2E=1 to run' }, async () => {
+  const profileDir = freshProfile()
+  const service = new MarketService({ profileDir, runtimeRoot, appExecutable, log: () => {} })
+  try {
+    // A specific name, so the assertion does not depend on registry ranking or on how many plugins
+    // exist today: it must come back, and it must come back carrying the admitted spec.
+    const result = await service.search(PLUGIN)
+    const entry = result.packages.find(item => item.name === PLUGIN)
+    assert.ok(entry !== undefined, `live search did not return ${PLUGIN}: ${JSON.stringify(result.packages.map(item => item.name))}`)
+    assert.equal(entry.spec, `${PLUGIN}@${entry.version}`)
+    assert.ok(entry.version !== '', 'an admitted entry must carry a version')
+  } finally {
+    rmSync(profileDir, { recursive: true, force: true })
+  }
+})
+
 test('a version that does not exist fails with a classified reason and no profile change', { skip: enabled ? false : 'set DSH_DESKTOP_MARKET_E2E=1 to run' }, async () => {
   const profileDir = freshProfile()
   const service = new MarketService({ profileDir, runtimeRoot, appExecutable, log: () => {} })
