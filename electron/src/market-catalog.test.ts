@@ -15,6 +15,7 @@ import {
   rejectReason,
   searchMarketPackages,
   searchUrl,
+  sortPackages,
   toMarketPackage,
 } from './market-catalog.ts'
 
@@ -70,7 +71,8 @@ test('the install spec is pinned to the exact version', () => {
 test('registry URLs survive scoped names', () => {
   assert.equal(packumentUrl('@scope/name'), 'https://registry.npmjs.org/@scope%2Fname')
   assert.equal(packumentUrl('plain'), 'https://registry.npmjs.org/plain')
-  assert.equal(searchUrl('a b', 5), 'https://registry.npmjs.org/-/v1/search?text=a%20b&size=5')
+  assert.equal(searchUrl('a b', 5), 'https://registry.npmjs.org/-/v1/search?text=a%20b&size=5&from=0')
+  assert.match(searchUrl('a', 5, undefined, 60), /&from=60$/u)
 })
 
 /** A registry double: search hits, plus one packument per name. */
@@ -123,4 +125,74 @@ test('a package without a latest version is reported, not silently dropped', asy
   const result = await searchMarketPackages('dsh', { getJson: registry.getJson })
   assert.deepEqual(result.packages, [])
   assert.deepEqual(result.skipped, [{ name: 'dsh-weird', reason: 'registry 没有可用的 latest 版本' }])
+})
+
+/** A registry double that serves search hits in pages and one packument per plugin name. */
+function pagedRegistry(pages: readonly (readonly string[])[], manifests: Record<string, unknown>) {
+  const asked: string[] = []
+  return {
+    asked,
+    getJson: (url: string) => {
+      asked.push(url)
+      if (url.includes('/-/v1/search')) {
+        const from = Number(/[?&]from=(\d+)/u.exec(url)?.[1] ?? '0')
+        const size = Number(/[?&]size=(\d+)/u.exec(url)?.[1] ?? '20')
+        const flat = pages.flat()
+        const slice = flat.slice(from, from + size)
+        return Promise.resolve({ objects: slice.map(name => ({ package: { name, description: '', keywords: ['dsh'] } })) })
+      }
+      const name = decodeURIComponent(url.slice(url.lastIndexOf('/') + 1))
+      return Promise.resolve(manifests[name] ?? null)
+    },
+  }
+}
+
+const PLUGIN_MANIFEST = { 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { dsh: { bundle: { patch: './p.yml' } } } } }
+
+test('a page keeps walking the registry until it is full, because most hits are not plugins', async () => {
+  // Page one is mostly noise; only the third hit is a plugin. Asking for two plugins must reach into
+  // the next registry page rather than showing one entry and calling it a page.
+  const registry = pagedRegistry([['noise-1', 'noise-2'], ['dsh-real', 'noise-3', 'dsh-second']], {
+    'dsh-real': PLUGIN_MANIFEST,
+    'dsh-second': PLUGIN_MANIFEST,
+  })
+  const result = await searchMarketPackages('dsh', { getJson: registry.getJson, limit: 2, candidates: 2, fillPages: 3 })
+  assert.deepEqual(result.packages.map(entry => entry.name), ['dsh-real', 'dsh-second'])
+  assert.equal(result.page.scanned, 5, 'it consumed both registry pages')
+  assert.equal(result.page.size, 2)
+  assert.equal(result.page.from, 0)
+  assert.equal(result.page.hasMore, false, 'the registry ran out of hits, so no further page may exist')
+})
+
+test('paging continues from the requested offset and reports registry bookkeeping', async () => {
+  const registry = pagedRegistry([['a-plugin', 'b-plugin', 'c-plugin']], { 'a-plugin': PLUGIN_MANIFEST, 'b-plugin': PLUGIN_MANIFEST, 'c-plugin': PLUGIN_MANIFEST })
+  const first = await searchMarketPackages('dsh', { getJson: registry.getJson, limit: 2, candidates: 3, fillPages: 1 })
+  assert.deepEqual(first.packages.map(entry => entry.name), ['a-plugin', 'b-plugin'])
+  assert.equal(first.page.hasMore, true, 'the registry page was full, so another page may exist')
+  const second = await searchMarketPackages('dsh', { getJson: registry.getJson, limit: 2, candidates: 3, from: 2, fillPages: 1 })
+  assert.deepEqual(second.packages.map(entry => entry.name), ['c-plugin'])
+  assert.equal(second.page.from, 2)
+  assert.equal(second.page.hasMore, false, 'nothing left after the last hit')
+})
+
+test('name and client filters narrow what is confirmed at all', async () => {
+  const registry = pagedRegistry([['dsh-real', 'dsh-other', 'dsh-client']], {
+    'dsh-real': PLUGIN_MANIFEST,
+    'dsh-other': PLUGIN_MANIFEST,
+    'dsh-client': { 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { dsh: { bundle: { patch: './p.yml' }, client: { platform: 'web' } } } } },
+  })
+  const byName = await searchMarketPackages('dsh', { getJson: registry.getJson, limit: 5, filter: { names: ['dsh-real'] } })
+  assert.deepEqual(byName.packages.map(entry => entry.name), ['dsh-real'])
+  assert.equal(registry.asked.some(url => url.includes('dsh-other')), false, 'unrequested names are not even confirmed')
+
+  const clientOnly = await searchMarketPackages('dsh', { getJson: registry.getJson, limit: 5, filter: { clientOnly: true } })
+  assert.deepEqual(clientOnly.packages.map(entry => entry.name), ['dsh-client'])
+})
+
+test('sorting is ours, not the registry order', () => {
+  const entry = (name: string, published: string) => ({ name, version: '1.0.0', description: '', published, keywords: [], spec: name + '@1.0.0', client: false })
+  const packages = [entry('b-plugin', '2026-01-01T00:00:00.000Z'), entry('a-plugin', '2026-05-01T00:00:00.000Z')]
+  assert.deepEqual(sortPackages(packages, 'name').map(item => item.name), ['a-plugin', 'b-plugin'])
+  assert.deepEqual(sortPackages(packages, 'updated').map(item => item.name), ['a-plugin', 'b-plugin'])
+  assert.deepEqual(sortPackages(packages, undefined).map(item => item.name), ['b-plugin', 'a-plugin'])
 })

@@ -23,9 +23,14 @@ export function packumentUrl(name: string, origin: string = REGISTRY_ORIGIN): st
   return `${origin}/${name.startsWith('@') ? name.replace('/', '%2F') : name}`
 }
 
-/** npm's search endpoint for a free-text query. */
-export function searchUrl(query: string, size: number, origin: string = REGISTRY_ORIGIN): string {
-  return `${origin}/-/v1/search?text=${encodeURIComponent(query)}&size=${String(size)}`
+/**
+ * npm's search endpoint for a free-text query.
+ *
+ * `from` is the registry's offset: this is how the window pages deeper into the catalog instead of
+ * being stuck with the first handful of hits.
+ */
+export function searchUrl(query: string, size: number, origin: string = REGISTRY_ORIGIN, from = 0): string {
+  return `${origin}/-/v1/search?text=${encodeURIComponent(query)}&size=${String(size)}&from=${String(Math.max(0, from))}`
 }
 
 /** One installable plugin, as the market list shows it. */
@@ -51,8 +56,19 @@ export interface MarketSearchResult {
   readonly query: string
   /** Admitted plugins, best match first. */
   readonly packages: readonly MarketPackage[]
-  /** How many admitted packages were found before the result cap. */
+  /** How many admitted packages this page holds. */
   readonly total: number
+  /** Page bookkeeping, so the window can show which page it is on and offer a next one. */
+  readonly page: {
+    /** Registry offset this page started from. */
+    readonly from: number
+    /** How many admitted entries were asked for. */
+    readonly size: number
+    /** True when another page may exist (the registry still had hits after this one). */
+    readonly hasMore: boolean
+    /** Registry hits consumed to fill this page. */
+    readonly scanned: number
+  }
   /** Candidates that were rejected, with the reason — surfaced in the UI, never silently dropped. */
   readonly skipped: readonly { readonly name: string; readonly reason: string }[]
 }
@@ -141,8 +157,27 @@ export interface MarketCatalogOptions {
   readonly origin?: string
   /** Maximum admitted packages returned. */
   readonly limit?: number
-  /** How many search hits to confirm against their packument. */
+  /** How many search hits to confirm against their packument (per registry page). */
   readonly candidates?: number
+  /** Registry offset to start from (npm's `from`), so the window can page through the catalog. */
+  readonly from?: number
+  /** Sorting applied to the admitted entries of one page. */
+  readonly sort?: 'relevance' | 'updated' | 'name'
+  /** Keep only entries a user asked for. */
+  readonly filter?: {
+    /** Only plugins that also inject a browser half (`dsh.client`). */
+    readonly clientOnly?: boolean
+    /** Only these plugin names (the window's installed view). */
+    readonly names?: readonly string[]
+  }
+  /**
+   * How many registry pages to walk in order to fill one result page.
+   *
+   * Registry hits are mostly *not* plugins: a `dsh` query returns thousands of unrelated packages and
+   * admission rejects them. Without this, page two of the window would show three entries and look
+   * broken. Bounded, because each page costs one request per candidate.
+   */
+  readonly fillPages?: number
 }
 
 /** The three packages the registry's loose matching is most likely to put first. */
@@ -161,42 +196,93 @@ function pickLatest(packument: unknown): { version?: string; manifest?: unknown 
  * @param options - Registries, caps and the JSON transport.
  * @returns Admitted plugins plus the rejected candidates.
  */
+/**
+ * Search the registry and confirm candidates until one page of admitted plugins is full.
+ *
+ * Two things make this more than a registry call. First, **admission**, which needs each candidate's
+ * own packument (a search hit does not carry `dsh`). Second, **filling**: registry hits are mostly not
+ * plugins, so a naive "read 20 hits, keep the 4 plugins" makes page 2 look broken. This walks up to
+ * `fillPages` registry pages until `size` admitted entries are found or the registry runs out, and
+ * reports both the registry position and how many hits that cost.
+ *
+ * @param query - Free-text query; empty means "the plugin keyword".
+ * @param options - Registry, page size/offset, filters, transport.
+ * @returns One page of admitted plugins plus the bookkeeping the window needs.
+ */
 export async function searchMarketPackages(
   query: string,
   options: MarketCatalogOptions,
 ): Promise<MarketSearchResult> {
   const origin = options.origin ?? REGISTRY_ORIGIN
   const text = query.trim() === '' ? 'keywords:dsh-plugin' : query.trim()
-  const candidates = options.candidates ?? 25
-  const limit = options.limit ?? 40
-
-  const searched = await options.getJson(searchUrl(text, candidates, origin))
-  const objects = (searched as { objects?: unknown }).objects
-  const hits = Array.isArray(objects) ? objects : []
+  const size = options.limit ?? 20
+  const perPage = options.candidates ?? 50
+  const fillPages = Math.max(1, options.fillPages ?? 4)
+  const filter = options.filter ?? {}
+  const wanted = filter.names === undefined ? undefined : new Set(filter.names)
+  const startFrom = Math.max(0, options.from ?? 0)
 
   const packages: MarketPackage[] = []
   const skipped: { name: string; reason: string }[] = []
-  for (const hit of hits) {
-    const entry = hit as { package?: { name?: unknown; description?: unknown; keywords?: unknown; date?: unknown } }
-    const name = entry.package?.name
-    if (typeof name !== 'string' || name === '') continue
-    if (isPlatformPackage(name)) {
-      skipped.push({ name, reason: '平台自身（@deepseek-ai/dsh*），不是插件' })
-      continue
+  let from = startFrom
+  let scanned = 0
+  let hasMore = false
+
+  for (let page = 0; page < fillPages; page++) {
+    const searched = await options.getJson(searchUrl(text, perPage, origin, from))
+    const objects = (searched as { objects?: unknown }).objects
+    const hits = Array.isArray(objects) ? objects : []
+    if (hits.length === 0) break
+    scanned += hits.length
+    hasMore = hits.length >= perPage
+    for (const hit of hits) {
+      const entry = hit as { package?: { name?: unknown; description?: unknown; keywords?: unknown; date?: unknown } }
+      const name = entry.package?.name
+      if (typeof name !== 'string' || name === '') continue
+      if (isPlatformPackage(name)) {
+        skipped.push({ name, reason: '平台自身（@deepseek-ai/dsh*），不是插件' })
+        continue
+      }
+      // The window's "已安装" view asks for specific names: no reason to confirm the rest.
+      if (wanted !== undefined && !wanted.has(name)) continue
+      const packument = await options.getJson(packumentUrl(name, origin))
+      const { version, manifest } = pickLatest(packument)
+      if (version === undefined) {
+        skipped.push({ name, reason: 'registry 没有可用的 latest 版本' })
+        continue
+      }
+      const reason = rejectReason(name, manifest)
+      if (reason !== undefined) {
+        skipped.push({ name, reason })
+        continue
+      }
+      const admitted = toMarketPackage(name, version, entry.package ?? {}, manifest)
+      if (filter.clientOnly === true && !admitted.client) continue
+      packages.push(admitted)
+      if (packages.length >= size) break
     }
-    if (packages.length >= limit) break
-    const packument = await options.getJson(packumentUrl(name, origin))
-    const { version, manifest } = pickLatest(packument)
-    if (version === undefined) {
-      skipped.push({ name, reason: 'registry 没有可用的 latest 版本' })
-      continue
-    }
-    const reason = rejectReason(name, manifest)
-    if (reason !== undefined) {
-      skipped.push({ name, reason })
-      continue
-    }
-    packages.push(toMarketPackage(name, version, entry.package ?? {}, manifest))
+    from += hits.length
+    if (packages.length >= size || !hasMore) break
   }
-  return { query: text, packages, total: packages.length, skipped }
+
+  return {
+    query: text,
+    packages: sortPackages(packages, options.sort),
+    total: packages.length,
+    page: { from: startFrom, size, hasMore, scanned },
+    skipped,
+  }
+}
+
+/** Relevance is the registry's own order; the other two orders are ours. */
+export function sortPackages(
+  packages: readonly MarketPackage[],
+  sort: MarketCatalogOptions['sort'],
+): MarketPackage[] {
+  const copy = [...packages]
+  if (sort === 'updated') {
+    return copy.sort((left, right) => (right.published || '').localeCompare(left.published || ''))
+  }
+  if (sort === 'name') return copy.sort((left, right) => left.name.localeCompare(right.name))
+  return copy
 }
