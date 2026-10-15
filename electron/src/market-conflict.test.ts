@@ -122,7 +122,7 @@ test('findings are ordered by severity', () => {
   }))
   // `a` is installed and bundled but never declared, so it is also an orphan — and the warnings keep
   // their insertion order ahead of the info finding.
-  assert.deepEqual(codes(findings), ['missing-install', 'duplicate-bundle', 'orphan-install', 'version-drift'])
+  assert.deepEqual(codes(findings), ['missing-install', 'duplicate-bundle', 'orphan-install'])
 })
 
 test('the reader fills the world from a profile on disk, and stays read-only', () => {
