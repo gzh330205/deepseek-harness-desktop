@@ -15,6 +15,7 @@ import {
   diagnoseConflicts,
   readConflictWorld,
   readPatchKeys,
+  readWorkspacePackages,
   type ConflictFinding,
   type ConflictWorld,
 } from './market-conflict.ts'
@@ -62,7 +63,8 @@ test('an install nobody declares is reported once, not once per list', () => {
     installed: [{ name: 'dsh-git-panel', spec: '', present: true, declaresDsh: true }],
   }))
   assert.deepEqual(codes(findings), ['orphan-install'])
-  assert.match(findings[0]?.message ?? '', /没有声明/u)
+  assert.equal(findings[0]?.severity, 'info', 'a plugin another manager installed looks identical to a leftover')
+  assert.match(findings[0]?.message ?? '', /都没提到它/u)
 })
 
 test('an ordinary npm package that happens to be installed as a dependency is not an orphan', () => {
@@ -101,7 +103,7 @@ test('the platform itself and non-plugins are called out', () => {
 
 test('environment findings name the path or the store pair that causes them', () => {
   const findings = diagnoseConflicts(world({
-    workspaceMarkers: ['C:/Users/x/pnpm-workspace.yaml'],
+    workspaceMarkers: [{ path: 'C:/Users/x/pnpm-workspace.yaml', inProfile: false, packages: [] }],
     store: { modulesMajor: '10', pnpmMajor: '11' },
   }))
   assert.deepEqual(codes(findings), ['workspace-takeover', 'store-mismatch'])
@@ -121,9 +123,9 @@ test('findings are ordered by severity', () => {
     bundles: ['a', 'a'],
     installed: [{ name: 'a', spec: '^1.0.0', version: '1.0.1', present: true, declaresDsh: true }],
   }))
-  // `a` is installed and bundled but never declared, so it is also an orphan — and the warnings keep
-  // their insertion order ahead of the info finding.
-  assert.deepEqual(codes(findings), ['missing-install', 'duplicate-bundle', 'orphan-install'])
+  // `a` is in `bundles`, so the profile loads it and it is not an orphan — that rule exists because a
+  // real profile reported six plugins which another manager had installed.
+  assert.deepEqual(codes(findings), ['missing-install', 'duplicate-bundle'])
 })
 
 test('the reader fills the world from a profile on disk, and stays read-only', () => {
@@ -186,4 +188,61 @@ test('readPatchKeys takes the indentation-0 keys and ignores comments and nested
   assert.deepEqual(readPatchKeys(join(dir, 'cordis.patch.yml')), ['service-a', 'service-b'])
   // An unreadable patch file must yield no claims, not a throw: the diagnosis has to survive it.
   assert.deepEqual(readPatchKeys(join(dir, 'absent.yml')), [])
+})
+
+test('a profile that owns a pnpm-workspace.yaml is normal, not a takeover', () => {
+  // pnpm 11 keeps its settings there, so the file the user actually had — `packages: [.]` plus
+  // nodeLinker / dangerouslyAllowAllBuilds — must produce no finding at all. Reporting it as a fatal
+  // environment problem was a false alarm that buried the real ones.
+  assert.deepEqual(diagnoseConflicts(world({
+    workspaceMarkers: [{ path: 'C:/home/.dsh/profiles/dsh-desktop/pnpm-workspace.yaml', inProfile: true, packages: ['.'] }],
+  })), [])
+  assert.deepEqual(diagnoseConflicts(world({
+    workspaceMarkers: [{ path: 'C:/home/.dsh/profiles/dsh-desktop/pnpm-workspace.yaml', inProfile: true, packages: [] }],
+  })), [], 'a settings-only file declares no members at all')
+})
+
+test('a profile-owned workspace that pulls in other members is a warning', () => {
+  const findings = diagnoseConflicts(world({
+    workspaceMarkers: [{ path: 'C:/home/.dsh/profiles/dsh-desktop/pnpm-workspace.yaml', inProfile: true, packages: ['.', '../other-plugin'] }],
+  }))
+  assert.deepEqual(codes(findings), ['workspace-takeover'])
+  assert.equal(findings[0]?.severity, 'warn')
+  assert.match(findings[0]?.message ?? '', /\.\.\/other-plugin/u)
+})
+
+test('an ancestor workspace is still an error', () => {
+  const findings = diagnoseConflicts(world({
+    workspaceMarkers: [{ path: 'C:/home/.dsh/pnpm-workspace.yaml', inProfile: false, packages: ['profiles/*'] }],
+  }))
+  assert.deepEqual(codes(findings), ['workspace-takeover'])
+  assert.equal(findings[0]?.severity, 'error')
+})
+
+test('packages the harness seeds into every profile are not "leftovers"', () => {
+  // The user's own report showed these as warnings: `@deepseek-ai/dsh-base`, `dsh-web-app`, the
+  // experimental profiles. They sit in node_modules without being declared because the harness put
+  // them there; listing them as leftovers is noise that hides the real findings.
+  const findings = diagnoseConflicts(world({
+    installed: [
+      { name: '@deepseek-ai/dsh-base', spec: '', present: true, declaresDsh: true },
+      { name: '@deepseek-ai/dsh-experimental-agent-team-profile', spec: '', present: true, declaresDsh: true },
+      { name: 'dsh-git-panel', spec: '', present: true, declaresDsh: true },
+    ],
+  }))
+  assert.deepEqual(codes(findings), ['orphan-install'], 'only the genuine leftover is reported')
+  assert.equal(findings[0]?.subject, 'dsh-git-panel')
+})
+
+test('the workspace member list is read from the file pnpm actually writes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-market-workspace-'))
+  const marker = join(dir, 'pnpm-workspace.yaml')
+  const newline = String.fromCharCode(10)
+  writeFileSync(marker, ['packages:', '  - .', '', 'nodeLinker: hoisted', 'autoInstallPeers: false', 'dangerouslyAllowAllBuilds: true', ''].join(newline), 'utf8')
+  assert.deepEqual(readWorkspacePackages(marker), ['.'])
+
+  // Members beyond `.` are what makes it a workspace instead of a settings file.
+  writeFileSync(marker, ['packages:', '  - .', '  - ../plugin', 'onlyBuiltDependencies:', '  - esbuild', ''].join(newline), 'utf8')
+  assert.deepEqual(readWorkspacePackages(marker), ['.', '../plugin'])
+  assert.deepEqual(readWorkspacePackages(join(dir, 'absent.yaml')), [])
 })

@@ -97,7 +97,7 @@ import { describeRuntimeFailure, verifyRuntime } from './runtime-tree.ts'
 import { ensureServicePort, readShellSettings, type ShellSettings } from './settings.ts'
 import { mergeSettingsInput, type SettingsInput } from './settings-shape.ts'
 import { SettingsWindow, type SettingsSnapshot, type SettingsSaveResult } from './settings-window.ts'
-import { createMarketWindow } from './market-open.ts'
+import { createMarketWindow, installForVerification, installGithubForVerification } from './market-open.ts'
 import { marketChildEnvironment, resolveMarketRuntime } from './market-install.ts'
 import { titleBarPalette } from './constants.ts'
 import { createTray, resolveIconPath } from './tray.ts'
@@ -1006,11 +1006,11 @@ function reloadProductDocument(): void {
 function pluginsMenuTemplate(): Electron.MenuItemConstructorOptions[] {
   return [
     { label: '插件市场…', click: () => {
-      marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
+      marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog, { logDir: bridgeDir() })
       marketWindow.open('market')
     } },
     { label: '已安装的插件…', click: () => {
-      marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
+      marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog, { logDir: bridgeDir() })
       marketWindow.open('installed')
     } },
   ]
@@ -1621,13 +1621,41 @@ async function boot(): Promise<void> {
   // (the menu item itself needs a human to click it). It also demonstrates the property the market
   // was built for: it opens without the DSH service being involved at all.
   if (process.env.DSH_DESKTOP_OPEN_MARKET === '1') {
-    marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
+    marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog, { logDir: bridgeDir() })
     marketWindow.open()
     // Second half of the same hook: prove the runtime the market would *spawn* is startable. A path
     // inside `app.asar` passes `existsSync` (Electron's fs reads the archive) and then fails with
     // ENOENT the moment a real process is started from it — an install-breaking difference that only
     // shows up in a packaged app, which is exactly why it shipped unnoticed.
     void smokeMarketRuntime(appendShellLog)
+    // Third part of the hook: install one plugin for real, so "packaging did not break installing" is
+    // asserted by installing rather than by reasoning about paths.
+    const installSpec = process.env.DSH_DESKTOP_MARKET_INSTALL
+    if (installSpec !== undefined && installSpec !== '') {
+      void installForVerification(app.getAppPath(), appendShellLog, installSpec.slice(0, Math.max(0, installSpec.lastIndexOf('@'))), installSpec.slice(installSpec.lastIndexOf('@') + 1))
+        .then(result => {
+          appendShellLog(result.ok === true
+            ? `market install ok ${installSpec}`
+            : `market install failed ${installSpec} ${String(result.failure?.kind ?? 'unknown')} ${String(result.failure?.message ?? '')}`)
+        })
+        .catch(error => {
+          appendShellLog(`market install failed ${installSpec} unknown ${error instanceof Error ? error.message : String(error)}`)
+        })
+    }
+    // Fourth part: the GitHub source, which is a different path inside pnpm (git or a release tarball
+    // rather than a registry fetch) and therefore needs its own packaged proof.
+    const githubInput = process.env.DSH_DESKTOP_MARKET_GITHUB
+    if (githubInput !== undefined && githubInput !== '') {
+      void installGithubForVerification(app.getAppPath(), appendShellLog, githubInput)
+        .then(result => {
+          appendShellLog(result.ok === true
+            ? `market github install ok ${result.name} (${result.spec})`
+            : `market github install failed ${githubInput} ${String(result.failure?.kind ?? 'unknown')} ${String(result.failure?.message ?? '')}`)
+        })
+        .catch(error => {
+          appendShellLog(`market github install failed ${githubInput} unknown ${error instanceof Error ? error.message : String(error)}`)
+        })
+    }
   }
 
   /**

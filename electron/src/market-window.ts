@@ -77,10 +77,10 @@ export class MarketWindow {
 
   #create(): BrowserWindow {
     const window = new BrowserWindow({
-      width: 760,
-      height: 680,
-      minWidth: 620,
-      minHeight: 480,
+      width: 1180,
+      height: 820,
+      minWidth: 820,
+      minHeight: 560,
       title: 'DSH Desktop 插件市场',
       show: false,
       autoHideMenuBar: true,
@@ -202,6 +202,30 @@ export class MarketWindow {
         this.#options.log(`market catalog failed ${error instanceof Error ? error.message : String(error)}`)
         throw error
       }
+    }))
+    // GitHub sources. Nothing is installed until the repository has been read and vetted, so a
+    // repository that is not a plugin cannot change the profile at all. Both outcomes are logged in a
+    // form the packaged smoke can require.
+    ipcMain.handle(MARKET_IPC.githubInspect, (event, input: unknown) => guard(event, async () => {
+      const result = await service.inspectGithub(typeof input === 'string' ? input : '')
+      this.#options.log(`market github inspect ${result.ok ? `ok ${result.name ?? ''}` : `failed ${result.reason ?? ''}`}`)
+      return result
+    }))
+
+    ipcMain.handle(MARKET_IPC.githubInstall, (event, input: unknown) => guard(event, async () => {
+      const result = await service.installFromGithub(typeof input === 'string' ? input : '')
+      this.#options.log(result.ok
+        ? `market github install ok ${result.name} (${result.spec})`
+        : `market github install failed ${result.failure?.kind ?? 'unknown'} ${result.failure?.message ?? ''}`)
+      return result
+    }))
+
+    // What the page reports it rendered. Short, single-line, and only ever written to the shell log:
+    // enough for the packaged smoke to prove the list exists on screen, not enough to be a data channel.
+    ipcMain.handle(MARKET_IPC.note, (event, text: unknown) => guard(event, () => {
+      const line = typeof text === 'string' ? text.replace(/\s+/gu, ' ').trim().slice(0, 200) : ''
+      if (line !== '') this.#options.log(`market ui ${line}`)
+      return true
     }))
     // Diagnosis reads local files only, so it is safe to run whenever the installed view opens.
     ipcMain.handle(MARKET_IPC.diagnose, (event) => guard(event, () => service.diagnose()))

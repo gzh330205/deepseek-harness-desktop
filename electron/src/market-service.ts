@@ -13,11 +13,12 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { packumentUrl, searchMarketPackages, type MarketSearchResult } from './market-catalog.ts'
-import { fetchCatalog, filterByCategory, searchCatalog, sortCatalog, type Catalog, type CatalogSort } from './market-catalog-source.ts'
+import { countByCategory, fetchCatalog, filterByCategory, searchCatalog, sortCatalog, type Catalog, type CatalogSort } from './market-catalog-source.ts'
+import { inspectGithubPlugin } from './market-github.ts'
 import type { MarketSearchRequest } from './market-ipc.ts'
 import { appendMarketLog, marketLogPath, readMarketLog, type MarketLogEntry } from './market-log.ts'
 import { diagnoseConflicts, readConflictWorld, type ConflictFinding, type StoreFacts } from './market-conflict.ts'
@@ -198,18 +199,25 @@ export class MarketService {
    * Search one page of the catalog.
    *
    * The registry is walked (and its noise filtered) by `searchMarketPackages`; this only forwards the
-   * window's page/filter choices, because the window owns what the user asked for.
+   * window's page/filter choices, because the window owns what the user asked for. The whole thing is
+   * bounded by a deadline: an interactive search must always settle, or the window stays disabled and
+   * the search looks broken — which is exactly how it was reported.
    */
   search(request: MarketSearchRequest): Promise<MarketSearchResult> {
     const getJson = this.#options.fetchJsonImpl ?? (url => fetchJson(url))
-    return searchMarketPackages(request.query, {
+    return withDeadline(searchMarketPackages(request.query, {
       getJson,
       from: request.from ?? 0,
       limit: request.pageSize ?? 20,
+      // Interactive budget: 30 candidates per registry page and at most two pages. A search is a
+      // fallback path (the catalog is the main one), and every extra candidate is another request the
+      // user waits for with the button disabled.
+      candidates: 30,
+      fillPages: 2,
       sort: request.sort ?? 'relevance',
       // `exactOptionalPropertyTypes` is on, so an absent filter must be an absent key.
       ...(request.clientOnly === true ? { filter: { clientOnly: true } } : {}),
-    })
+    }), SEARCH_DEADLINE_MS, 'registry 查询超时（网络慢，或 registry 不可达）')
   }
 
   /**
@@ -227,7 +235,9 @@ export class MarketService {
     /** Ignore a cached copy and refetch (the window's "reload" button). */
     readonly refresh?: boolean
   } = {}): Promise<{
-    readonly categories: readonly string[]
+    readonly categories: readonly { readonly id: string; readonly en?: string; readonly zh?: string }[]
+    /** Entries per category over the whole catalog (a chip's number must not depend on the page). */
+    readonly categoryCounts: Readonly<Record<string, number>>
     readonly updated?: string
     readonly total: number
     readonly page: number
@@ -244,6 +254,7 @@ export class MarketService {
     const start = page * pageSize
     return {
       categories: catalog.categories,
+      categoryCounts: countByCategory(catalog.entries),
       ...(catalog.updated === undefined ? {} : { updated: catalog.updated }),
       total: sorted.length,
       page,
@@ -276,14 +287,73 @@ export class MarketService {
     return this.#act('uninstall', name)
   }
 
+  /**
+   * Install a plugin straight from GitHub — the case where it is in neither the catalog's npm mapping
+   * nor the registry.
+   *
+   * The repository's own manifest is read and vetted **before** anything touches the profile. That
+   * ordering is the point: a package that declares no `dsh` cannot be registered as a bundle, and
+   * installing it first only to remove it afterwards would change the profile in between. The name
+   * that gets registered is the one the repository declares (`portable-dsh-multi-agent`, not the
+   * catalog's `portable-dsh-multi-agent-plugin`), because that is the name the harness looks up.
+   *
+   * @param input - `owner/repo`, a repository URL, or a release tarball URL (optionally with a ref).
+   */
+  async installFromGithub(input: string): Promise<MarketActionResult> {
+    const getJson = this.#options.fetchJsonImpl ?? (url => fetchJson(url))
+    const inspected = await inspectGithubPlugin(getJson, input)
+    if ('reason' in inspected) {
+      return {
+        ok: false,
+        action: 'install',
+        name: input,
+        spec: input,
+        code: null,
+        output: inspected.reason,
+        failure: {
+          kind: inspected.kind,
+          message: inspected.reason,
+          hint: '示例：owner/repo、https://github.com/owner/repo，或仓库发布页里的 .tgz 地址',
+        },
+        bundleRegistered: false,
+      }
+    }
+    const { source, name, spec, scripts } = inspected.plugin
+    this.#options.log?.(`从 GitHub 安装 ${source.owner}/${source.repo} → ${name}${scripts.length === 0 ? '' : `（会执行安装脚本：${scripts.join('、')}）`}`)
+    return this.#act('install', name, undefined, spec)
+  }
+
+  /** Read a GitHub source without installing it: what the window shows before the user commits. */
+  async inspectGithub(input: string): Promise<{ readonly ok: boolean; readonly name?: string; readonly version?: string; readonly spec?: string; readonly scripts?: readonly string[]; readonly reason?: string }> {
+    const getJson = this.#options.fetchJsonImpl ?? (url => fetchJson(url))
+    const inspected = await inspectGithubPlugin(getJson, input)
+    if ('reason' in inspected) return { ok: false, reason: inspected.reason }
+    return {
+      ok: true,
+      name: inspected.plugin.name,
+      ...(inspected.plugin.version === undefined ? {} : { version: inspected.plugin.version }),
+      spec: inspected.plugin.spec,
+      scripts: inspected.plugin.scripts,
+    }
+  }
+
   /** Plugin names the profile currently declares, in the window's list order. */
   installed(): readonly { readonly name: string; readonly spec: string }[] {
     const dependencies = readProfileManifest(this.#options.profileDir).dependencies ?? {}
     return Object.entries(dependencies).map(([name, spec]) => ({ name, spec }))
   }
 
-  async #act(action: MarketAction, name: string, version?: string): Promise<MarketActionResult> {
+  async #act(action: MarketAction, name: string, version?: string, spec?: string): Promise<MarketActionResult> {
     const { profileDir, runtimeRoot, appExecutable } = this.#options
+    // pnpm runs with `cwd` = the profile, and a spawn whose `cwd` does not exist fails with ENOENT
+    // **naming the executable** — a message that reads like "the runtime is missing" while the real
+    // problem is an empty profile directory (fresh `DSH_HOME`, or a first run before seeding). Creating
+    // it first costs nothing and removes the whole class of confusion.
+    try {
+      mkdirSync(profileDir, { recursive: true })
+    } catch {
+      // A profile we cannot create will fail below with pnpm's own error, which is the useful one.
+    }
     const runtime = resolveMarketRuntime(runtimeRoot, appExecutable)
     if (runtime === undefined) {
       return {
@@ -297,7 +367,7 @@ export class MarketService {
         bundleRegistered: false,
       }
     }
-    this.#options.log?.(`${action} ${name}${version === undefined ? '' : `@${version}`}（${runtime.appBinary ? '应用二进制' : '随包 node'}）`)
+    this.#options.log?.(`${action} ${spec ?? name}${version === undefined || spec !== undefined ? '' : `@${version}`}（${runtime.appBinary ? '应用二进制' : '随包 node'}）`)
     const run = this.#options.runPnpmImpl ?? ((args, environment) => runPnpm({
       nodeExecutable: runtime.nodeExecutable,
       pnpmEntry: runtime.pnpmEntry,
@@ -315,7 +385,7 @@ export class MarketService {
       readManifest: () => readProfileManifest(profileDir),
       writeManifest: manifest => { writeProfileManifest(profileDir, manifest) },
       runPnpm: run,
-    }, version)
+    }, version, spec)
     // Recorded even when it succeeded: "it worked yesterday" is only checkable if successes are logged.
     this.#record({
       at: new Date().toISOString(),
@@ -470,6 +540,26 @@ function latestVersion(document: unknown): string | undefined {
   const latest = (document as { 'dist-tags'?: { latest?: unknown } })[ 'dist-tags' ]?.latest
   return typeof latest === 'string' && latest !== '' ? latest : undefined
 }
+/**
+ * How long an interactive registry search may take before it is reported as a failure.
+ *
+ * Bounded on purpose: the window disables its button while a search is in flight, so a search that
+ * never settles leaves the whole view stuck. A deadline turns that into an ordinary, explainable
+ * failure the user can retry.
+ */
+const SEARCH_DEADLINE_MS = 25_000
+
+/** Resolve with `work`, or reject with `message` once `ms` have passed. */
+function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => { reject(new Error(message)) }, ms)
+    work.then(
+      value => { clearTimeout(timer); resolve(value) },
+      error => { clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))) },
+    )
+  })
+}
+
 /**
  * Read the two store facts a mismatch needs, each best-effort.
  *

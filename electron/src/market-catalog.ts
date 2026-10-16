@@ -18,6 +18,16 @@
 /** Registry endpoints. Overridable so tests and mirrors do not touch the network. */
 export const REGISTRY_ORIGIN = 'https://registry.npmjs.org'
 
+/**
+ * How many candidate packuments are fetched at once while confirming a registry page.
+ *
+ * The search is interactive: every confirmed candidate is one HTTP request, and doing them one at a
+ * time made a normal search take seconds — and a page-filling search tens of seconds — with the
+ * window's button disabled the whole time, which reads as "the search is broken". Six keeps the
+ * registry happy while cutting that wait by roughly the same factor.
+ */
+export const CONFIRM_CONCURRENCY = 8
+
 /** Quote a package name for a registry URL: the scope separator is the only character that needs it. */
 export function packumentUrl(name: string, origin: string = REGISTRY_ORIGIN): string {
   return `${origin}/${name.startsWith('@') ? name.replace('/', '%2F') : name}`
@@ -247,8 +257,13 @@ export async function searchMarketPackages(
     if (hits.length === 0) break
     scanned += hits.length
     hasMore = hits.length >= perPage
+    // Confirm candidates in small parallel windows rather than one request at a time. Sequential
+    // confirmation is what made a registry search take ~8 s — and far longer once several registry
+    // pages had to be walked — during which the window's button stayed disabled and the search looked
+    // broken from the outside. Order is preserved and we still stop as soon as the page is full.
+    const candidates: { readonly name: string; readonly summary: Record<string, unknown> }[] = []
     for (const hit of hits) {
-      const entry = hit as { package?: { name?: unknown; description?: unknown; keywords?: unknown; date?: unknown } }
+      const entry = hit as { package?: Record<string, unknown> }
       const name = entry.package?.name
       if (typeof name !== 'string' || name === '') continue
       if (isPlatformPackage(name)) {
@@ -261,21 +276,30 @@ export async function searchMarketPackages(
       }
       // The window's "已安装" view asks for specific names: no reason to confirm the rest.
       if (wanted !== undefined && !wanted.has(name)) continue
-      const packument = await options.getJson(packumentUrl(name, origin))
-      const { version, manifest } = pickLatest(packument)
-      if (version === undefined) {
-        skipped.push({ name, reason: 'registry 没有可用的 latest 版本' })
-        continue
+      candidates.push({ name, summary: entry.package ?? {} })
+    }
+
+    for (let start = 0; start < candidates.length && packages.length < size; start += CONFIRM_CONCURRENCY) {
+      const window = candidates.slice(start, start + CONFIRM_CONCURRENCY)
+      const confirmed = await Promise.all(window.map(async candidate => {
+        const packument = await options.getJson(packumentUrl(candidate.name, origin))
+        const { version, manifest } = pickLatest(packument)
+        if (version === undefined) return { name: candidate.name, reason: 'registry 没有可用的 latest 版本' }
+        const reason = rejectReason(candidate.name, manifest)
+        if (reason !== undefined) return { name: candidate.name, reason }
+        const admitted = toMarketPackage(candidate.name, version, candidate.summary, manifest)
+        if (filter.clientOnly === true && !admitted.client) return undefined
+        return admitted
+      }))
+      for (const result of confirmed) {
+        if (result === undefined) continue
+        if ('reason' in result) {
+          skipped.push({ name: result.name, reason: result.reason })
+          continue
+        }
+        packages.push(result)
+        if (packages.length >= size) break
       }
-      const reason = rejectReason(name, manifest)
-      if (reason !== undefined) {
-        skipped.push({ name, reason })
-        continue
-      }
-      const admitted = toMarketPackage(name, version, entry.package ?? {}, manifest)
-      if (filter.clientOnly === true && !admitted.client) continue
-      packages.push(admitted)
-      if (packages.length >= size) break
     }
     from += hits.length
     if (packages.length >= size || !hasMore) break

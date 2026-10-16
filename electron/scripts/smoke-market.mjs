@@ -26,6 +26,10 @@ const executable = exeIndex >= 0 && args[exeIndex + 1] !== undefined
   ? resolve(args[exeIndex + 1])
   : join(root, 'release', 'win-unpacked', 'DSH Desktop.exe')
 const timeoutSeconds = timeoutIndex >= 0 && args[timeoutIndex + 1] !== undefined ? Number(args[timeoutIndex + 1]) : 90
+const installIndex = args.indexOf('--install')
+const installSpec = installIndex >= 0 ? args[installIndex + 1] : undefined
+const githubIndex = args.indexOf('--github')
+const githubInput = githubIndex >= 0 ? args[githubIndex + 1] : undefined
 
 if (!existsSync(executable)) {
   process.stderr.write(`smoke-market: 找不到可执行文件 ${executable}（先运行 pnpm package:dir，或用 --exe 指定）\n`)
@@ -47,6 +51,8 @@ const child = spawn(executable, [], {
     DSH_DESKTOP_DSH_HOME: join(userData, 'dsh-home'),
     DSH_DESKTOP_PORT: process.env.DSH_DESKTOP_MARKET_SMOKE_PORT ?? '41736',
     DSH_DESKTOP_OPEN_MARKET: '1',
+    ...(installSpec === undefined ? {} : { DSH_DESKTOP_MARKET_INSTALL: installSpec }),
+    ...(githubInput === undefined ? {} : { DSH_DESKTOP_MARKET_GITHUB: githubInput }),
   },
   stdio: 'ignore',
   windowsHide: true,
@@ -58,7 +64,9 @@ const stop = () => {
 }
 
 const deadline = Date.now() + timeoutSeconds * 1000
-const wanted = ['market window ready', 'market page loaded', 'market runtime ok', 'market catalog ok']
+// `market ui rendered` is the page telling us it painted a list: a page that loads but throws before
+// its first paint used to look healthy from the outside, which is how "the market opens empty" hid.
+const wanted = ['market window ready', 'market page loaded', 'market runtime ok', 'market catalog ok', 'market ui rendered', ...(installSpec === undefined ? [] : ['market install ok']), ...(githubInput === undefined ? [] : ['market github install ok'])]
 let seen = []
 while (Date.now() < deadline) {
   await new Promise(resolvePromise => setTimeout(resolvePromise, 1000))
@@ -71,6 +79,14 @@ while (Date.now() < deadline) {
   if (/market runtime failed/u.test(text)) {
     stop()
     fail(`市场运行时不能启动（打包态安装会 ENOENT）：${text.split(/\r?\n/u).find(line => line.includes('market runtime failed')) ?? ''}`)
+  }
+  if (/market github install failed/u.test(text)) {
+    stop()
+    fail(`打包态 GitHub 安装失败：${text.split(/\r?\n/u).find(line => line.includes('market github install failed')) ?? ''}`)
+  }
+  if (/market install failed/u.test(text)) {
+    stop()
+    fail(`打包态安装失败：${text.split(/\r?\n/u).find(line => line.includes('market install failed')) ?? ''}`)
   }
   if (/market catalog failed/u.test(text)) {
     stop()

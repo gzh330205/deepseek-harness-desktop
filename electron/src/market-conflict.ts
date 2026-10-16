@@ -33,6 +33,21 @@ export interface InstalledFact {
   readonly patches?: readonly string[]
 }
 
+/**
+ * A `pnpm-workspace.yaml` found at or above the profile.
+ *
+ * The context matters: pnpm 11 keeps its own settings in this file, so a profile that owns one is
+ * normal. What is not normal is an **ancestor** workspace (it swallows the profile's installs) or a
+ * profile-owned file that declares other members.
+ */
+export interface WorkspaceMarker {
+  readonly path: string
+  /** True when the file sits in the profile directory itself. */
+  readonly inProfile: boolean
+  /** The `packages:` entries it declares; empty when it declares none (a settings-only file). */
+  readonly packages: readonly string[]
+}
+
 /** Where the pnpm store disagreement stands, if it could be read. */
 export interface StoreFacts {
   /** Major version of the store the profile's `node_modules` is linked to. */
@@ -48,8 +63,8 @@ export interface ConflictWorld {
   readonly bundles: readonly string[]
   /** Facts for every name mentioned by either list. */
   readonly installed: readonly InstalledFact[]
-  /** Paths (profile and ancestors) that hold a `pnpm-workspace.yaml`. */
-  readonly workspaceMarkers: readonly string[]
+  /** `pnpm-workspace.yaml` files near the profile, with enough context to judge them. */
+  readonly workspaceMarkers: readonly WorkspaceMarker[]
   readonly store?: StoreFacts
   /** The runtime's DSH version, for context in messages. */
   readonly dshVersion?: string
@@ -172,24 +187,49 @@ export function diagnoseConflicts(world: ConflictWorld): readonly ConflictFindin
   // Installed but nobody declares it: leftovers from an interrupted install or a manual pnpm add.
   for (const fact of world.installed) {
     if (declared.has(fact.name)) continue
+    // The harness seeds its own packages into every profile (`@deepseek-ai/dsh-base`,
+    // `dsh-web-app`, the experimental profiles …). They are in `node_modules` without being
+    // declared, and reporting them as "leftovers" buried the real findings under a dozen warnings.
+    if (isPlatformPackage(fact.name)) continue
+    // Registered as a bundle is the other half of "this profile loads it": the harness reads
+    // `dsh.profile.bundles`, so a plugin listed there is not a leftover just because `dependencies`
+    // does not mention it — which is how another market's installs land.
+    if (world.bundles.includes(fact.name)) continue
+    // Downgraded to info on purpose. A real profile showed six of these, all installed by *another*
+    // plugin manager (the profile carries `.dsh-market` / `.plugin-manager` state), so "we cannot see
+    // anything loading it" is true while "it is a leftover" is not. Info says the useful part without
+    // the wrong conclusion.
     findings.push({
-      severity: 'warn',
+      severity: 'info',
       code: 'orphan-install',
       subject: fact.name,
-      message: `${fact.name} 在 node_modules 里，但 package.json 没有声明它`,
-      hint: '要么把它登记（市场里重装一次），要么卸载清掉这份残留',
+      message: `${fact.name} 在 node_modules 里，但 package.json 与 dsh.profile.bundles 都没提到它`,
+      hint: '如果是别的插件管理器装的，这属于正常；想让它由本 profile 加载就在市场里重装一次',
     })
   }
 
   // The environment classes that make every install fail, with the fix we already know.
   for (const marker of world.workspaceMarkers) {
-    findings.push({
-      severity: 'error',
-      code: 'workspace-takeover',
-      subject: marker,
-      message: `${marker} 是 pnpm workspace，它会连 profile 的安装一起接管（用的是它自己的 store）`,
-      hint: 'profile 不应位于 pnpm workspace 之下：把它移出该目录树',
-    })
+    // pnpm 11 keeps its settings in `pnpm-workspace.yaml`, so the profile having one is normal — even
+    // expected. Only two shapes are actually a problem: an ancestor workspace (it takes the profile's
+    // installs with it) and a profile-owned file that pulls in other members.
+    const selfOnly = marker.packages.length === 0 || marker.packages.every(entry => entry === '.' || entry === './')
+    if (marker.inProfile && selfOnly) continue
+    findings.push(marker.inProfile
+      ? {
+          severity: 'warn',
+          code: 'workspace-takeover',
+          subject: marker.path,
+          message: `profile 自己的 pnpm-workspace.yaml 还声明了别的成员：${marker.packages.join('、')}`,
+          hint: 'profile 不该把其它目录拉进同一个 workspace：把它改回只包含 .',
+        }
+      : {
+          severity: 'error',
+          code: 'workspace-takeover',
+          subject: marker.path,
+          message: `${marker.path} 是 pnpm workspace，它会连 profile 的安装一起接管（用的是它自己的 store）`,
+          hint: 'profile 不应位于 pnpm workspace 之下：把它移出该目录树',
+        })
   }
   const store = world.store
   if (store?.modulesMajor !== undefined && store.pnpmMajor !== undefined && store.modulesMajor !== store.pnpmMajor) {
@@ -306,10 +346,13 @@ export function readConflictWorld(
     if (fact.declaresDsh === true || dependencies[name] !== undefined || bundles.includes(name)) installed.push(fact)
   }
 
-  const workspaceMarkers: string[] = []
+  const workspaceMarkers: WorkspaceMarker[] = []
   let directory = profileDir
   for (let depth = 0; depth < 4; depth += 1) {
-    if (existsSync(join(directory, 'pnpm-workspace.yaml'))) workspaceMarkers.push(join(directory, 'pnpm-workspace.yaml'))
+    const markerPath = join(directory, 'pnpm-workspace.yaml')
+    if (existsSync(markerPath)) {
+      workspaceMarkers.push({ path: markerPath, inProfile: depth === 0, packages: readWorkspacePackages(markerPath) })
+    }
     const parent = join(directory, '..')
     if (parent === directory) break
     directory = parent
@@ -335,6 +378,42 @@ export function hasWorkspaceMarker(directory: string): boolean {
 }
 
 /**
+ * The `packages:` entries of a `pnpm-workspace.yaml`, without a YAML parser.
+ *
+ * Only the list under the top-level `packages:` key matters here, and it is written one entry per
+ * line as `- <glob>`. Anything else in the file is pnpm settings (`nodeLinker`, `onlyBuiltDependencies`
+ * and friends), which are the reason a profile owning this file is normal rather than suspicious.
+ *
+ * @param markerPath - Path of the file.
+ * @returns The declared members, or an empty list when it declares none (or cannot be read).
+ */
+export function readWorkspacePackages(markerPath: string): readonly string[] {
+  let text = ''
+  try {
+    text = readFileSync(markerPath, 'utf8')
+  } catch {
+    return []
+  }
+  const packages: string[] = []
+  let inPackages = false
+  for (const raw of text.split(/\r?\n/u)) {
+    if (/^packages\s*:/u.test(raw)) {
+      inPackages = true
+      continue
+    }
+    if (!inPackages) continue
+    // Another top-level key ends the list.
+    if (/^\S/u.test(raw)) {
+      inPackages = false
+      continue
+    }
+    const item = /^\s*-\s*(.+?)\s*$/u.exec(raw)?.[1]
+    if (item !== undefined && item !== '') packages.push(item.replace(/^['"]|['"]$/gu, ''))
+  }
+  return packages
+}
+
+/**
  * Top-level keys of a patch file, without a YAML parser.
  *
  * A DSH patch (`cordis.patch.yml`) names the service or path it patches as an indentation-0 key; the
@@ -356,6 +435,10 @@ export function readPatchKeys(patchPath: string): readonly string[] {
   const keys: string[] = []
   for (const line of text.split(/\r?\n/u)) {
     if (line === '' || line.startsWith('#') || line.startsWith(' ') || line.startsWith('\t')) continue
+    // A list item is not a service key. Some plugins ship their patch as a list (`- insert:` …), and
+    // reading those as top-level keys made a whole family of plugins look like they patched the same
+    // hook — a scary, wrong finding.
+    if (line.startsWith('-')) continue
     const match = /^([^\s:#][^:]*):/u.exec(line)
     const key = match?.[1]?.trim()
     if (key !== undefined && key !== '' && !keys.includes(key)) keys.push(key)

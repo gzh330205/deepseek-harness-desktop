@@ -25,6 +25,18 @@ export const MARKET_IPC = {
   diagnose: 'market:diagnose',
   /** Browse the community catalog (category, sort, local search). */
   browse: 'market:browse',
+  /** Read a GitHub repository's manifest without installing anything (the window warns first). */
+  githubInspect: 'market:github-inspect',
+  /** Install a plugin straight from a GitHub repository or a release tarball. */
+  githubInstall: 'market:github-install',
+  /**
+   * Renderer → main: one line describing what the page actually rendered.
+   *
+   * The page can load successfully and still show nothing — a script that throws before its first
+   * paint is invisible from the outside, which is how "the market opens empty" stayed hidden. This
+   * channel turns that into a line in `shell.log` the packaged smoke can require.
+   */
+  note: 'market:note',
   /** Main → renderer: switch the visible view (the 插件 menu opens the installed one). */
   view: 'market:view',
   /** The profile directory the actions run against (shown in the header). */

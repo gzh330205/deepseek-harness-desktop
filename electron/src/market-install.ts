@@ -33,7 +33,7 @@ export interface ProfileManifest {
 /** Why pnpm said no, in a form the UI can explain. */
 export interface MarketFailure {
   /** Coarse category; `unknown` still carries the raw output. */
-  readonly kind: 'network' | 'registry' | 'build-permission' | 'store-mismatch' | 'not-found' | 'workspace' | 'unknown'
+  readonly kind: 'network' | 'registry' | 'build-permission' | 'store-mismatch' | 'not-found' | 'workspace' | 'unknown' | 'too-new' | 'not-a-plugin' | 'github'
   /** One line for the list row. */
   readonly message: string
   /** What the user can do about it, when we know. */
@@ -67,9 +67,12 @@ export interface MarketActionResult {
  * @param action - What to do.
  * @param name - Package name.
  * @param version - Exact version for install/update.
+ * @param spec - A raw spec to install instead of `name@version` (a `github:` reference or a release
+ *   tarball URL). The name is then only what gets registered in `dsh.profile.bundles`.
  */
-export function pnpmArgs(action: MarketAction, name: string, version?: string): string[] {
+export function pnpmArgs(action: MarketAction, name: string, version?: string, spec?: string): string[] {
   if (action === 'uninstall') return ['remove', name]
+  if (spec !== undefined && spec !== '') return ['add', spec]
   if (version === undefined || version === '') return ['add', name]
   return ['add', `${name}@${version}`]
 }
@@ -141,6 +144,23 @@ const FAILURE_RULES: readonly {
     message: '上层目录里有 pnpm workspace，接管了这次安装',
     hint: 'profile 目录不应位于某个 pnpm workspace 之下',
   },
+  {
+    // pnpm 11 holds back freshly published versions on purpose. A plugin published this morning is
+    // exactly what a market user wants to install, so this failure needs a name and a way out.
+    test: /minimumReleaseAge|minimum release age|published too recently|MINIMUM_RELEASE_AGE/iu,
+    kind: 'too-new',
+    message: '这个版本刚发布，被 pnpm 的「新版本冷静期」拦住了',
+    hint: '等几天再装，或改用列表里较早的版本',
+  },
+  {
+    // GitHub sources fail differently from registry sources: git itself has to run, and the tarball
+    // has to be reachable. Naming that separately is the difference between "look at your network"
+    // and "look at whether git is installed".
+    test: /ERR_PNPM_GIT|git.*(?:not found|command not found)|Failed to fetch tarball|ERR_PNPM_TARBALL_FETCH|exit code 128/iu,
+    kind: 'github',
+    message: '从 GitHub 取源码失败（本机 git 或网络问题）',
+    hint: '确认本机装了 git 且能访问 github.com；也可以改用该仓库发布的 tarball 地址',
+  },
 ]
 
 /**
@@ -202,18 +222,20 @@ export function marketChildEnvironment(base: NodeJS.ProcessEnv = process.env, ap
  * that simply did not get added.
  *
  * @param action - install / update / uninstall.
- * @param name - Package name.
+ * @param name - Package name (for `github:` specs, the name the repository declares).
  * @param options - Profile paths, manifest access and the pnpm runner.
  * @param version - Exact version for install/update.
+ * @param spec - Raw spec for install/update (see {@link pnpmArgs}).
  */
 export async function runMarketAction(
   action: MarketAction,
   name: string,
   options: MarketInstallOptions,
   version?: string,
+  spec?: string,
 ): Promise<MarketActionResult> {
-  const args = pnpmArgs(action, name, version)
-  const spec = args[1] ?? name
+  const args = pnpmArgs(action, name, version, spec)
+  const installedSpec = args[1] ?? name
   const environment = marketChildEnvironment(process.env, options.appBinary === true)
   let code: number | null = null
   let output = ''
@@ -226,12 +248,12 @@ export async function runMarketAction(
   }
 
   const failure = classifyPnpmFailure(output, code)
-  if (failure !== undefined) return { ok: false, action, name, spec, code, output, failure, bundleRegistered: false }
+  if (failure !== undefined) return { ok: false, action, name, spec: installedSpec, code, output, failure, bundleRegistered: false }
 
   const previous = options.readManifest()
   const { manifest, changed } = withBundleRegistration(previous, name, action)
   if (changed) options.writeManifest(manifest, previous)
-  return { ok: true, action, name, spec, code, output, bundleRegistered: changed }
+  return { ok: true, action, name, spec: installedSpec, code, output, bundleRegistered: changed }
 }
 
 /**

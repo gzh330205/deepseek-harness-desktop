@@ -53,7 +53,14 @@ const document = {
 test('a real-shaped catalog parses into entries and a category vocabulary', () => {
   const catalog = parseCatalog(document)
   assert.equal(catalog.updated, '2026-10-15T00:00:00.000Z')
-  assert.deepEqual(catalog.categories, ['agi', 'ui', 'tools'])
+  assert.deepEqual(catalog.categories.map(entry => entry.id), ['agi', 'ui', 'tools'])
+  // The real document's shape: id → bilingual label.
+  const labeled = parseCatalog({ categories: { ui: { en: 'UI Enhancements', zh: 'UI 增强' }, usage: { zh: '用量与计费' } }, plugins: [{ name: 'x', category: 'notify' }] })
+  assert.deepEqual(labeled.categories, [
+    { id: 'ui', en: 'UI Enhancements', zh: 'UI 增强' },
+    { id: 'usage', zh: '用量与计费' },
+    { id: 'notify' },
+  ], 'the map is read, and an entry category missing from it is still offered')
   assert.equal(catalog.entries.length, 2)
   const first = catalog.entries[0]
   assert.equal(first?.name, 'dsh-j-space')
@@ -70,7 +77,7 @@ test('a real-shaped catalog parses into entries and a category vocabulary', () =
 
 test('a malformed entry is dropped, never turned into a half-entry', () => {
   const catalog = parseCatalog({
-    categories: ['agi'],
+    categories: { agi: { zh: 'AGI' } },
     plugins: [
       null,
       'not an object',

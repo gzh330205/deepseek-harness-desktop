@@ -99,3 +99,65 @@ test('a version that does not exist fails with a classified reason and no profil
     rmSync(profileDir, { recursive: true, force: true })
   }
 })
+
+/**
+ * The GitHub path, against a real repository.
+ *
+ * `CAI-MH/dsh-quality-review` was picked out of the community catalog and checked by hand: it declares
+ * `dsh.bundle.patch`, declares no install lifecycle script, and — like a third of the catalog's
+ * GitHub-only entries — its repository name differs from the package name it declares, which is the
+ * part worth proving end to end.
+ */
+const GITHUB_REPO = 'CAI-MH/dsh-quality-review'
+const GITHUB_PACKAGE = 'dsh-quality-review'
+
+test('a plugin that exists only on GitHub installs from its repository, and uninstalls again', { skip: enabled ? false : 'set DSH_DESKTOP_MARKET_E2E=1 to run' }, async () => {
+  const profileDir = freshProfile()
+  const service = new MarketService({ profileDir, runtimeRoot, appExecutable, log: () => {} })
+  try {
+    // What the window shows before anyone commits to anything.
+    const inspected = await service.inspectGithub(GITHUB_REPO)
+    assert.equal(inspected.ok, true, inspected.reason)
+    assert.equal(inspected.name, GITHUB_PACKAGE)
+    assert.equal(inspected.spec, `github:${GITHUB_REPO}`)
+    assert.deepEqual(inspected.scripts, [], 'a repository whose scripts would run during install must be visible here')
+
+    const installed = await service.installFromGithub(GITHUB_REPO)
+    assert.equal(installed.ok, true, `${installed.failure?.message ?? ''}\n${installed.output}`)
+    assert.equal(installed.name, GITHUB_PACKAGE, 'the declared name is what gets registered')
+    assert.equal(installed.spec, `github:${GITHUB_REPO}`)
+
+    const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+      dsh?: { profile?: { bundles?: string[] } }
+    }
+    assert.ok(manifest.dependencies?.[GITHUB_PACKAGE] !== undefined, 'pnpm must record the dependency under the declared name')
+    assert.deepEqual(manifest.dsh?.profile?.bundles, [GITHUB_PACKAGE], 'the profile loads it as a bundle')
+
+    const removed = await service.uninstall(GITHUB_PACKAGE)
+    assert.equal(removed.ok, true, `${removed.failure?.message ?? ''}\n${removed.output}`)
+    const after = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+      dsh?: { profile?: { bundles?: string[] } }
+    }
+    assert.equal(after.dependencies?.[GITHUB_PACKAGE], undefined, 'the dependency must be gone')
+    assert.deepEqual(after.dsh?.profile?.bundles, [], 'and so must the bundle registration')
+  } finally {
+    rmSync(profileDir, { recursive: true, force: true })
+  }
+})
+
+test('a repository that is not a plugin is refused with nothing installed', { skip: enabled ? false : 'set DSH_DESKTOP_MARKET_E2E=1 to run' }, async () => {
+  const profileDir = freshProfile()
+  const service = new MarketService({ profileDir, runtimeRoot, appExecutable, log: () => {} })
+  try {
+    // A real repository that exists, has a package.json, and is definitely not a DSH plugin.
+    const result = await service.installFromGithub('jonschlinkert/is-odd')
+    assert.equal(result.ok, false)
+    assert.equal(result.failure?.kind, 'not-a-plugin')
+    const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }
+    assert.deepEqual(manifest.dsh?.profile?.bundles, [], 'refusing must leave the profile untouched')
+  } finally {
+    rmSync(profileDir, { recursive: true, force: true })
+  }
+})

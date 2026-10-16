@@ -93,6 +93,12 @@ if (isMarketDocument()) {
     log: (limit?: number) => ipcRenderer.invoke(MARKET_IPC.log, limit) as Promise<unknown>,
     diagnose: () => ipcRenderer.invoke(MARKET_IPC.diagnose) as Promise<unknown>,
     browse: (request: unknown) => ipcRenderer.invoke(MARKET_IPC.browse, request) as Promise<unknown>,
+    /** Read a GitHub repository's manifest; nothing is installed (the window warns, then the user decides). */
+    inspectGithub: (input: string) => ipcRenderer.invoke(MARKET_IPC.githubInspect, input) as Promise<unknown>,
+    /** Install from a GitHub repository or release tarball. */
+    installGithub: (input: string) => ipcRenderer.invoke(MARKET_IPC.githubInstall, input) as Promise<unknown>,
+    /** One line about what the page rendered; lands in the shell log (the packaged smoke requires it). */
+    note: (text: string) => ipcRenderer.invoke(MARKET_IPC.note, text) as Promise<boolean>,
     /** Main tells the window which view to show (the 插件 menu opens the installed one). */
     onView: (listener: (view: string) => void): (() => void) => {
       const handler = (_event: unknown, view: unknown): void => { listener(typeof view === 'string' ? view : 'market') }

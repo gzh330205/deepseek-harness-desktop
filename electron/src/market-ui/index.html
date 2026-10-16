@@ -7,108 +7,223 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
   <title>DSH Desktop 插件市场</title>
   <style>
+    /* Design tokens. Every colour, space, radius and duration below is referenced by name — the point
+       is that this window and the shell's other surfaces can be tuned in one place. */
     :root {
-      color-scheme: light dark;
-      --bg: #0f1115; --panel: #161a22; --fg: #e8ebf2; --muted: #8d97ab;
-      --line: rgba(255,255,255,.10); --field: #0b0d12; --accent: #4c6ef5; --danger: #f07a7a; --ok: #3fb27f;
+      color-scheme: dark light;
+
+      --bg: oklch(19% 0.012 265);
+      --surface: oklch(23.5% 0.014 265);
+      --surface-2: oklch(27% 0.016 265);
+      --field: oklch(16.5% 0.012 265);
+      --line: oklch(33% 0.016 265);
+      --line-soft: oklch(27.5% 0.012 265);
+
+      --fg: oklch(95% 0.008 265);
+      --fg-2: oklch(82% 0.012 265);
+      --muted: oklch(68% 0.016 265);
+      --faint: oklch(57% 0.014 265);
+
+      --accent: oklch(66% 0.16 265);
+      --accent-ink: oklch(17% 0.02 265);
+      --ok: oklch(76% 0.14 155);
+      --warn: oklch(82% 0.13 85);
+      --danger: oklch(72% 0.16 25);
+
+      --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 22px;
+      --r-sm: 6px; --r-md: 10px; --r-pill: 999px;
+
+      --t-xs: 11px; --t-sm: 12px; --t-md: 13px; --t-lg: 15px; --t-xl: 17px;
+      --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+
+      --ease: cubic-bezier(.2, .7, .3, 1);
+      --dur: 140ms;
     }
     @media (prefers-color-scheme: light) {
       :root {
-        --bg: #f3f3f3; --panel: #ffffff; --fg: #1f1f1f; --muted: #666e7a;
-        --line: rgba(0,0,0,.12); --field: #ffffff; --accent: #3b5bdb; --danger: #c0392b; --ok: #1f7a4d;
+        --bg: oklch(98% 0.004 265);
+        --surface: oklch(100% 0 0);
+        --surface-2: oklch(96.5% 0.006 265);
+        --field: oklch(100% 0 0);
+        --line: oklch(87% 0.01 265);
+        --line-soft: oklch(92% 0.008 265);
+
+        --fg: oklch(25% 0.02 265);
+        --fg-2: oklch(38% 0.02 265);
+        --muted: oklch(52% 0.02 265);
+        --faint: oklch(62% 0.018 265);
+
+        --accent: oklch(52% 0.16 265);
+        --accent-ink: oklch(99% 0.005 265);
+        --ok: oklch(52% 0.13 155);
+        --warn: oklch(56% 0.13 75);
+        --danger: oklch(52% 0.17 25);
       }
     }
+
     * { box-sizing: border-box; }
-    html, body { height: 100%; }
+    /* `hidden` must win. The UA rule `[hidden] { display: none }` loses to any author `display:` —
+       which is how a `display: flex` toolbar stayed on screen while the installed view was showing. */
+    [hidden] { display: none !important; }
+    html, body { height: 100%; overflow-x: clip; }
     body {
       margin: 0; display: flex; flex-direction: column;
       background: var(--bg); color: var(--fg);
-      font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font: var(--t-md)/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
       user-select: none;
     }
-    header { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
-    h1 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
-    p.hint { margin: 0; color: var(--muted); font-size: 12px; }
-    .search { display: flex; gap: 8px; padding: 12px 18px 6px; }
-    input[type="search"] {
-      flex: 1; padding: 7px 10px; color: var(--fg); background: var(--field);
-      border: 1px solid var(--line); border-radius: 6px; font: inherit;
+
+    /* ── chrome ─────────────────────────────────────────────────────────────── */
+    .topbar { flex: none; display: flex; align-items: baseline; gap: var(--s3); padding: var(--s3) var(--s4) 0; }
+    .topbar h1 { margin: 0; font-size: var(--t-lg); font-weight: 600; letter-spacing: .2px; flex: none; }
+    .profile {
+      flex: 1; min-width: 0; color: var(--faint); font: var(--t-xs)/1.4 var(--mono);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+      user-select: text;
     }
+
+    .tabs { flex: none; display: inline-flex; gap: 2px; padding: var(--s3) var(--s4) var(--s3); }
+    .tab {
+      padding: 4px 14px; border-radius: var(--r-pill); border: 1px solid transparent;
+      background: transparent; color: var(--muted); font-weight: 500;
+    }
+    .tab[aria-selected="true"] { background: var(--surface-2); border-color: var(--line-soft); color: var(--fg); }
+
+    .toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: 0 var(--s4) var(--s2); }
+    .toolbar .grow { flex: 1 1 auto; }
+    .sort { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--t-sm); }
+    .check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--t-sm); }
+    .pager { display: inline-flex; align-items: center; gap: var(--s1); }
+    .pager span { color: var(--faint); font-size: var(--t-xs); min-width: 74px; text-align: right; }
+
+    .catbar { flex: none; display: flex; align-items: center; gap: 6px; padding: 0 var(--s4) var(--s2); overflow-x: auto; scrollbar-width: thin; }
+    .catbar::-webkit-scrollbar { height: 6px; }
+    .catbar .catlabel { flex: none; color: var(--faint); font-size: var(--t-xs); margin-right: 2px; }
+
+    .statusline { flex: none; display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s4) var(--s2); color: var(--faint); font-size: var(--t-xs); }
+    .statusline .grow { flex: 1; }
+    .statusline b { color: var(--muted); font-weight: 500; }
+
+    /* ── controls ───────────────────────────────────────────────────────────── */
     button {
-      padding: 6px 12px; color: var(--fg); background: var(--field); font: inherit;
-      border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+      font: inherit; padding: 5px 12px; cursor: pointer;
+      color: var(--fg); background: var(--surface-2);
+      border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur) var(--ease);
     }
     button:hover:not(:disabled) { border-color: var(--accent); }
-    button:disabled { opacity: .5; cursor: default; }
-    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    button.link { background: none; border: none; color: var(--accent); padding: 2px 4px; text-decoration: underline; }
-    main { flex: 1; overflow: auto; padding: 8px 18px 14px; }
-    .item { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: var(--panel); }
-    .item h2 { margin: 0; font-size: 13px; font-weight: 600; word-break: break-all; }
-    .item h2 .ver { color: var(--muted); font-weight: 400; margin-left: 6px; }
-    .badge { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; font-size: 11px; color: var(--muted); }
-    .badge.on { color: var(--ok); border-color: var(--ok); }
-    .item p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
-    .chips { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
-    .chip { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
-    .actions { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
-    #activity { border-top: 1px solid var(--line); padding: 8px 18px; font-size: 12px; color: var(--muted); min-height: 30px; }
-    #failure { margin: 0 18px 8px; border: 1px solid var(--danger); border-radius: 8px; padding: 10px 12px; background: var(--panel); }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button:disabled { opacity: .45; cursor: default; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+    button.ghost:hover:not(:disabled) { background: var(--surface); color: var(--fg); border-color: var(--line-soft); }
+
+    input[type="search"], select {
+      font: inherit; color: var(--fg); background: var(--field);
+      border: 1px solid var(--line-soft); border-radius: var(--r-sm); padding: 5px 10px;
+    }
+    input[type="search"] { flex: 1 1 220px; min-width: 120px; }
+    input[type="search"]::placeholder { color: var(--faint); }
+    input[type="search"]:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    input[type="checkbox"] { accent-color: var(--accent); }
+
+    .chip {
+      flex: none; display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 10px; font: var(--t-sm)/1.4 inherit; cursor: pointer;
+      color: var(--fg-2); background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--r-pill);
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+    }
+    .chip:hover { border-color: var(--accent); color: var(--fg); }
+    .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    .chip small { color: inherit; opacity: .6; font-variant-numeric: tabular-nums; }
+
+    /* ── list ───────────────────────────────────────────────────────────────── */
+    main { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 var(--s4) var(--s2); }
+    .card {
+      border: 1px solid var(--line-soft); background: var(--surface);
+      border-radius: var(--r-md); padding: var(--s3) var(--s3) var(--s2); margin-bottom: var(--s2);
+      transition: border-color var(--dur) var(--ease);
+    }
+    .card:hover { border-color: var(--line); }
+    .card-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+    .card-title { font-size: var(--t-md); font-weight: 600; overflow-wrap: anywhere; }
+    .card-meta { display: flex; flex-wrap: wrap; gap: var(--s3); margin-top: 3px; color: var(--muted); font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
+    .card-desc {
+      margin: var(--s2) 0 0; color: var(--fg-2); font-size: var(--t-sm); user-select: text;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .card-actions { display: flex; gap: var(--s2); align-items: center; margin-top: var(--s3); }
+    .card-actions .here { color: var(--faint); font-size: var(--t-xs); margin-left: auto; }
+
+    .tag { font-size: var(--t-xs); line-height: 1.6; padding: 0 8px; border: 1px solid var(--line-soft); border-radius: var(--r-pill); color: var(--muted); white-space: nowrap; }
+    .tag.ok { color: var(--ok); }
+    .tag.warn { color: var(--warn); }
+    .tag.danger { color: var(--danger); }
+    .tag.solid { background: var(--surface-2); }
+    .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: var(--s2); }
+
+    .state { padding: var(--s5) var(--s3); text-align: center; color: var(--faint); font-size: var(--t-sm); }
+    .skeleton { height: 66px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line-soft); margin-bottom: var(--s2); }
+
+    /* ── failure / details ──────────────────────────────────────────────────── */
+    #failure { margin: 0 var(--s4) var(--s2); border: 1px solid var(--danger); border-radius: var(--r-md); padding: var(--s3); background: var(--surface); }
     #failure[hidden] { display: none; }
     #failure strong { color: var(--danger); }
-    #failure p { margin: 6px 0 0; }
-    details { margin: 0 18px 10px; }
-    summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    #failure p { margin: 6px 0 0; color: var(--fg-2); font-size: var(--t-sm); user-select: text; }
+
+    details { margin: 0 var(--s4) var(--s2); }
+    summary { cursor: pointer; color: var(--muted); font-size: var(--t-sm); }
+    summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    /* Collapsed panels still have to say "there is something in here worth reading", in colour. */
+    summary.attention-danger { color: var(--danger); font-weight: 600; }
+    summary.attention-warn { color: var(--warn); font-weight: 600; }
+    summary.attention-ok { color: var(--muted); }
     pre {
-      max-height: 240px; overflow: auto; margin: 8px 0 0; padding: 10px;
-      background: var(--field); border: 1px solid var(--line); border-radius: 6px;
-      font: 11px/1.5 "Cascadia Mono", Consolas, monospace; user-select: text; white-space: pre-wrap; word-break: break-all;
+      max-height: 220px; overflow: auto; margin: var(--s2) 0 0; padding: var(--s3);
+      background: var(--field); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+      font: var(--t-xs)/1.5 var(--mono); user-select: text; white-space: pre-wrap; word-break: break-all;
     }
-    .controls { display: flex; align-items: center; gap: 10px; padding: 4px 18px 10px; font-size: 12px; color: var(--muted); }
-    .controls .grow { flex: 1; }
-    .controls label { display: flex; align-items: center; gap: 6px; }
-    select { padding: 4px 6px; color: var(--fg); background: var(--field); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
-    footer { display: flex; align-items: center; gap: 10px; padding: 10px 18px 14px; border-top: 1px solid var(--line); }
-    footer .grow { flex: 1; color: var(--muted); font-size: 12px; }
-    ul.skipped { margin: 6px 0 0 6px; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
+    ul.skipped { margin: 6px 0 0 6px; padding: 0; list-style: none; color: var(--muted); font-size: var(--t-sm); }
     ul.skipped li { margin-top: 2px; }
+
+    /* ── installed view ─────────────────────────────────────────────────────── */
+    #installed-view { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 var(--s4) var(--s2); }
+    #installed-view .toolbar { padding: 0 0 var(--s2); }
+    #installed-view details { margin-inline: 0; }
+    #installed-view .card:last-child { margin-bottom: 0; }
+
+    footer {
+      flex: none; display: flex; align-items: center; gap: var(--s3);
+      padding: var(--s2) var(--s4) var(--s3); border-top: 1px solid var(--line-soft);
+      color: var(--muted); font-size: var(--t-sm);
+    }
+    footer .grow { flex: 1; }
+    #activity { color: var(--faint); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+    }
   </style>
 </head>
 <body>
-  <header>
+  <div class="topbar">
     <h1>插件市场</h1>
-    <p class="hint">插件直接装进当前 profile（<span id="profile">…</span>），装完重启应用生效。列表只收录声明了 <code>dsh</code> 字段的插件。</p>
-  </header>
-
-  <div class="tabs">
-    <button id="tab-market" data-view="market" class="primary">插件市场</button>
-    <button id="tab-installed" data-view="installed">已安装的插件</button>
+    <span class="profile" id="profile" title="当前 profile">…</span>
   </div>
 
-  <!-- The community catalog is browsed, not searched: it arrives in one request, so the list and these
-       category chips are on screen before the user does anything. -->
-  <style>
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 18px 8px; }
-    .chip { padding: 3px 10px; font: inherit; font-size: 12px; color: var(--fg); background: var(--field); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
-    .chip[aria-pressed="true"] { color: #fff; background: var(--accent); border-color: var(--accent); }
-    .chip small { opacity: .7; margin-left: 4px; }
-    .caps { font-size: 11px; color: var(--muted); }
-  </style>
-  <div class="controls" id="discover">
-    <span id="catalog-status">正在加载社区目录…</span>
-    <span class="grow"></span>
-    <button id="catalog-reload">重新加载目录</button>
-    <button id="registry-toggle">在 registry 里搜…</button>
+  <div class="tabs" role="tablist">
+    <button id="tab-market" class="tab" role="tab" aria-selected="true">插件市场</button>
+    <button id="tab-installed" class="tab" role="tab" aria-selected="false">已安装的插件</button>
   </div>
-  <div class="chips" id="chips"></div>
 
-  <div class="search">
-    <input id="query" type="search" placeholder="在目录里筛选（名称、作者、分类、中英描述、能力）" autocomplete="off" />
+  <!-- Market-only chrome. Everything here is hidden as a block when the installed view is showing,
+       which is what keeps that view free of sort/filter/pager controls. -->
+  <div class="toolbar market-only">
+    <input id="query" type="search" placeholder="筛选插件：名称 / 作者 / 分类 / 描述 / 能力" autocomplete="off" />
     <button id="go" class="primary">筛选</button>
-  </div>
-
-  <div class="controls">
-    <label>排序
+    <label class="sort">排序
       <select id="sort">
         <option value="stars">最多 star</option>
         <option value="downloads">下载最多</option>
@@ -116,11 +231,28 @@
         <option value="name">名称</option>
       </select>
     </label>
-    <label class="check"><input id="clientOnly" type="checkbox" /> 只看带界面的</label>
+    <label class="check" id="clientOnlyRow" hidden><input id="clientOnly" type="checkbox" /> 只看带界面的</label>
     <span class="grow"></span>
-    <span id="pageInfo">第 1 页</span>
-    <button id="prev">上一页</button>
-    <button id="next">下一页</button>
+    <button id="registry-toggle" class="ghost">在 registry 里搜…</button>
+    <button id="catalog-reload" class="ghost">重新加载目录</button>
+  </div>
+  <div class="catbar market-only" id="chips"></div>
+  <!-- GitHub sources: about half the catalog exists only there, and some plugins are in neither the
+       catalog nor npm. The repository is read before anything is installed, and one whose manifest
+       declares install scripts needs a second click — those scripts run on this machine. -->
+  <div class="toolbar market-only" id="githubRow">
+    <input id="github-input" type="search" placeholder="从 GitHub 安装：owner/repo 或 https://github.com/owner/repo（可加 #ref）" autocomplete="off" />
+    <button id="github-go" class="primary">检查并安装</button>
+    <button id="github-confirm" class="primary" hidden>确认执行安装脚本并安装</button>
+  </div>
+  <div class="statusline market-only">
+    <span id="catalog-status">正在加载社区目录…</span>
+    <span class="grow"></span>
+    <span class="pager">
+      <span id="pageInfo">第 1 页</span>
+      <button id="prev" class="ghost">上一页</button>
+      <button id="next" class="ghost">下一页</button>
+    </span>
   </div>
 
   <main id="list"></main>
@@ -128,7 +260,7 @@
   <div id="failure" hidden>
     <strong id="failure-title"></strong>
     <p id="failure-hint"></p>
-    <div class="actions">
+    <div class="card-actions">
       <button id="copy">复制诊断信息</button>
     </div>
     <details id="raw-wrap" hidden>
@@ -137,7 +269,7 @@
     </details>
   </div>
 
-  <details id="skipped-wrap" hidden>
+  <details id="skipped-wrap" class="market-only" hidden>
     <summary id="skipped-summary"></summary>
     <ul class="skipped" id="skipped"></ul>
   </details>
@@ -145,35 +277,38 @@
   <!-- The installed view: same profile, same window. Everything here answers "what do I already have,
        is anything newer, and what happened the last time I installed something". -->
   <section id="installed-view" hidden>
-    <div class="controls">
+    <div class="toolbar">
       <button id="check" class="primary">检查更新</button>
       <span class="grow"></span>
-      <span id="installed-count"></span>
+      <span id="installed-count" class="profile" style="flex:none;direction:ltr"></span>
     </div>
     <div id="installed-list"></div>
-    <details id="diagnose-wrap" open>
+    <!-- Both start collapsed: they are reference material, not the answer to "什么装坏了". Their
+         summaries carry the count and a colour, so "there is something worth reading" is still visible
+         at a glance — the reader decides whether to open them. -->
+    <details id="diagnose-wrap">
       <summary id="diagnose-summary">冲突诊断</summary>
       <div id="diagnose-list"></div>
-      <div class="actions">
+      <div class="card-actions">
         <button id="refresh-diagnose">重新诊断</button>
         <button id="copy-diagnose">复制诊断结果</button>
       </div>
     </details>
-    <details id="log-wrap" open>
+    <details id="log-wrap">
       <summary id="log-summary">动作日志</summary>
-      <p class="hint" id="log-path"></p>
+      <p class="card-meta" id="log-path"></p>
       <pre id="log-entries"></pre>
-      <div class="actions">
+      <div class="card-actions">
         <button id="refresh-log">刷新日志</button>
         <button id="copy-log">复制日志</button>
       </div>
     </details>
   </section>
 
-  <div id="activity">就绪</div>
-
   <footer>
-    <span class="grow" id="count"></span>
+    <span id="count"></span>
+    <span class="grow"></span>
+    <span id="activity">就绪</span>
     <button id="close">关闭</button>
   </footer>
 
@@ -188,6 +323,73 @@
     let lastDiagnostics = ''
 
     function note(text) { el('activity').textContent = text }
+
+    /**
+     * Tell the shell what actually got rendered.
+     *
+     * A page that throws before its first paint looks identical to a healthy one from the outside, so
+     * this line is what lets the packaged smoke assert the list is really on screen rather than merely
+     * loaded. Fire-and-forget: telemetry must never be able to break the page.
+     */
+    function report(line) {
+      try {
+        if (api && typeof api.note === 'function') api.note(line).catch(() => {})
+      } catch {
+        // Older preload, or a rejected invoke: nothing to do and nothing worth showing.
+      }
+    }
+
+    /**
+     * The two search modes rank by different things: the catalog has stars and download counts, the
+     * registry has relevance and freshness. Offering "最多 star" for a registry search silently sent
+     * the shell a sort it ignores, so the select follows the mode.
+     */
+    function setSortOptions(next) {
+      const select = el('sort')
+      const options = next === 'registry'
+        ? [['relevance', '相关度'], ['updated', '最近更新'], ['name', '名称']]
+        : [['stars', '最多 star'], ['downloads', '下载最多'], ['added', '最新收录'], ['name', '名称']]
+      const previous = select.value
+      select.replaceChildren()
+      for (const [value, label] of options) {
+        const option = document.createElement('option')
+        option.value = value
+        option.textContent = label
+        select.append(option)
+      }
+      select.value = options.some(pair => pair[0] === previous) ? previous : options[0][0]
+    }
+
+    /** A card's skeleton, so market/installed/diagnosis cards look like one family. */
+    function cardShell(title, badges) {
+      const card = document.createElement('div')
+      card.className = 'card'
+      const head = document.createElement('div')
+      head.className = 'card-head'
+      const name = document.createElement('span')
+      name.className = 'card-title'
+      name.textContent = title
+      head.append(name)
+      for (const badge of badges || []) {
+        const tag = document.createElement('span')
+        tag.className = 'tag' + (badge.tone ? ' ' + badge.tone : '')
+        tag.textContent = badge.text
+        head.append(tag)
+      }
+      card.append(head)
+      return card
+    }
+
+    function metaLine(card, parts) {
+      const meta = document.createElement('div')
+      meta.className = 'card-meta'
+      for (const part of parts) {
+        const span = document.createElement('span')
+        span.textContent = part
+        meta.append(span)
+      }
+      card.append(meta)
+    }
 
     function showFailure(result) {
       const failure = result && result.failure ? result.failure : { message: '操作失败' }
@@ -206,44 +408,19 @@
     function render() {
       list.replaceChildren()
       for (const item of items) {
-        const card = document.createElement('div')
-        card.className = 'item'
-        const title = document.createElement('h2')
-        title.textContent = item.name
-        const version = document.createElement('span')
-        version.className = 'ver'
-        version.textContent = item.version
-        title.append(version)
         const here = installed.get(item.name)
-        const badge = document.createElement('span')
-        badge.className = here ? 'badge on' : 'badge'
-        badge.textContent = here ? '已安装' : '未安装'
-        title.append(badge)
-        if (item.client) {
-          const clientBadge = document.createElement('span')
-          clientBadge.className = 'badge'
-          clientBadge.textContent = '含界面'
-          title.append(clientBadge)
-        }
-        card.append(title)
+        const badges = [{ text: here ? '已安装' : '未安装', tone: here ? 'ok' : undefined }]
+        if (item.client) badges.push({ text: '含界面' })
+        const card = cardShell(item.name, badges)
+        metaLine(card, [item.version, ...(item.keywords || [])].filter(Boolean))
         if (item.description) {
           const description = document.createElement('p')
+          description.className = 'card-desc'
           description.textContent = item.description
           card.append(description)
         }
-        if (item.keywords && item.keywords.length > 0) {
-          const chips = document.createElement('div')
-          chips.className = 'chips'
-          for (const keyword of item.keywords) {
-            const chip = document.createElement('span')
-            chip.className = 'chip'
-            chip.textContent = keyword
-            chips.append(chip)
-          }
-          card.append(chips)
-        }
         const actions = document.createElement('div')
-        actions.className = 'actions'
+        actions.className = 'card-actions'
         const label = here ? '重新安装' : '安装'
         const installButton = document.createElement('button')
         installButton.textContent = label
@@ -293,18 +470,47 @@
     let catalogQuery = ''
     let catalogCategory = ''
     let catalogLoading = false
+    let skeletons = 0
 
     function capabilityText(cap) {
-      const labels = { 'fs-write': '可写文件', 'fs-read': '可读文件', env: '读环境变量', net: '联网', exec: '可执行命令', secrets: '读密钥' }
+      const labels = {
+        'fs-write': '可写文件', 'fs-read': '可读文件', env: '读环境变量', secrets: '读密钥', credentials: '读凭据',
+        net: '联网', network: '联网', shell: '执行命令', exec: '执行命令', process: '管理进程',
+        'dynamic-code': '动态代码', subagent: '子代理', 'host-runtime': '宿主运行时', llm: '调用模型',
+      }
       return labels[cap] || cap
     }
+
+    /** Capabilities that touch the machine, shown in amber so they are seen before installing. */
+    const RISKY = new Set(['fs-write', 'exec', 'shell', 'env', 'secrets', 'credentials', 'net', 'network', 'dynamic-code', 'process'])
+
+    function categoryLabel(id) {
+      const found = (catalog.categories || []).find(category => category.id === id)
+      return (found && (found.zh || found.en)) || id
+    }
+
+    function showSkeletons(count) {
+      list.replaceChildren()
+      const wanted = count === undefined ? 4 : count
+      for (let index = 0; index < wanted; index++) {
+        const block = document.createElement('div')
+        block.className = 'skeleton'
+        list.append(block)
+        skeletons += 1
+      }
+      el('count').textContent = ''
+    }
+
+    function clearSkeletons() { skeletons = 0 }
 
     function categoryChip(value, label, count, active) {
       const button = document.createElement('button')
       button.type = 'button'
       button.className = 'chip'
       button.setAttribute('aria-pressed', active ? 'true' : 'false')
-      button.textContent = label
+      const text = document.createElement('span')
+      text.textContent = label
+      button.append(text)
       if (count !== undefined) {
         const small = document.createElement('small')
         small.textContent = String(count)
@@ -319,65 +525,93 @@
       host.replaceChildren()
       if (mode !== 'catalog') return
       const vocabulary = catalog.categories || []
+      const counts = catalog.categoryCounts || {}
+      const label = document.createElement('span')
+      label.className = 'catlabel'
+      label.textContent = '分类'
+      host.append(label)
       host.append(categoryChip('', '全部', catalog.total, catalogCategory === ''))
-      for (const id of vocabulary) host.append(categoryChip(id, id, undefined, catalogCategory === id))
-      if (catalogCategory !== '' && vocabulary.indexOf(catalogCategory) < 0) host.append(categoryChip(catalogCategory, catalogCategory, undefined, true))
+      for (const category of vocabulary) {
+        host.append(categoryChip(category.id, category.zh || category.en || category.id, counts[category.id], catalogCategory === category.id))
+      }
+      const known = vocabulary.map(category => category.id)
+      if (catalogCategory !== '' && known.indexOf(catalogCategory) < 0) host.append(categoryChip(catalogCategory, catalogCategory, undefined, true))
     }
 
     function renderCatalog() {
       list.replaceChildren()
-      el('count').textContent = '共 ' + String(catalog.total) + ' 个插件' + (catalogCategory === '' ? '' : '（分类：' + catalogCategory + '）')
+      clearSkeletons()
+      el('count').textContent = '共 ' + String(catalog.total) + ' 个插件' + (catalogCategory === '' ? '' : '（' + categoryLabel(catalogCategory) + '）')
       const pageCount = Math.max(1, Math.ceil(catalog.total / catalog.pageSize))
       el('pageInfo').textContent = '第 ' + String(catalog.page + 1) + ' / ' + String(pageCount) + ' 页'
       el('prev').disabled = catalog.page === 0
       el('next').disabled = catalog.page + 1 >= pageCount
+
+      if (catalog.entries.length === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'state'
+        empty.textContent = catalogQuery.trim() === ''
+          ? '这个分类下暂时没有可安装的插件。'
+          : '目录里没有匹配「' + catalogQuery.trim() + '」的插件。'
+        list.append(empty)
+        report(`rendered 0 cards of ${catalog.total} (empty)`)
+        return
+      }
+
       for (const entry of catalog.entries) {
-        const card = document.createElement('div')
-        card.className = 'item'
-        const title = document.createElement('h2')
-        title.textContent = entry.name
-        if (entry.category) {
-          const badge = document.createElement('span')
-          badge.className = 'badge'
-          badge.textContent = entry.category
-          title.append(badge)
-        }
-        card.append(title)
-        const line = document.createElement('p')
-        line.textContent = '★ ' + String(entry.stars || 0) + '  ·  ⬇ ' + String(entry.downloads || 0) + (entry.owner ? '  ·  ' + entry.owner : '')
-        card.append(line)
+        const here = (catalog.installed || []).indexOf(entry.npm || '') >= 0
+        const badges = []
+        if (entry.category) badges.push({ text: categoryLabel(entry.category) })
+        if (here) badges.push({ text: '已安装', tone: 'ok' })
+        const card = cardShell(entry.name, badges)
+        metaLine(card, [
+          '★ ' + String(entry.stars || 0),
+          '下载 ' + String(entry.downloads || 0),
+          ...(entry.owner ? [entry.owner] : []),
+          ...(entry.npm ? [] : ['仅 GitHub']),
+        ])
         const text = (entry.description && (entry.description.zh || entry.description.en)) || ''
         if (text) {
           const described = document.createElement('p')
+          described.className = 'card-desc'
           described.textContent = text
           card.append(described)
         }
         if (entry.capabilities && entry.capabilities.length > 0) {
-          const caps = document.createElement('p')
-          caps.className = 'caps'
-          caps.textContent = '需要：' + entry.capabilities.map(capabilityText).join('、')
-          card.append(caps)
+          const tags = document.createElement('div')
+          tags.className = 'tags'
+          for (const capability of entry.capabilities) {
+            const tag = document.createElement('span')
+            tag.className = 'tag' + (RISKY.has(capability) ? ' warn' : '')
+            tag.textContent = capabilityText(capability)
+            tag.title = '插件声明需要：' + capability
+            tags.append(tag)
+          }
+          card.append(tags)
         }
         const actions = document.createElement('div')
-        actions.className = 'actions'
+        actions.className = 'card-actions'
         if (entry.npm) {
-          const already = (catalog.installed || []).indexOf(entry.npm) >= 0
           const installButton = document.createElement('button')
           installButton.className = 'primary'
-          installButton.textContent = already ? '重新安装' : '安装'
+          installButton.textContent = here ? '重新安装' : '安装'
           installButton.addEventListener('click', () => act('install', entry.npm, entry.version || ''))
           actions.append(installButton)
-          const removeButton = document.createElement('button')
-          removeButton.textContent = '卸载'
-          removeButton.disabled = !already
-          removeButton.addEventListener('click', () => act('uninstall', entry.npm))
-          actions.append(removeButton)
+          if (here) {
+            const removeButton = document.createElement('button')
+            removeButton.textContent = '卸载'
+            removeButton.addEventListener('click', () => act('uninstall', entry.npm))
+            actions.append(removeButton)
+          }
         } else {
-          const onlyGithub = document.createElement('button')
-          onlyGithub.textContent = '仅 GitHub 发布'
-          onlyGithub.disabled = true
-          onlyGithub.title = '这条目录只提供 GitHub 来源；本市场目前只支持从 registry 安装'
-          actions.append(onlyGithub)
+          // No npm mapping: the catalog's own install string (a release tarball URL or a `github:` spec)
+          // is the faithful choice; the repository URL is the fallback.
+          const fromGithub = document.createElement('button')
+          fromGithub.className = 'primary'
+          fromGithub.textContent = '从 GitHub 安装'
+          fromGithub.title = '这条目录只提供 GitHub 来源。安装前会先读取仓库，确认它确实声明了 dsh 字段'
+          fromGithub.addEventListener('click', () => void githubAction(entry.install || entry.url || entry.name, false))
+          actions.append(fromGithub)
         }
         card.append(actions)
         list.append(card)
@@ -389,35 +623,43 @@
       catalogLoading = true
       mode = 'catalog'
       el('catalog-status').textContent = '正在加载社区目录…'
+      if (catalog.entries.length === 0) showSkeletons(4)
       try {
         const result = await api.browse({ query: catalogQuery, category: catalogCategory, sort: el('sort').value, page: page || 0, pageSize: catalog.pageSize, refresh: refresh === true })
         catalog = result
-        el('catalog-status').textContent = catalog.updated
-          ? '目录更新于 ' + String(catalog.updated).slice(0, 10) + ' · ' + String(catalog.categories.length) + ' 个分类'
-          : '社区目录'
+        el('catalog-status').textContent = [
+          catalog.updated ? '目录更新于 ' + String(catalog.updated).slice(0, 10) : '社区目录',
+          String(catalog.categories.length) + ' 个分类',
+          '只收录声明了 dsh 字段的插件',
+        ].join(' · ')
         renderChips()
         renderCatalog()
-        note('已加载 ' + String(catalog.total) + ' 个插件' + (catalogCategory === '' ? '' : '（' + catalogCategory + '）'))
+        report(`rendered ${catalog.entries.length} cards of ${catalog.total}`)
+        // The footer already states the count; the activity line is for transient work only.
+        note('就绪')
       } catch (error) {
         el('catalog-status').textContent = '目录加载失败：' + (error && error.message ? error.message : String(error))
         note('目录加载失败，已切到 registry 搜索')
         mode = 'registry'
         el('registry-toggle').textContent = '回到社区目录'
+        el('clientOnlyRow').hidden = false
         await search(true).catch(() => {})
       } finally {
         catalogLoading = false
       }
     }
+
     async function search(reset) {
       if (busy) return
       busy = true
       el('go').disabled = true
-      el('failure').hidden = true
-      if (reset === true) page.from = 0
-      page.sort = el('sort').value
-      page.clientOnly = el('clientOnly').checked
-      note('正在查询 registry…')
       try {
+        el('failure').hidden = true
+        if (reset === true) page.from = 0
+        page.sort = el('sort').value
+        page.clientOnly = el('clientOnly').checked
+        note('正在查询 registry…（候选要逐个向 registry 确认，请稍候）')
+        showSkeletons(3)
         const result = await api.search({ query: el('query').value, from: page.from, pageSize: page.pageSize, sort: page.sort, clientOnly: page.clientOnly })
         if (!result.ok) {
           showFailure({ action: 'install', name: 'registry', spec: '', code: null, output: result.output || '', failure: result.failure })
@@ -450,6 +692,63 @@
       }
     }
 
+    /**
+     * Install from GitHub, in two steps when it matters.
+     *
+     * The repository is read first: one that is not a plugin is refused without touching the profile,
+     * and one whose manifest declares install scripts says so and waits for a second click, because
+     * those scripts execute on this machine. No modal — the warning lands in the status line and the
+     * button changes.
+     */
+    let githubPending = ''
+
+    async function githubAction(input, confirmed) {
+      const target = (confirmed === true && githubPending !== '' ? githubPending : input).trim()
+      if (busy || target === '') return
+      busy = true
+      el('go').disabled = true
+      el('github-go').disabled = true
+      try {
+        if (confirmed !== true) {
+          note('正在读取 GitHub 仓库…')
+          const inspected = await api.inspectGithub(target)
+          if (!inspected.ok) {
+            note('不能安装：' + (inspected.reason || '仓库不可用'))
+            return
+          }
+          if (inspected.scripts && inspected.scripts.length > 0) {
+            githubPending = target
+            el('github-confirm').hidden = false
+            note('注意：' + inspected.name + ' 会在你机器上执行安装脚本（' + inspected.scripts.join('、') + '）—— 确认无误请点右侧按钮')
+            return
+          }
+          note('正在从 GitHub 安装 ' + inspected.name + ' …')
+        } else {
+          note('正在从 GitHub 安装（已确认安装脚本）…')
+        }
+        el('github-confirm').hidden = true
+        githubPending = ''
+        const result = await api.installGithub(target)
+        if (result.ok) {
+          el('failure').hidden = true
+          await refreshInstalled()
+          if (mode === 'catalog') await loadCatalog(catalog.page)
+          else render()
+          // After the refresh, like the registry path: otherwise its status line wins.
+          note(result.name + ' 已安装（重启应用后生效）')
+        } else {
+          showFailure(result)
+          note('安装失败：' + (result.failure && result.failure.message ? result.failure.message : '详情见下方'))
+        }
+      } catch (error) {
+        note('失败：' + (error && error.message ? error.message : String(error)))
+      } finally {
+        busy = false
+        el('go').disabled = false
+        el('github-go').disabled = false
+      }
+    }
+
     async function act(action, name, version) {
       if (busy) return
       busy = true
@@ -458,10 +757,17 @@
       try {
         const result = await api.act(action, name, version)
         if (result.ok) {
-          note(`${name} ${action === 'uninstall' ? '已卸载' : '已安装'}（重启应用后生效）`)
           el('failure').hidden = true
           await refreshInstalled()
-          render()
+          // Keep whichever view is on screen current: the market's cards show installed state, and the
+          // installed view's versions + diagnosis change the moment a plugin is installed or removed.
+          // Doing this automatically is the difference between one click and two.
+          if (view === 'installed') await refreshInstalledView()
+          else if (mode === 'catalog') await loadCatalog(catalog.page)
+          else render()
+          // …and only then say what happened: the refresh writes its own status line, and setting this
+          // before it meant every successful install ended with "就绪" instead of "已安装".
+          note(`${name} ${action === 'uninstall' ? '已卸载' : '已安装'}（重启应用后生效）`)
         } else {
           showFailure(result)
           note('失败，详情见下方')
@@ -481,14 +787,13 @@
     function switchView(next) {
       view = next === 'installed' ? 'installed' : 'market'
       const onInstalled = view === 'installed'
-      for (const id of ['query', 'go', 'sort', 'clientOnly', 'prev', 'next', 'pageInfo']) {
-        const node = el(id)
-        if (node) node.style.display = onInstalled ? 'none' : ''
-      }
+      // Whole blocks, not individual inputs: hiding an input left its label ("排序") behind.
+      for (const node of document.querySelectorAll('.market-only')) node.hidden = onInstalled
       el('list').hidden = onInstalled
+      if (onInstalled) el('skipped-wrap').hidden = true
       el('installed-view').hidden = !onInstalled
-      el('tab-market').classList.toggle('primary', !onInstalled)
-      el('tab-installed').classList.toggle('primary', onInstalled)
+      el('tab-market').setAttribute('aria-selected', onInstalled ? 'false' : 'true')
+      el('tab-installed').setAttribute('aria-selected', onInstalled ? 'true' : 'false')
       note(onInstalled ? '已安装的插件（改完需重启应用生效）' : '插件市场')
       if (onInstalled) void refreshInstalledView()
     }
@@ -505,20 +810,11 @@
       host.replaceChildren()
       el('installed-count').textContent = updateStatuses.length === 0 ? '没有已安装的插件' : String(updateStatuses.length) + ' 个已安装'
       for (const entry of updateStatuses) {
-        const card = document.createElement('div')
-        card.className = 'item'
-        const title = document.createElement('h2')
-        title.textContent = entry.name
-        const badge = document.createElement('span')
-        badge.className = entry.hasUpdate ? 'badge on' : 'badge'
-        badge.textContent = entry.hasUpdate ? '有新版' : entry.source === 'registry' ? '已最新' : '无法比较'
-        title.append(badge)
-        card.append(title)
-        const line = document.createElement('p')
-        line.textContent = versionLine(entry)
-        card.append(line)
+        const tone = entry.hasUpdate ? 'warn' : entry.source === 'registry' ? 'ok' : undefined
+        const card = cardShell(entry.name, [{ text: entry.hasUpdate ? '有新版' : entry.source === 'registry' ? '已最新' : '无法比较', tone }])
+        metaLine(card, [versionLine(entry)])
         const actions = document.createElement('div')
-        actions.className = 'actions'
+        actions.className = 'card-actions'
         if (entry.hasUpdate && entry.latest !== undefined) {
           const update = document.createElement('button')
           update.className = 'primary'
@@ -538,7 +834,15 @@
     async function refreshLog() {
       const result = await api.log(80).catch(() => ({ entries: [], path: '' }))
       el('log-path').textContent = result.path ? '日志文件：' + result.path : '未启用文件日志'
-      const lines = (result.entries || []).map(entry => {
+      const entries = result.entries || []
+      const failures = entries.filter(entry => !entry.ok).length
+      const summary = el('log-summary')
+      // Also collapsed by default, with the one fact that matters in the title: did anything fail?
+      summary.textContent = entries.length === 0
+        ? '动作日志：还没有记录'
+        : '动作日志：最近 ' + String(entries.length) + ' 条' + (failures === 0 ? '，全部成功' : '，其中 ' + String(failures) + ' 次失败（点开查看）')
+      summary.className = failures > 0 ? 'attention-warn' : 'attention-ok'
+      const lines = entries.map(entry => {
         const outcome = entry.ok ? 'ok' : 'FAILED' + (entry.kind ? ' (' + entry.kind + ')' : '')
         const ms = entry.ms === undefined ? '' : ' ' + String(entry.ms) + 'ms'
         const head = entry.at + '  ' + entry.action + '  ' + entry.name + '  ' + entry.spec + '  ' + outcome + ms
@@ -554,28 +858,23 @@
       host.replaceChildren()
       const errors = diagnosis.filter(entry => entry.severity === 'error').length
       const warns = diagnosis.filter(entry => entry.severity === 'warn').length
-      el('diagnose-summary').textContent = diagnosis.length === 0
+      const summary = el('diagnose-summary')
+      // Stays collapsed: the summary carries the count and the colour, and the reader decides.
+      summary.textContent = diagnosis.length === 0
         ? '冲突诊断：没有发现可证明的问题'
-        : '冲突诊断：' + String(errors) + ' 个错误、' + String(warns) + ' 个警告，共 ' + String(diagnosis.length) + ' 条'
+        : '冲突诊断：' + String(errors) + ' 个错误、' + String(warns) + ' 个警告，共 ' + String(diagnosis.length) + ' 条（点开查看）'
+      summary.className = errors > 0 ? 'attention-danger' : warns > 0 ? 'attention-warn' : 'attention-ok'
       for (const entry of diagnosis) {
-        const row = document.createElement('div')
-        row.className = 'item'
-        const title = document.createElement('h2')
-        title.textContent = entry.subject
-        const badge = document.createElement('span')
-        badge.className = entry.severity === 'error' ? 'badge on' : 'badge'
-        badge.textContent = entry.severity === 'error' ? '错误' : entry.severity === 'warn' ? '警告' : '提示'
-        title.append(badge)
-        row.append(title)
-        const message = document.createElement('p')
-        message.textContent = entry.message
-        row.append(message)
+        const tone = entry.severity === 'error' ? 'danger' : entry.severity === 'warn' ? 'warn' : undefined
+        const card = cardShell(entry.subject, [{ text: entry.severity === 'error' ? '错误' : entry.severity === 'warn' ? '警告' : '提示', tone }])
+        metaLine(card, [entry.message])
         if (entry.hint) {
           const hint = document.createElement('p')
+          hint.className = 'card-desc'
           hint.textContent = '建议：' + entry.hint
-          row.append(hint)
+          card.append(hint)
         }
-        host.append(row)
+        host.append(card)
       }
     }
 
@@ -586,8 +885,13 @@
 
     async function refreshInstalledView() {
       note('正在检查已安装插件的版本…')
+      el('installed-list').replaceChildren()
+      const block = document.createElement('div')
+      block.className = 'skeleton'
+      el('installed-list').append(block)
       updateStatuses = await api.updates().catch(() => [])
       renderInstalled()
+      report(`rendered ${updateStatuses.length} installed cards`)
       await refreshLog().catch(() => {})
       await refreshDiagnosis().catch(() => {})
       note('已安装 ' + String(updateStatuses.length) + ' 个插件')
@@ -610,24 +914,28 @@
 
     el('go').addEventListener('click', () => { if (mode === 'catalog') { catalogQuery = el('query').value; void loadCatalog(0) } else void search(true) })
     el('query').addEventListener('keydown', event => { if (event.key !== 'Enter') return; if (mode === 'catalog') { catalogQuery = el('query').value; void loadCatalog(0) } else void search(true) })
-el('prev').addEventListener('click', () => {
-  if (mode === 'catalog') { if (catalog.page > 0) void loadCatalog(catalog.page - 1) }
-  else if (page.from > 0) { page.from = Math.max(0, page.from - page.pageSize); void search(false) }
-})
-el('next').addEventListener('click', () => {
-  if (mode === 'catalog') void loadCatalog(catalog.page + 1)
-  else { page.from = page.from + page.pageSize; void search(false) }
-})
-el('sort').addEventListener('change', () => { if (mode === 'catalog') void loadCatalog(0); else void search(true) })
-el('catalog-reload').addEventListener('click', () => void loadCatalog(0, true))
-el('registry-toggle').addEventListener('click', () => {
-  mode = mode === 'catalog' ? 'registry' : 'catalog'
-  el('registry-toggle').textContent = mode === 'catalog' ? '在 registry 里搜…' : '回到社区目录'
-  el('clientOnly').style.display = mode === 'catalog' ? 'none' : ''
-  if (mode === 'catalog') void loadCatalog(catalog.page)
-  else void search(true)
-})
-el('clientOnly').addEventListener('change', () => { if (mode === 'registry') void search(true) })
+    el('prev').addEventListener('click', () => {
+      if (mode === 'catalog') { if (catalog.page > 0) void loadCatalog(catalog.page - 1) }
+      else if (page.from > 0) { page.from = Math.max(0, page.from - page.pageSize); void search(false) }
+    })
+    el('next').addEventListener('click', () => {
+      if (mode === 'catalog') void loadCatalog(catalog.page + 1)
+      else { page.from = page.from + page.pageSize; void search(false) }
+    })
+    el('sort').addEventListener('change', () => { if (mode === 'catalog') void loadCatalog(0); else void search(true) })
+    el('catalog-reload').addEventListener('click', () => void loadCatalog(0, true))
+    el('github-go').addEventListener('click', () => void githubAction(el('github-input').value, false))
+    el('github-confirm').addEventListener('click', () => void githubAction(githubPending, true))
+    el('github-input').addEventListener('keydown', event => { if (event.key === 'Enter') void githubAction(el('github-input').value, false) })
+    el('registry-toggle').addEventListener('click', () => {
+      mode = mode === 'catalog' ? 'registry' : 'catalog'
+      el('registry-toggle').textContent = mode === 'catalog' ? '在 registry 里搜…' : '回到社区目录'
+      el('clientOnlyRow').hidden = mode === 'catalog'
+      setSortOptions(mode)
+      if (mode === 'catalog') void loadCatalog(catalog.page)
+      else void search(true)
+    })
+    el('clientOnly').addEventListener('change', () => { if (mode === 'registry') void search(true) })
     el('close').addEventListener('click', () => api.close())
     el('copy').addEventListener('click', async () => {
       await api.copyDiagnostics(lastDiagnostics)
@@ -637,10 +945,12 @@ el('clientOnly').addEventListener('change', () => { if (mode === 'registry') voi
     void (async () => {
       const where = await api.profileDir().catch(() => '')
       el('profile').textContent = where || '(未知)'
+      el('profile').title = where || ''
       await refreshInstalled().catch(() => {})
       if (view === 'installed') { switchView('installed'); return }
       // Catalog first: this is the whole point — the window opens with a list to look at.
-      el('clientOnly').style.display = 'none'
+      el('clientOnlyRow').hidden = true
+      setSortOptions('catalog')
       await loadCatalog(0)
     })()
   </script>

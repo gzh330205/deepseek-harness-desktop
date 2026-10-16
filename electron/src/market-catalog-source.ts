@@ -30,6 +30,14 @@ export interface CatalogEntry {
   readonly description?: { readonly en?: string; readonly zh?: string }
   /** npm package name, when the entry is installable from a registry. */
   readonly npm?: string
+  /**
+   * The command the catalog itself installs with, when it ships one.
+   *
+   * For the ~half of entries that exist only on GitHub this is the useful field: it names either a
+   * release tarball URL or a `github:owner/repo` spec. It is carried through verbatim so the market
+   * installs what upstream would, rather than guessing a ref.
+   */
+  readonly install?: string
   readonly version?: string
   readonly stars: number
   readonly downloads: number
@@ -38,11 +46,20 @@ export interface CatalogEntry {
   readonly added?: string
 }
 
+/** One category of the catalog's own vocabulary. */
+export interface CatalogCategory {
+  readonly id: string
+  /** English label, when the catalog provides one. */
+  readonly en?: string
+  /** Chinese label — the catalog ships both, so the chips do not have to invent names. */
+  readonly zh?: string
+}
+
 /** The catalog document itself. */
 export interface Catalog {
   readonly updated?: string
   /** The category vocabulary the entries draw from, in catalog order. */
-  readonly categories: readonly string[]
+  readonly categories: readonly CatalogCategory[]
   readonly entries: readonly CatalogEntry[]
 }
 
@@ -104,6 +121,7 @@ export function parseCatalog(document: unknown): Catalog {
     const npm = text(entry.npm)
     const version = text(entry.version)
     const added = text(entry.added)
+    const install = text(entry.install)
     entries.push({
       name,
       stars: count(entry.stars),
@@ -114,6 +132,7 @@ export function parseCatalog(document: unknown): Catalog {
       ...(page === undefined ? {} : { page }),
       ...(category === undefined ? {} : { category }),
       ...(described === undefined ? {} : { description: described }),
+      ...(install === undefined ? {} : { install }),
       ...(npm === undefined ? {} : { npm }),
       ...(version === undefined ? {} : { version }),
       ...(added === undefined ? {} : { added }),
@@ -121,7 +140,7 @@ export function parseCatalog(document: unknown): Catalog {
   }
   return {
     ...(text(record.updated) === undefined ? {} : { updated: text(record.updated) as string }),
-    categories: strings(record.categories),
+    categories: parseCategories(record.categories, entries),
     entries,
   }
 }
@@ -178,4 +197,66 @@ export function searchCatalog(entries: readonly CatalogEntry[], query: string): 
     ].join(' ').toLowerCase()
     return haystack.includes(needle)
   })
+}
+
+/**
+ * Parse the category vocabulary, then let the entries have the final say.
+ *
+ * The real document maps id to a bilingual label (`{"ui":{"en":"UI Enhancements","zh":"UI 增强"}}`) —
+ * an earlier version of this file assumed an array of strings and silently produced zero chips. Other
+ * shapes are accepted too, because this is external input.
+ *
+ * Whatever the vocabulary claims, every category an entry actually uses is added: a chip that filters
+ * to nothing is worse than no chip, and an entry whose category is missing from the vocabulary would
+ * otherwise be unreachable through the chips.
+ */
+function parseCategories(value: unknown, entries: readonly CatalogEntry[]): readonly CatalogCategory[] {
+  const out: CatalogCategory[] = []
+  const seen = new Set<string>()
+  const add = (id: string, en?: string, zh?: string): void => {
+    if (id === '' || seen.has(id)) return
+    seen.add(id)
+    out.push({ id, ...(en === undefined ? {} : { en }), ...(zh === undefined ? {} : { zh }) })
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === 'string') {
+        add(item)
+        continue
+      }
+      if (item === null || typeof item !== 'object') continue
+      const record = item as Record<string, unknown>
+      const id = text(record.id) ?? text(record.name) ?? text(record.slug)
+      if (id !== undefined) add(id, text(record.en) ?? text(record.label), text(record.zh) ?? text(record['zh-CN']))
+    }
+  } else if (value !== null && typeof value === 'object') {
+    for (const [id, label] of Object.entries(value as Record<string, unknown>)) {
+      if (label !== null && typeof label === 'object') {
+        const record = label as Record<string, unknown>
+        add(id, text(record.en), text(record.zh) ?? text(record['zh-CN']))
+      } else {
+        add(id, text(label))
+      }
+    }
+  }
+  for (const entry of entries) {
+    if (entry.category !== undefined) add(entry.category)
+  }
+  return out
+}
+
+/**
+ * How many entries each category holds.
+ *
+ * Counted over the whole catalog (not the current page), because a chip's number is a claim about the
+ * catalog, and counting only what happens to be on screen would make it a lie. `''` collects entries
+ * with no category, which the UI shows as the "全部" chip's own count instead.
+ */
+export function countByCategory(entries: readonly CatalogEntry[]): Readonly<Record<string, number>> {
+  const counts: Record<string, number> = {}
+  for (const entry of entries) {
+    const key = entry.category ?? ''
+    counts[key] = (counts[key] ?? 0) + 1
+  }
+  return counts
 }
