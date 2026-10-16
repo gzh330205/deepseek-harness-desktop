@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- DayNight so the phone's own theme decides; the page inside the WebView follows it too. -->
+  <style name="Theme.Pocket" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <item name="android:windowBackground">?android:attr/colorBackground</item>
+  </style>
+</resources>

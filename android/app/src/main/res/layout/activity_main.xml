@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:orientation="vertical">
+
+  <!-- A one-line bar: where we are connected, plus the two things a user needs when it stops working. -->
+  <LinearLayout
+    android:id="@+id/bar"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="12dp"
+    android:paddingEnd="4dp"
+    android:paddingTop="4dp"
+    android:paddingBottom="4dp"
+    android:visibility="gone">
+
+    <TextView
+      android:id="@+id/addressText"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:layout_weight="1"
+      android:ellipsize="middle"
+      android:singleLine="true"
+      android:textSize="12sp" />
+
+    <Button
+      android:id="@+id/rescanButton"
+      style="?android:attr/borderlessButtonStyle"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:minWidth="0dp"
+      android:paddingStart="8dp"
+      android:paddingEnd="8dp"
+      android:text="@string/rescan"
+      android:textSize="12sp" />
+
+    <Button
+      android:id="@+id/reconnectButton"
+      style="?android:attr/borderlessButtonStyle"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:minWidth="0dp"
+      android:paddingStart="8dp"
+      android:paddingEnd="8dp"
+      android:text="@string/reconnect"
+      android:textSize="12sp" />
+  </LinearLayout>
+
+  <FrameLayout
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1">
+
+    <WebView
+      android:id="@+id/webView"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"
+      android:visibility="gone" />
+
+    <ScrollView
+      android:id="@+id/setupPanel"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"
+      android:fillViewport="true">
+
+      <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:text="@string/setup_title"
+          android:textSize="20sp"
+          android:textStyle="bold" />
+
+        <TextView
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="8dp"
+          android:text="@string/setup_hint"
+          android:textSize="13sp" />
+
+        <EditText
+          android:id="@+id/addressInput"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="20dp"
+          android:autofillHints=""
+          android:hint="@string/address_hint"
+          android:inputType="textUri"
+          android:maxLines="1" />
+
+        <EditText
+          android:id="@+id/passwordInput"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="10dp"
+          android:autofillHints=""
+          android:hint="@string/password_hint"
+          android:inputType="textPassword"
+          android:maxLines="1" />
+
+        <CheckBox
+          android:id="@+id/rememberPassword"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="6dp"
+          android:text="@string/remember_password"
+          android:textSize="13sp" />
+
+        <Button
+          android:id="@+id/scanButton"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="18dp"
+          android:text="@string/scan" />
+
+        <Button
+          android:id="@+id/connectButton"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="8dp"
+          android:text="@string/connect" />
+
+        <TextView
+          android:id="@+id/statusText"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="16dp"
+          android:textSize="13sp" />
+      </LinearLayout>
+    </ScrollView>
+  </FrameLayout>
+</LinearLayout>

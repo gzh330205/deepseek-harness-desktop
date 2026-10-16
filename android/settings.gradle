@@ -1,0 +1,24 @@
+// The phone client: a WebView shell around the desktop shell's phone gateway.
+//
+// It is deliberately thin. The DSH UI on the phone is the same one the gateway serves (see
+// `.agents/notes/implemented/feature/…`), so this app only does what a browser cannot: scan the QR
+// code, remember where the computer is, pick whichever of its addresses is reachable right now, and
+// keep the WebView alive across network changes.
+
+pluginManagement {
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+
+dependencyResolutionManagement {
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+
+rootProject.name = 'dsh-pocket'
+include ':app'

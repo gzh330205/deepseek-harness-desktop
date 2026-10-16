@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">DSH 口袋</string>
+  <string name="setup_title">连接到你的电脑</string>
+  <string name="setup_hint">在电脑上打开「设置 → 手机访问」，打开开关后扫描那里显示的二维码；也可以手动填写地址。</string>
+  <string name="address_hint">电脑地址，例如 192.168.1.7:41730</string>
+  <string name="password_hint">访问密码（电脑上显示的 8 位）</string>
+  <string name="remember_password">记住密码（电脑上的 DSH 重启后自动重新登录）</string>
+  <string name="scan">扫描二维码</string>
+  <string name="connect">连接</string>
+  <string name="rescan">重新扫码</string>
+  <string name="reconnect">重连</string>
+  <string name="clear">清除</string>
+  <string name="probing">正在寻找电脑…</string>
+  <string name="connected">已连接</string>
+</resources>

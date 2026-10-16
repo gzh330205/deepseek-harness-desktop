@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <!-- Scanning the QR code the desktop settings page shows. Not required: the address can be typed. -->
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+  <application
+    android:allowBackup="false"
+    android:icon="@mipmap/ic_launcher"
+    android:label="@string/app_name"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.Pocket"
+    android:usesCleartextTraffic="true">
+    <!--
+      Cleartext is required, not an oversight: the desktop gateway serves plain HTTP on the local
+      network, and that is where the phone starts. The public tunnel (P3) is HTTPS. Refusing cleartext
+      would make LAN phone access impossible, and the traffic never leaves the local network.
+    -->
+
+    <activity
+      android:name=".MainActivity"
+      android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+      android:exported="true"
+      android:launchMode="singleTask"
+      android:windowSoftInputMode="adjustResize">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+
+    <!--
+      The scanner activity is declared by zxing-android-embedded itself (sensorLandscape + its own
+      capture theme). Redeclaring it here only fights the manifest merger, and the runtime
+      `ScanOptions.setOrientationLocked(true)` is what actually keeps it upright.
+    -->
+
+  </application>
+</manifest>

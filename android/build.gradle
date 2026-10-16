@@ -1,0 +1,7 @@
+// Android Gradle Plugin 8.5 is the newest that pairs with the Gradle 8.7 distribution this machine
+// already has cached (~/.gradle/wrapper/dists), and with compileSdk 34 / build-tools 34.0.0 that the
+// installed Android SDK already carries — so a build needs no downloads beyond the AndroidX
+// artifacts themselves.
+plugins {
+  id 'com.android.application' version '8.5.2' apply false
+}
