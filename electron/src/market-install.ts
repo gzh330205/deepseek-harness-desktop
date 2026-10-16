@@ -237,7 +237,14 @@ export async function runMarketAction(
 /**
  * Resolve the executables an action needs from the bundled runtime.
  *
- * @param runtimeRoot - The prepared runtime directory (`resources/.../dsh`).
+ * Packaged, `runtimeRoot` is the **ASAR** (`resources/app.asar/dsh`). Electron's patched `fs` reads
+ * such paths, so an `existsSync` check happily says yes — but `spawn` is a real OS call and cannot open
+ * a file inside an archive. That mismatch is the whole failure:
+ * `spawn …\app.asar\dsh\bin\node.exe ENOENT` while the same path "exists". Anything we *start* must
+ * come from the archive's physical twin, `app.asar.unpacked`, which is exactly where electron-builder
+ * puts the files that cannot be read from an archive (executables, native modules, pnpm's JS).
+ *
+ * @param runtimeRoot - Prepared runtime directory (`resources/.../dsh`), possibly inside an ASAR.
  * @param appExecutable - The application binary, used only when no real node is bundled.
  * @returns Paths, or `undefined` when the runtime does not look usable.
  */
@@ -245,9 +252,30 @@ export function resolveMarketRuntime(
   runtimeRoot: string,
   appExecutable: string,
 ): { readonly nodeExecutable: string; readonly pnpmEntry: string; readonly appBinary: boolean } | undefined {
-  const bundledNode = join(runtimeRoot, 'bin', 'node.exe')
-  const pnpmEntry = join(runtimeRoot, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')
-  if (!existsSync(pnpmEntry)) return undefined
-  if (existsSync(bundledNode)) return { nodeExecutable: bundledNode, pnpmEntry, appBinary: false }
+  const pnpmEntry = firstExisting(physicalCandidates(join(runtimeRoot, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs')))
+  if (pnpmEntry === undefined) return undefined
+  const bundledNode = firstExisting(physicalCandidates(join(runtimeRoot, 'bin', 'node.exe')))
+  if (bundledNode !== undefined) return { nodeExecutable: bundledNode, pnpmEntry, appBinary: false }
   return { nodeExecutable: appExecutable, pnpmEntry, appBinary: true }
+}
+
+/**
+ * A path inside an ASAR and its physical twin, physical first.
+ *
+ * A path that is already physical (development trees, or nothing to do with an archive) is returned
+ * unchanged, so callers can pass any path through this without thinking about it.
+ *
+ * @param candidate - A path that may live inside `app.asar`.
+ */
+export function physicalCandidates(candidate: string): readonly string[] {
+  if (!candidate.includes('app.asar') || candidate.includes('app.asar.unpacked')) return [candidate]
+  return [candidate.replace('app.asar', 'app.asar.unpacked'), candidate]
+}
+
+/** The first of these paths that exists, if any. */
+function firstExisting(candidates: readonly string[]): string | undefined {
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
 }

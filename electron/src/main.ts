@@ -23,7 +23,7 @@ import minisignSmokeFixture from './fixtures/minisign-smoke.json' with { type: '
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { release as osRelease } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import {
   IPC,
@@ -98,6 +98,7 @@ import { ensureServicePort, readShellSettings, type ShellSettings } from './sett
 import { mergeSettingsInput, type SettingsInput } from './settings-shape.ts'
 import { SettingsWindow, type SettingsSnapshot, type SettingsSaveResult } from './settings-window.ts'
 import { createMarketWindow } from './market-open.ts'
+import { marketChildEnvironment, resolveMarketRuntime } from './market-install.ts'
 import { titleBarPalette } from './constants.ts'
 import { createTray, resolveIconPath } from './tray.ts'
 import { UpdateController } from './update-controller.ts'
@@ -1622,6 +1623,51 @@ async function boot(): Promise<void> {
   if (process.env.DSH_DESKTOP_OPEN_MARKET === '1') {
     marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog)
     marketWindow.open()
+    // Second half of the same hook: prove the runtime the market would *spawn* is startable. A path
+    // inside `app.asar` passes `existsSync` (Electron's fs reads the archive) and then fails with
+    // ENOENT the moment a real process is started from it — an install-breaking difference that only
+    // shows up in a packaged app, which is exactly why it shipped unnoticed.
+    void smokeMarketRuntime(appendShellLog)
+  }
+
+  /**
+   * Start the runtime the market would use, to prove it can be started at all.
+   *
+   * Runs the bundled node on `pnpm.cjs --version` — the same pair `MarketService` spawns for a real
+   * action — and logs `market runtime ok <version>` or `market runtime failed <reason>`. It goes
+   * through `resolveMarketRuntime` on purpose: an independent resolver here would have hidden the bug
+   * that made this check necessary (a path inside `app.asar` passes `existsSync`, then fails with
+   * ENOENT the moment a real process is started from it — packaged-only, so every dev-tree test passed).
+   */
+  async function smokeMarketRuntime(appendLog: (line: string) => void): Promise<void> {
+    const { spawn } = await import('node:child_process')
+    const runtimeRoot = bundledRuntimeRoot() ?? join(app.getAppPath(), 'runtime', 'dsh')
+    const runtime = resolveMarketRuntime(runtimeRoot, app.getPath('exe'))
+    if (runtime === undefined) {
+      appendLog('market runtime failed 随包运行时里找不到 pnpm 入口')
+      return
+    }
+    await new Promise<void>(resolvePromise => {
+      const child = spawn(runtime.nodeExecutable, [runtime.pnpmEntry, '--version'], {
+        cwd: dirname(runtime.nodeExecutable), // the archive path is not a real directory: spawn would report ENOENT naming the exe
+        env: marketChildEnvironment(process.env, runtime.appBinary),
+        shell: false,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let text = ''
+      child.stdout?.on('data', chunk => { text += String(chunk) })
+      child.stderr?.on('data', chunk => { text += String(chunk) })
+      const timer = setTimeout(() => { child.kill(); appendLog('market runtime failed 启动超时'); resolvePromise() }, 20_000)
+      child.on('error', error => { clearTimeout(timer); appendLog(`market runtime failed ${error.message}`); resolvePromise() })
+      child.on('close', code => {
+        clearTimeout(timer)
+        const version = text.trim().split(/\r?\n/u).filter(line => line.trim() !== '').pop() ?? ''
+        if (code === 0 && /^\d+\.\d+\.\d+/u.test(version)) appendLog(`market runtime ok pnpm ${version}`)
+        else appendLog(`market runtime failed 退出码 ${String(code)}：${text.trim().slice(0, 300)}`)
+        resolvePromise()
+      })
+    })
   }
   proxyDocumentHost = proxyOriginMode === 'loopback' ? `127.0.0.1:${String(port)}` : 'app'
   installProxyHandler({

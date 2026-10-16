@@ -84,6 +84,17 @@ export function isPlatformPackage(name: string): boolean {
 }
 
 /**
+ * The upstream market itself, which we must not install as a plugin.
+ *
+ * Two reasons, both ours: the shell already owns the market (a second UI drifts from it), and the
+ * upstream market's install path is the broken one this shell exists to replace. It declares `dsh`, so
+ * only an explicit rule keeps it out of the list.
+ */
+export function isUpstreamMarket(name: string): boolean {
+  return name === 'dshmarket' || name === 'dsh-market' || name === '@deepseek-ai/dsh-market'
+}
+
+/**
  * Decide whether a packument describes an installable plugin.
  *
  * A plugin declares `dsh.bundle.patch` (the patch layer it contributes). `dsh.client` is optional and
@@ -96,6 +107,7 @@ export function isPlatformPackage(name: string): boolean {
  */
 export function rejectReason(name: string, manifest: unknown): string | undefined {
   if (isPlatformPackage(name)) return '平台自身（@deepseek-ai/dsh*），不是插件'
+  if (isUpstreamMarket(name)) return '上游市场自己（dshmarket），壳内已有市场，装两套市场界面会互相干扰'
   if (manifest === null || typeof manifest !== 'object') return '版本清单不可读'
   const dsh = (manifest as { dsh?: unknown }).dsh
   if (dsh === null || typeof dsh !== 'object' || Array.isArray(dsh)) return '没有声明 dsh 字段，不是 DSH 插件'
@@ -241,6 +253,10 @@ export async function searchMarketPackages(
       if (typeof name !== 'string' || name === '') continue
       if (isPlatformPackage(name)) {
         skipped.push({ name, reason: '平台自身（@deepseek-ai/dsh*），不是插件' })
+        continue
+      }
+      if (isUpstreamMarket(name)) {
+        skipped.push({ name, reason: '上游市场自己（dshmarket），壳内已有市场' })
         continue
       }
       // The window's "已安装" view asks for specific names: no reason to confirm the rest.
