@@ -189,6 +189,20 @@ export class MarketWindow {
         return { ok: true }
       }))
 
+    // Browsing the catalog: the request is a shape we clamp, not a shape we trust. The two log lines
+    // are the packaged proof that the market opens with a list (the smoke requires `market catalog ok`).
+    ipcMain.handle(MARKET_IPC.browse, (event, raw: unknown) => guard(event, async () => {
+      try {
+        const result = await service.browse(
+          raw !== null && typeof raw === 'object' ? raw as Parameters<typeof service.browse>[0] : {},
+        )
+        this.#options.log(`market catalog ok ${String(result.total)} entries, ${String(result.entries.length)} on page`)
+        return result
+      } catch (error) {
+        this.#options.log(`market catalog failed ${error instanceof Error ? error.message : String(error)}`)
+        throw error
+      }
+    }))
     // Diagnosis reads local files only, so it is safe to run whenever the installed view opens.
     ipcMain.handle(MARKET_IPC.diagnose, (event) => guard(event, () => service.diagnose()))
     ipcMain.handle(MARKET_IPC.close, (event) => guard(event, () => {

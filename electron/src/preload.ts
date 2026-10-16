@@ -92,6 +92,7 @@ if (isMarketDocument()) {
     updates: () => ipcRenderer.invoke(MARKET_IPC.updates) as Promise<unknown>,
     log: (limit?: number) => ipcRenderer.invoke(MARKET_IPC.log, limit) as Promise<unknown>,
     diagnose: () => ipcRenderer.invoke(MARKET_IPC.diagnose) as Promise<unknown>,
+    browse: (request: unknown) => ipcRenderer.invoke(MARKET_IPC.browse, request) as Promise<unknown>,
     /** Main tells the window which view to show (the 插件 menu opens the installed one). */
     onView: (listener: (view: string) => void): (() => void) => {
       const handler = (_event: unknown, view: unknown): void => { listener(typeof view === 'string' ? view : 'market') }

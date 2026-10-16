@@ -85,16 +85,34 @@
     <button id="tab-installed" data-view="installed">已安装的插件</button>
   </div>
 
+  <!-- The community catalog is browsed, not searched: it arrives in one request, so the list and these
+       category chips are on screen before the user does anything. -->
+  <style>
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 18px 8px; }
+    .chip { padding: 3px 10px; font: inherit; font-size: 12px; color: var(--fg); background: var(--field); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
+    .chip[aria-pressed="true"] { color: #fff; background: var(--accent); border-color: var(--accent); }
+    .chip small { opacity: .7; margin-left: 4px; }
+    .caps { font-size: 11px; color: var(--muted); }
+  </style>
+  <div class="controls" id="discover">
+    <span id="catalog-status">正在加载社区目录…</span>
+    <span class="grow"></span>
+    <button id="catalog-reload">重新加载目录</button>
+    <button id="registry-toggle">在 registry 里搜…</button>
+  </div>
+  <div class="chips" id="chips"></div>
+
   <div class="search">
-    <input id="query" type="search" placeholder="搜索插件（名称、关键词，留空看热门）" autocomplete="off" />
-    <button id="go" class="primary">搜索</button>
+    <input id="query" type="search" placeholder="在目录里筛选（名称、作者、分类、中英描述、能力）" autocomplete="off" />
+    <button id="go" class="primary">筛选</button>
   </div>
 
   <div class="controls">
     <label>排序
       <select id="sort">
-        <option value="relevance">相关度</option>
-        <option value="updated">最近更新</option>
+        <option value="stars">最多 star</option>
+        <option value="downloads">下载最多</option>
+        <option value="added">最新收录</option>
         <option value="name">名称</option>
       </select>
     </label>
@@ -267,6 +285,129 @@
       el('next').disabled = last
     }
 
+    // ── 社区目录（默认视图）────────────────────────────────────────────────
+    // Browsing, not searching: one request fills the list and the chips, and every later interaction
+    // (chip, sort, typing) is answered in this process.
+    let mode = 'catalog'
+    let catalog = { categories: [], entries: [], total: 0, page: 0, pageSize: 40, installed: [], updated: '' }
+    let catalogQuery = ''
+    let catalogCategory = ''
+    let catalogLoading = false
+
+    function capabilityText(cap) {
+      const labels = { 'fs-write': '可写文件', 'fs-read': '可读文件', env: '读环境变量', net: '联网', exec: '可执行命令', secrets: '读密钥' }
+      return labels[cap] || cap
+    }
+
+    function categoryChip(value, label, count, active) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'chip'
+      button.setAttribute('aria-pressed', active ? 'true' : 'false')
+      button.textContent = label
+      if (count !== undefined) {
+        const small = document.createElement('small')
+        small.textContent = String(count)
+        button.append(small)
+      }
+      button.addEventListener('click', () => { catalogCategory = value; void loadCatalog(0) })
+      return button
+    }
+
+    function renderChips() {
+      const host = el('chips')
+      host.replaceChildren()
+      if (mode !== 'catalog') return
+      const vocabulary = catalog.categories || []
+      host.append(categoryChip('', '全部', catalog.total, catalogCategory === ''))
+      for (const id of vocabulary) host.append(categoryChip(id, id, undefined, catalogCategory === id))
+      if (catalogCategory !== '' && vocabulary.indexOf(catalogCategory) < 0) host.append(categoryChip(catalogCategory, catalogCategory, undefined, true))
+    }
+
+    function renderCatalog() {
+      list.replaceChildren()
+      el('count').textContent = '共 ' + String(catalog.total) + ' 个插件' + (catalogCategory === '' ? '' : '（分类：' + catalogCategory + '）')
+      const pageCount = Math.max(1, Math.ceil(catalog.total / catalog.pageSize))
+      el('pageInfo').textContent = '第 ' + String(catalog.page + 1) + ' / ' + String(pageCount) + ' 页'
+      el('prev').disabled = catalog.page === 0
+      el('next').disabled = catalog.page + 1 >= pageCount
+      for (const entry of catalog.entries) {
+        const card = document.createElement('div')
+        card.className = 'item'
+        const title = document.createElement('h2')
+        title.textContent = entry.name
+        if (entry.category) {
+          const badge = document.createElement('span')
+          badge.className = 'badge'
+          badge.textContent = entry.category
+          title.append(badge)
+        }
+        card.append(title)
+        const line = document.createElement('p')
+        line.textContent = '★ ' + String(entry.stars || 0) + '  ·  ⬇ ' + String(entry.downloads || 0) + (entry.owner ? '  ·  ' + entry.owner : '')
+        card.append(line)
+        const text = (entry.description && (entry.description.zh || entry.description.en)) || ''
+        if (text) {
+          const described = document.createElement('p')
+          described.textContent = text
+          card.append(described)
+        }
+        if (entry.capabilities && entry.capabilities.length > 0) {
+          const caps = document.createElement('p')
+          caps.className = 'caps'
+          caps.textContent = '需要：' + entry.capabilities.map(capabilityText).join('、')
+          card.append(caps)
+        }
+        const actions = document.createElement('div')
+        actions.className = 'actions'
+        if (entry.npm) {
+          const already = (catalog.installed || []).indexOf(entry.npm) >= 0
+          const installButton = document.createElement('button')
+          installButton.className = 'primary'
+          installButton.textContent = already ? '重新安装' : '安装'
+          installButton.addEventListener('click', () => act('install', entry.npm, entry.version || ''))
+          actions.append(installButton)
+          const removeButton = document.createElement('button')
+          removeButton.textContent = '卸载'
+          removeButton.disabled = !already
+          removeButton.addEventListener('click', () => act('uninstall', entry.npm))
+          actions.append(removeButton)
+        } else {
+          const onlyGithub = document.createElement('button')
+          onlyGithub.textContent = '仅 GitHub 发布'
+          onlyGithub.disabled = true
+          onlyGithub.title = '这条目录只提供 GitHub 来源；本市场目前只支持从 registry 安装'
+          actions.append(onlyGithub)
+        }
+        card.append(actions)
+        list.append(card)
+      }
+    }
+
+    async function loadCatalog(page, refresh) {
+      if (catalogLoading) return
+      catalogLoading = true
+      mode = 'catalog'
+      el('catalog-status').textContent = '正在加载社区目录…'
+      try {
+        const result = await api.browse({ query: catalogQuery, category: catalogCategory, sort: el('sort').value, page: page || 0, pageSize: catalog.pageSize, refresh: refresh === true })
+        catalog = result
+        el('catalog-status').textContent = catalog.updated
+          ? '目录更新于 ' + String(catalog.updated).slice(0, 10) + ' · ' + String(catalog.categories.length) + ' 个分类'
+          : '社区目录'
+        renderChips()
+        renderCatalog()
+        note('已加载 ' + String(catalog.total) + ' 个插件' + (catalogCategory === '' ? '' : '（' + catalogCategory + '）'))
+      } catch (error) {
+        el('catalog-status').textContent = '目录加载失败：' + (error && error.message ? error.message : String(error))
+        note('目录加载失败，已切到 registry 搜索')
+        mode = 'registry'
+        el('registry-toggle').textContent = '回到社区目录'
+        await search(true).catch(() => {})
+      } finally {
+        catalogLoading = false
+      }
+    }
     async function search(reset) {
       if (busy) return
       busy = true
@@ -467,12 +608,26 @@
     })
     if (typeof api.onView === 'function') api.onView(next => switchView(next))
 
-    el('go').addEventListener('click', () => void search(true))
-    el('query').addEventListener('keydown', event => { if (event.key === 'Enter') void search(true) })
-el('prev').addEventListener('click', () => { if (page.from > 0) { page.from = Math.max(0, page.from - page.pageSize); void search(false) } })
-el('next').addEventListener('click', () => { page.from = page.from + page.pageSize; void search(false) })
-el('sort').addEventListener('change', () => void search(true))
-el('clientOnly').addEventListener('change', () => void search(true))
+    el('go').addEventListener('click', () => { if (mode === 'catalog') { catalogQuery = el('query').value; void loadCatalog(0) } else void search(true) })
+    el('query').addEventListener('keydown', event => { if (event.key !== 'Enter') return; if (mode === 'catalog') { catalogQuery = el('query').value; void loadCatalog(0) } else void search(true) })
+el('prev').addEventListener('click', () => {
+  if (mode === 'catalog') { if (catalog.page > 0) void loadCatalog(catalog.page - 1) }
+  else if (page.from > 0) { page.from = Math.max(0, page.from - page.pageSize); void search(false) }
+})
+el('next').addEventListener('click', () => {
+  if (mode === 'catalog') void loadCatalog(catalog.page + 1)
+  else { page.from = page.from + page.pageSize; void search(false) }
+})
+el('sort').addEventListener('change', () => { if (mode === 'catalog') void loadCatalog(0); else void search(true) })
+el('catalog-reload').addEventListener('click', () => void loadCatalog(0, true))
+el('registry-toggle').addEventListener('click', () => {
+  mode = mode === 'catalog' ? 'registry' : 'catalog'
+  el('registry-toggle').textContent = mode === 'catalog' ? '在 registry 里搜…' : '回到社区目录'
+  el('clientOnly').style.display = mode === 'catalog' ? 'none' : ''
+  if (mode === 'catalog') void loadCatalog(catalog.page)
+  else void search(true)
+})
+el('clientOnly').addEventListener('change', () => { if (mode === 'registry') void search(true) })
     el('close').addEventListener('click', () => api.close())
     el('copy').addEventListener('click', async () => {
       await api.copyDiagnostics(lastDiagnostics)
@@ -483,8 +638,10 @@ el('clientOnly').addEventListener('change', () => void search(true))
       const where = await api.profileDir().catch(() => '')
       el('profile').textContent = where || '(未知)'
       await refreshInstalled().catch(() => {})
-      if (view === 'installed') switchView('installed')
-      else await search(true)
+      if (view === 'installed') { switchView('installed'); return }
+      // Catalog first: this is the whole point — the window opens with a list to look at.
+      el('clientOnly').style.display = 'none'
+      await loadCatalog(0)
     })()
   </script>
 </body>

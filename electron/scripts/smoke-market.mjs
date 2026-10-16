@@ -58,7 +58,7 @@ const stop = () => {
 }
 
 const deadline = Date.now() + timeoutSeconds * 1000
-const wanted = ['market window ready', 'market page loaded', 'market runtime ok']
+const wanted = ['market window ready', 'market page loaded', 'market runtime ok', 'market catalog ok']
 let seen = []
 while (Date.now() < deadline) {
   await new Promise(resolvePromise => setTimeout(resolvePromise, 1000))
@@ -71,6 +71,10 @@ while (Date.now() < deadline) {
   if (/market runtime failed/u.test(text)) {
     stop()
     fail(`市场运行时不能启动（打包态安装会 ENOENT）：${text.split(/\r?\n/u).find(line => line.includes('market runtime failed')) ?? ''}`)
+  }
+  if (/market catalog failed/u.test(text)) {
+    stop()
+    fail(`社区目录加载失败（首屏会没有列表）：${text.split(/\r?\n/u).find(line => line.includes('market catalog failed')) ?? ''}`)
   }
   seen = wanted.filter(marker => text.includes(marker))
   if (seen.length === wanted.length) break

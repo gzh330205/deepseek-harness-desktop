@@ -23,6 +23,8 @@ export const MARKET_IPC = {
   log: 'market:log',
   /** Contradictions this profile can be proven to have. */
   diagnose: 'market:diagnose',
+  /** Browse the community catalog (category, sort, local search). */
+  browse: 'market:browse',
   /** Main → renderer: switch the visible view (the 插件 menu opens the installed one). */
   view: 'market:view',
   /** The profile directory the actions run against (shown in the header). */

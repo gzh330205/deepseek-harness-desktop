@@ -17,6 +17,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { packumentUrl, searchMarketPackages, type MarketSearchResult } from './market-catalog.ts'
+import { fetchCatalog, filterByCategory, searchCatalog, sortCatalog, type Catalog, type CatalogSort } from './market-catalog-source.ts'
 import type { MarketSearchRequest } from './market-ipc.ts'
 import { appendMarketLog, marketLogPath, readMarketLog, type MarketLogEntry } from './market-log.ts'
 import { diagnoseConflicts, readConflictWorld, type ConflictFinding, type StoreFacts } from './market-conflict.ts'
@@ -174,6 +175,15 @@ export interface MarketServiceOptions {
  */
 export class MarketService {
   readonly #options: MarketServiceOptions
+  /**
+   * The catalog, kept in memory for a short while.
+   *
+   * The document is ~5 MB and the upstream market refetches it on every open; we refetch per open too,
+   * but a user who switches category or pages does not pay for it again. Deliberately not persisted:
+   * per the upstream market's own reasoning, a stale catalog answers "this plugin does not exist" for
+   * something published this morning, and a wrong answer is worse than a slow one.
+   */
+  #catalogCache: { readonly at: number; readonly catalog: Catalog } | undefined
 
   constructor(options: MarketServiceOptions) {
     this.#options = options
@@ -202,6 +212,55 @@ export class MarketService {
     })
   }
 
+  /**
+   * The browsable catalog: one request, then everything is local.
+   *
+   * A category chip click, a sort change and typing in the box all go through here and cost nothing
+   * beyond this process — which is what makes "the market opens with a list" possible at all.
+   */
+  async browse(request: {
+    readonly query?: string
+    readonly category?: string
+    readonly sort?: CatalogSort
+    readonly page?: number
+    readonly pageSize?: number
+    /** Ignore a cached copy and refetch (the window's "reload" button). */
+    readonly refresh?: boolean
+  } = {}): Promise<{
+    readonly categories: readonly string[]
+    readonly updated?: string
+    readonly total: number
+    readonly page: number
+    readonly pageSize: number
+    readonly entries: readonly unknown[]
+    readonly installed: readonly string[]
+  }> {
+    const getJson = this.#options.fetchJsonImpl ?? (url => fetchJson(url))
+    const catalog = await this.#catalog(getJson, request.refresh === true)
+    const filtered = searchCatalog(filterByCategory(catalog.entries, request.category), request.query ?? '')
+    const sorted = sortCatalog(filtered, request.sort ?? 'stars')
+    const pageSize = Math.min(120, Math.max(1, Math.trunc(request.pageSize ?? 40)))
+    const page = Math.max(0, Math.trunc(request.page ?? 0))
+    const start = page * pageSize
+    return {
+      categories: catalog.categories,
+      ...(catalog.updated === undefined ? {} : { updated: catalog.updated }),
+      total: sorted.length,
+      page,
+      pageSize,
+      entries: sorted.slice(start, start + pageSize),
+      installed: this.installed().map(entry => entry.name),
+    }
+  }
+
+  /** Fetch the catalog, reusing a recent copy within the window. */
+  async #catalog(getJson: JsonFetcher, refresh = false): Promise<Catalog> {
+    const cached = this.#catalogCache
+    if (!refresh && cached !== undefined && Date.now() - cached.at < 10 * 60 * 1000) return cached.catalog
+    const catalog = await fetchCatalog(getJson)
+    this.#catalogCache = { at: Date.now(), catalog }
+    return catalog
+  }
   /** Install an exact version. */
   install(name: string, version: string): Promise<MarketActionResult> {
     return this.#act('install', name, version)
