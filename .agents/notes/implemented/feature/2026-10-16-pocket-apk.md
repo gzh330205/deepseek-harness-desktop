@@ -53,9 +53,14 @@ Status: implemented
 - 代价：明文 HTTP 是必需的（局域网网关就是 http），因此 `usesCleartextTraffic="true"` 并附了说明；公网通道
   （P3）会是 https。
 - 已知边界：**只在同一 WiFi 下可用**——公网隧道是 P3；Android 8.0+。
-- 未验证项（如实记录）：**没有在真机或模拟器上安装运行过**。本机 `adb devices` 为空，SDK 里也没有系统镜像。
-  已验证的是：能构建、能装（APK 结构与签名合法）、逻辑有 JVM 单测。真机冒烟需要一台手机
-  （`adb install -r app-release.apk`）或下载系统镜像起模拟器。
+- **WebView 版本是硬门槛**：DSH 的前端需要 `Promise.withResolvers`（Chrome 119+）与 `AbortSignal.any`
+  （Chrome 116+）。在 WebView **113** 的 AOSP 模拟器镜像上实测：页面能加载、插件开始执行，但客户端在第一行
+  就抛错，界面**全白且没有任何提示**。所以 App 启动时做一次**运行时能力检测**（看 API 在不在，而不是比版本
+  号），不通过就禁用连接，并给出「去应用商店更新 WebView」的指引与按钮。装有 Play 商店的真机通常会自己更新
+  WebView；更新不了的设备现在得到的是解释，而不是白屏。
+- 未验证项（如实记录）：**只在 AOSP x86_64 模拟器上装过**（`adb install` 成功、启动无崩溃、经网关登录成功、
+  网关日志出现 `登录成功，来源 10.1.6.35`）；因为该镜像 WebView 只有 113，**尚未在设备上看到 DSH 界面渲染
+  成功**。装有较新 WebView 的真机（或 google_apis 镜像）上这一步待补验。
 
 ### 构建期踩到的三件事（都不在代码里，值得留档）
 
@@ -73,6 +78,10 @@ Status: implemented
   （真实 socket：200/401/403/连不上各自的语义、登录 POST 的表单编码与 `Set-Cookie` 提取、303 没有 cookie
   不算会话、401/429 文案不同）。
 - **构建**：`:app:assembleDebug` 与 `:app:assembleRelease` 均成功；发布包 3.5 MiB。
+- **模拟器实机验证**（Android 14 AOSP x86_64，WebView 113）：`adb install -r` 成功；启动无 FATAL；
+  填入 `10.1.6.35:41735` + 密码后**经网关登录成功**（网关日志 `pocket: 登录成功，来源 10.1.6.35`），
+  顶栏显示当前地址；随后因 WebView 过旧白屏 → 加上能力检测后重装，同一条路径现在显示明确说明并禁用连接按钮
+  （截图见提交说明）。
 - **产物验证**（`aapt2 dump badging` + `apksigner verify --print-certs`）：
   `package=com.dshdesktop.pocket`、`versionCode=1`、`versionName=1.0.0`、`sdkVersion=26`、
   `targetSdkVersion=34`、`launchable-activity=com.dshdesktop.pocket.MainActivity`、标签「DSH 口袋」、

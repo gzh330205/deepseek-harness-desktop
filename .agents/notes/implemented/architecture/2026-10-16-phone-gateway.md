@@ -86,6 +86,16 @@ Status: implemented
 把 `Host: evil.example` 的请求发给了代理，那个空 502 是代理答的。现在 smoke 用**原始 socket 手写请求**，
 既摆脱环境代理，也更贴近「手机/攻击者到底往线路上放了什么」。
 
+### 流式通道的真实路径（踩过的坑）
+
+DSH 的 WebSocket 通道是 **`/api/remote.mux`**（`@deepseek-ai/dsh-api-gateway` 里的 `REMOTE_STREAM_MUX_PATH`；
+它的 web 服务器按**精确路径**注册升级路由）。路径不对时 DSH **直接断连**而不是回 404，客户端侧是
+`socket hang up`、网关只能答 502——这一条最费时间（我先用了一个想当然的路径，白查一轮）。因此升级失败现在
+会写进 `shell.log`（`上游 WebSocket 失败：…` 与 `上游拒绝了 WebSocket 升级：HTTP …`）：手机端只会一直显示
+「连接丢失」，日志是唯一说得出原因的地方。
+
+实测：带会话 cookie 请求 `/api/remote.mux`，经网关返回 `101 Switching Protocols`（四种 Origin 组合均通过）。
+
 ## Evidence
 
 - 单元测试 50 条：认证与限流 13、地址与 Host 判定 8、代理（真实 HTTP + WebSocket）14、状态持久化 4、

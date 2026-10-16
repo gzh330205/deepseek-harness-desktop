@@ -423,11 +423,19 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
       upstreamSocket.on('close', done)
       upstreamSocket.on('error', done)
     })
-    upstream.on('error', () => { if (!upgraded) refuse(502, 'Bad Gateway') })
+    upstream.on('error', error => {
+      if (upgraded) return
+      // Logged, not just answered: a broken streaming channel is invisible from the phone (the page
+      // simply keeps saying "connection lost") and this line is the only place that says why.
+      stats.upstreamErrors += 1
+      options.log(`pocket: 上游 WebSocket 失败：${error.message}`)
+      refuse(502, 'Bad Gateway')
+    })
     // A refusal (expired DSH session, unknown path) arrives as a plain response: relay its status
     // instead of leaving the phone waiting for a handshake that will never come.
     upstream.on('response', upstreamResponse => {
       if (upgraded) return
+      options.log(`pocket: 上游拒绝了 WebSocket 升级：HTTP ${String(upstreamResponse.statusCode ?? 0)}`)
       refuse(upstreamResponse.statusCode ?? 502, 'Upgrade Refused')
     })
     upstream.end()
