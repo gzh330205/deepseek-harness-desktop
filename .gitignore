@@ -18,3 +18,6 @@ electron/release-debug/
 # Electron 壳的 minisign 私钥（唯一副本另存于 %USERPROFILE%\.dsh-desktop-keys）
 electron/keys/*.key
 !electron/keys/*.key.pub
+
+# 上游 dshmarket 源码/目录的临时参考副本（只用于核对分类与筛选做法，不入库）
+.tmp-dshmarket/
