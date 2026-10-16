@@ -40,6 +40,18 @@ export function titleBarPalette(useDarkColors: boolean): { background: string; s
   return useDarkColors ? TITLEBAR_THEME.dark : TITLEBAR_THEME.light
 }
 /** Menus reachable from the title bar's buttons. */
+/**
+ * Documents the shell itself owns, as path suffixes.
+ *
+ * Two places must agree on this list, and they drifted apart exactly once: the preload decides which
+ * pages get the shell bridge, and the main process decides which pages its IPC handlers accept. When
+ * the phone-access page was added, only the main process learned about it — so every button in that
+ * window was dead (the page even said so: "preload 未加载"), and nothing in the test suite noticed
+ * because the static guards only read the page's own markup. Hence one list, and a smoke check that
+ * asserts the bridge exists.
+ */
+export const SHELL_PAGE_DOCUMENTS = ['/settings/index.html', '/pocket/index.html'] as const
+
 export type ShellMenuName = 'app' | 'plugins' | 'pocket'
 /**
  * How long the port gate keeps waiting for the port to come free, and how often it retries.

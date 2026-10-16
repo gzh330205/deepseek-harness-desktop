@@ -56,3 +56,17 @@ test('only the shell menus are offered, and every button maps to one', () => {
     assert.ok(allowed.includes(button), `标题栏有 ${button} 按钮，但 ShellMenuName 里没有它`)
   }
 })
+
+test('the preload bridge and the IPC guard read one page list', () => {
+  // Regression with a real cost: the phone-access window was added to the main-process guard but not to
+  // the preload's, so its bridge never appeared and *every* control in it was dead (the page said
+  // "preload 未加载" and the static page guards could not see it). One list, both readers.
+  const preload = readFileSync(fileURLToPath(new URL('./preload.ts', import.meta.url)), 'utf8')
+  const window_ = readFileSync(fileURLToPath(new URL('./settings-window.ts', import.meta.url)), 'utf8')
+  assert.match(preload, /SHELL_PAGE_DOCUMENTS/u)
+  assert.match(window_, /SHELL_PAGE_DOCUMENTS/u)
+  assert.doesNotMatch(preload, /endsWith\('\/settings\/index\.html'\)/u, '不能写死单个页面')
+  assert.doesNotMatch(window_, /includes\('\/settings\/'\)/u, '不能写死单个页面')
+  // Both pages the shell opens must be listed, or the next one repeats the bug.
+  assert.match(constantsSource, /SHELL_PAGE_DOCUMENTS = \['\/settings\/index\.html', '\/pocket\/index\.html'\]/u)
+})

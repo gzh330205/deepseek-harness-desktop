@@ -15,6 +15,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { MARKET_IPC } from './market-ipc.ts'
 import {
   IPC,
+  SHELL_PAGE_DOCUMENTS,
   type ShellMenuName,
   PANEL_EMIT_EVENTS,
   PANEL_LISTEN_EVENTS,
@@ -60,11 +61,13 @@ if (isTitleBarDocument()) {
  * The shell's own settings window: read a snapshot, submit values, restart. Same discipline
  * as the other shell APIs — one frozen object, no ipcRenderer.
  */
-function isSettingsDocument(): boolean {
-  return location.protocol === 'file:' && location.pathname.replace(/\\/gu, '/').endsWith('/settings/index.html')
+function isShellPageDocument(): boolean {
+  if (location.protocol !== 'file:') return false
+  const path = location.pathname.replace(/\\/gu, '/')
+  return SHELL_PAGE_DOCUMENTS.some(document => path.endsWith(document))
 }
 
-if (isSettingsDocument()) {
+if (isShellPageDocument()) {
   contextBridge.exposeInMainWorld('__DSH_SETTINGS__', Object.freeze({
     get: () => ipcRenderer.invoke(IPC.settingsGet) as Promise<unknown>,
     save: (input: unknown) => ipcRenderer.invoke(IPC.settingsSave, input) as Promise<{ ok: boolean; reason?: string; changed?: string[]; restartRequired?: boolean }>,
