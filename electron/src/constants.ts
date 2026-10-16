@@ -20,7 +20,7 @@ export const TITLEBAR_HEIGHT = 36
 
 /** The shell's own settings window. Fixed size: it is a form, not a workspace. */
 export const SETTINGS_WINDOW_WIDTH = 560
-export const SETTINGS_WINDOW_HEIGHT = 660
+export const SETTINGS_WINDOW_HEIGHT = 780
 
 /**
  * Window chrome colours, picked from the OS theme.
@@ -255,6 +255,8 @@ export const IPC = {
   settingsSave: 'shell:settings-save',
   settingsClose: 'shell:settings-close',
   settingsRestart: 'shell:settings-restart',
+  /** Settings window → main: act on phone access (rotate the password, pick an address). */
+  pocketAction: 'shell:pocket-action',
   launcherStatus: 'dsh-desktop:launcher-status',
   launcherSubscribe: 'dsh-desktop:launcher-subscribe',
   /** Launcher page → main: leave the status page and open the DSH UI. */

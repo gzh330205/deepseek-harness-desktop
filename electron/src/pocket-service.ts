@@ -20,14 +20,14 @@ import { createPocketRateLimiter, createPocketSessions, generatePocketPassword, 
 import { createPocketGateway, type PocketGateway, type PocketGatewayStats } from './pocket-gateway.ts'
 import { listLanCandidates, type LanCandidate } from './pocket-net.ts'
 import { POCKET_STATE_FILENAME, readPocketState, writePocketState, type PocketState } from './pocket-state.ts'
+import { DEFAULT_POCKET_PORT, type PocketSettings } from './settings-shape.ts'
 
-/** Port the phone gateway listens on; separate from DSH's own 41729. */
-export const DEFAULT_POCKET_PORT = 41730
+/** Phone access preferences, shared with the settings document's shape. */
+export type PocketPreferences = PocketSettings
 
-export interface PocketPreferences {
-  readonly enabled: boolean
-  readonly port: number
-}
+// Re-exported: the default port is part of this module's contract for callers that only build the
+// service (and for the settings page, which shows it as the placeholder).
+export { DEFAULT_POCKET_PORT }
 
 export interface PocketStatus {
   /** What the user asked for. */
@@ -54,8 +54,13 @@ export type PocketPasswordResult =
 export interface PocketServiceOptions {
   /** Directory holding the shell's own state (`bridgeDir()`). */
   readonly bridgeDir: string
-  /** DSH's loopback address; never anything else. */
-  readonly upstream: { readonly host: string; readonly port: number }
+  /**
+   * DSH's loopback address; never anything else.
+   *
+   * A function because the port is only known once the host has started — and the settings window
+   * can create this service before that happens.
+   */
+  readonly upstream: () => { readonly host: string; readonly port: number }
   /** The `name=value` DSH cookie the shell keeps for itself, read fresh per request. */
   readonly dshCookie: () => string | undefined
   readonly log: (line: string) => void
@@ -130,7 +135,7 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
       return
     }
     gateway = await createPocketGateway({
-      upstream: options.upstream,
+      upstream: options.upstream(),
       listenAddress: wanted,
       port: preferences.port,
       // Every address of this machine is allowed, not just the bound one: a laptop that switches

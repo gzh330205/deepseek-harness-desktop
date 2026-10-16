@@ -142,3 +142,48 @@ test('an empty submission never invents the off state', () => {
   const browser = result.document.browser as Record<string, unknown>
   assert.notEqual(browser.enabled, false)
 })
+
+test('phone access is off unless the page turns it on', () => {
+  const merged = mergeSettingsInput({}, { pocketEnabled: true, pocketPort: 41730 }, 41729)
+  assert.equal(merged.ok, true)
+  if (!merged.ok) return
+  assert.deepEqual(merged.document.pocket, { enabled: true, port: 41730 })
+  // The service port is materialised first: a document with no explicit port always gains one.
+  assert.deepEqual(merged.changed, ['service.port', 'pocket.port', 'pocket.enabled'])
+
+  const off = mergeSettingsInput({ pocket: { enabled: true, port: 41730 } }, { pocketEnabled: false }, 41729)
+  assert.equal(off.ok, true)
+  if (!off.ok) return
+  assert.equal((off.document.pocket as { enabled: boolean }).enabled, false)
+  // The port survives being switched off, so turning it back on restores what was typed.
+  assert.equal((off.document.pocket as { port: number }).port, 41730)
+})
+
+test('phone access cannot take the port DSH itself is on', () => {
+  const merged = mergeSettingsInput({}, { servicePort: 41730, pocketPort: 41730 }, 41729)
+  assert.equal(merged.ok, false)
+  assert.match(merged.ok === false ? merged.reason : '', /不能与 DSH 服务端口相同/u)
+
+  const outOfRange = mergeSettingsInput({}, { pocketPort: 80 }, 41729)
+  assert.equal(outOfRange.ok, false)
+  assert.match(outOfRange.ok === false ? outOfRange.reason : '', /1024/u)
+})
+
+test('a document that never had phone access does not gain an empty section', () => {
+  const merged = mergeSettingsInput({ revision: 7 }, { closeBehavior: 'exit' }, 41729)
+  assert.equal(merged.ok, true)
+  if (!merged.ok) return
+  assert.equal('pocket' in merged.document, false)
+  assert.equal(merged.document.revision, 7, '未知字段必须原样保留')
+})
+
+test('an unchanged phone-access form reports no change', () => {
+  const merged = mergeSettingsInput(
+    { service: { port: 41729 }, pocket: { enabled: true, port: 41730 } },
+    { pocketEnabled: true, pocketPort: 41730 },
+    41729,
+  )
+  assert.equal(merged.ok, true)
+  if (!merged.ok) return
+  assert.deepEqual(merged.changed, [])
+})

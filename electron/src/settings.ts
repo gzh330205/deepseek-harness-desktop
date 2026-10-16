@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 import { SHELL_SETTINGS_FILENAME } from './constants.ts'
 import { clampAutoReleaseSeconds, DEFAULT_AUTO_RELEASE_SECONDS } from './browser-control.ts'
-import { withServicePort } from './settings-shape.ts'
+import { DEFAULT_POCKET_SETTINGS, withServicePort, type PocketSettings } from './settings-shape.ts'
 import { bridgeDir } from './paths.ts'
 import { join } from 'node:path'
 
@@ -53,6 +53,8 @@ export interface ShellSettings {
   readonly proxy: ManagedProxy
   readonly updates: UpdatePreferences
   readonly browser: BrowserPreferences
+  /** Phone access over the local network; off until the user turns it on. */
+  readonly pocket: PocketSettings
 }
 
 export const EMPTY_PROXY: ManagedProxy = { enabled: false, httpProxy: '', httpsProxy: '', noProxy: '' }
@@ -79,6 +81,7 @@ export function readShellSettings(): ShellSettings {
     proxy: EMPTY_PROXY,
     updates: DEFAULT_UPDATE_PREFERENCES,
     browser: DEFAULT_BROWSER_PREFERENCES,
+    pocket: DEFAULT_POCKET_SETTINGS,
   }
   let raw: unknown
   try {
@@ -94,6 +97,7 @@ export function readShellSettings(): ShellSettings {
   const proxyRecord = typeof record.proxy === 'object' && record.proxy !== null ? record.proxy as Record<string, unknown> : {}
   const updatesRecord = typeof record.updates === 'object' && record.updates !== null ? record.updates as Record<string, unknown> : {}
   const browserRecord = typeof record.browser === 'object' && record.browser !== null ? record.browser as Record<string, unknown> : {}
+  const pocketRecord = typeof record.pocket === 'object' && record.pocket !== null ? record.pocket as Record<string, unknown> : {}
   const port = typeof service.port === 'number' ? service.port : undefined
   // `tray` was the pre-P2 spelling in this shell; the panel plugin writes
   // `minimizeToTray` and both must keep working.
@@ -119,6 +123,10 @@ export function readShellSettings(): ShellSettings {
         ? browserRecord.agentTools
         : 'auto',
       autoReleaseSeconds: clampBrowserAutoRelease(browserRecord.autoReleaseSeconds),
+    },
+    pocket: {
+      enabled: pocketRecord.enabled === true,
+      port: typeof pocketRecord.port === 'number' ? pocketRecord.port : DEFAULT_POCKET_SETTINGS.port,
     },
   }
 }

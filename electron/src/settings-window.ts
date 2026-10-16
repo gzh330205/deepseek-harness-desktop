@@ -21,7 +21,21 @@ import {
   SETTINGS_WINDOW_WIDTH,
   titleBarPalette,
 } from './constants.ts'
+import type { PocketStatus } from './pocket-service.ts'
 import type { SettingsInput } from './settings-shape.ts'
+
+/** Phone access, as the settings page renders it: live status plus the code to scan. */
+export interface PocketSnapshot extends PocketStatus {
+  /** PNG data URL of the QR code for {@link PocketStatus.url}, when a listener is up. */
+  readonly qr?: string
+}
+
+/** What the settings page may ask phone access to do. */
+export type PocketAction =
+  | { readonly kind: 'refresh' }
+  | { readonly kind: 'rotate' }
+  | { readonly kind: 'setPassword'; readonly value: string }
+  | { readonly kind: 'select'; readonly address: string }
 
 /** What the settings page renders. */
 export interface SettingsSnapshot {
@@ -35,7 +49,11 @@ export interface SettingsSnapshot {
     readonly checkDesktopOnStart: boolean
     readonly checkDshOnStart: boolean
     readonly browserEnabled: boolean
+    readonly pocketEnabled: boolean
+    readonly pocketPort: number
   }
+  /** Live phone-access state; `values` above is what the document says, this is what is running. */
+  readonly pocket: PocketSnapshot
   readonly facts: {
     readonly desktopVersion: string
     readonly dshVersion: string | null
@@ -61,6 +79,7 @@ export interface SettingsWindowOptions {
   readonly snapshot: () => SettingsSnapshot
   readonly save: (input: SettingsInput) => SettingsSaveResult
   readonly restart: () => void
+  readonly pocket: (action: PocketAction) => PocketSnapshot | Promise<PocketSnapshot>
   readonly isShellDocument: (url: string) => boolean
 }
 
@@ -76,7 +95,7 @@ export class SettingsWindow {
       height: SETTINGS_WINDOW_HEIGHT,
       minWidth: SETTINGS_WINDOW_WIDTH,
       minHeight: SETTINGS_WINDOW_HEIGHT,
-      resizable: false,
+      resizable: true,
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
@@ -144,6 +163,24 @@ export class SettingsWindow {
       }
       this.close()
       return true
+    })
+
+    ipcMain.handle(IPC.pocketAction, async (event, action: unknown) => {
+      if (!owned(event.senderFrame?.url ?? '')) {
+        throw new Error('dsh desktop: rejected settings IPC from an unowned renderer')
+      }
+      if (typeof action !== 'object' || action === null) return this.options.pocket({ kind: 'refresh' })
+      const request = action as Record<string, unknown>
+      switch (request.kind) {
+        case 'rotate':
+          return this.options.pocket({ kind: 'rotate' })
+        case 'setPassword':
+          return this.options.pocket({ kind: 'setPassword', value: typeof request.value === 'string' ? request.value : '' })
+        case 'select':
+          return this.options.pocket({ kind: 'select', address: typeof request.address === 'string' ? request.address : '' })
+        default:
+          return this.options.pocket({ kind: 'refresh' })
+      }
     })
 
     ipcMain.handle(IPC.settingsRestart, (event) => {

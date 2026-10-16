@@ -42,7 +42,26 @@ export interface SettingsInput {
   readonly checkDshOnStart?: boolean
   /** Whether the shell offers its self-hosted sidebar browser (and the agent's browser tools). */
   readonly browserEnabled?: boolean
+  /** Phone access over the local network: off until the user turns it on. */
+  readonly pocketEnabled?: boolean
+  readonly pocketPort?: number
 }
+
+/** Phone access settings, as stored in `shell-settings.json`. */
+export interface PocketSettings {
+  readonly enabled: boolean
+  readonly port: number
+}
+
+/**
+ * Port the phone gateway listens on.
+ *
+ * Deliberately not 41729: that is DSH's own port, and the gateway is a second listener in front of
+ * it. Both being configurable is exactly why the collision is validated below instead of trusted.
+ */
+export const DEFAULT_POCKET_PORT = 41730
+
+export const DEFAULT_POCKET_SETTINGS: PocketSettings = { enabled: false, port: DEFAULT_POCKET_PORT }
 
 export type MergeSettingsResult =
   | { readonly ok: true; readonly document: Record<string, unknown>; readonly changed: readonly string[] }
@@ -139,5 +158,31 @@ export function mergeSettingsInput(raw: unknown, input: SettingsInput, defaultPo
     changed.push('browser.enabled')
   }
 
-  return { ok: true, document: { ...document, service, proxy, updates, browser }, changed }
+  const pocket = asRecord(document.pocket)
+  if (input.pocketPort !== undefined) {
+    const port = input.pocketPort
+    if (!Number.isInteger(port) || port < MIN_SETTINGS_PORT || port > MAX_SETTINGS_PORT) {
+      return { ok: false, reason: `手机访问端口必须是 ${String(MIN_SETTINGS_PORT)}–${String(MAX_SETTINGS_PORT)} 之间的整数` }
+    }
+    // Two listeners cannot share a port, and the failure would otherwise surface as a bind error
+    // buried in the log while the settings page looked fine.
+    if (port === nextPort) return { ok: false, reason: '手机访问端口不能与 DSH 服务端口相同' }
+    if (readNumber(pocket, 'port') !== port) {
+      pocket.port = port
+      changed.push('pocket.port')
+    }
+  }
+  if (input.pocketEnabled !== undefined && readBoolean(pocket, 'enabled', false) !== input.pocketEnabled) {
+    pocket.enabled = input.pocketEnabled
+    changed.push('pocket.enabled')
+  }
+
+  const sections = { service, proxy, updates, browser }
+  return {
+    ok: true,
+    // An empty section is left out entirely: a file that never had phone access should not gain a
+    // stray `"pocket": {}` just because the page submitted the form.
+    document: Object.keys(pocket).length === 0 ? { ...document, ...sections } : { ...document, ...sections, pocket },
+    changed,
+  }
 }

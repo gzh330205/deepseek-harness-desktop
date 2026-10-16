@@ -37,6 +37,7 @@ import {
   SKIP_LEGACY_CLEANUP_ENV,
   SMOKE_ENV,
   SHELL_LOG_FILENAME,
+  LOOPBACK,
   SHELL_SETTINGS_FILENAME,
   TITLEBAR_HEIGHT,
   SHELL_LOG_MAX_BYTES,
@@ -96,7 +97,9 @@ import { installProxyHandler, registerSchemePrivileges } from './proxy.ts'
 import { describeRuntimeFailure, verifyRuntime } from './runtime-tree.ts'
 import { ensureServicePort, readShellSettings, type ShellSettings } from './settings.ts'
 import { mergeSettingsInput, type SettingsInput } from './settings-shape.ts'
-import { SettingsWindow, type SettingsSnapshot, type SettingsSaveResult } from './settings-window.ts'
+import { SettingsWindow, type PocketAction, type PocketSnapshot, type SettingsSnapshot, type SettingsSaveResult } from './settings-window.ts'
+import { createPocketService, type PocketService } from './pocket-service.ts'
+import { pocketQrDataUrl } from './pocket-qr.ts'
 import { createMarketWindow, installForVerification, installGithubForVerification } from './market-open.ts'
 import { marketChildEnvironment, resolveMarketRuntime } from './market-install.ts'
 import { titleBarPalette } from './constants.ts'
@@ -149,6 +152,7 @@ let stopping = false
 let pendingInstaller: string | undefined
 let updateWindow: UpdateWindow | undefined
 let settingsWindow: SettingsWindow | undefined
+let pocketService: PocketService | undefined
 let marketWindow: ReturnType<typeof createMarketWindow> | undefined
 let updateController: UpdateController | undefined
 let updateTimer: NodeJS.Timeout | undefined
@@ -1183,6 +1187,62 @@ function showNotification(payload: unknown): void {
  * itself is silent and opens the window only when a newer version exists.
  */
 /** The snapshot the settings page renders: current values plus read-only facts. */
+/**
+ * The phone gateway service.
+ *
+ * Created on first use rather than at boot: the settings page must be able to show the password and
+ * the QR code even before DSH is up, and creating the service binds nothing — only `apply()` starts
+ * a listener. The upstream port is read through a function for the same reason: it is only settled
+ * once the host has started.
+ */
+function pocket(): PocketService {
+  pocketService ??= createPocketService({
+    bridgeDir: bridgeDir(),
+    upstream: () => ({ host: LOOPBACK, port: activePort === 0 ? shellSettings.servicePort ?? channelSettings.defaultPort : activePort }),
+    // Read fresh per request: a restarted DSH hands out a new cookie, and the gateway must follow
+    // without anyone re-enabling the feature.
+    dshCookie: () => cookieHeader,
+    log: appendShellLog,
+  })
+  return pocketService
+}
+
+/** Status for the settings page, with the code to scan when a listener is up. */
+function pocketSnapshot(): PocketSnapshot {
+  const status = pocket().status()
+  const url = status.url
+  if (url === undefined) return status
+  let qr: string | undefined
+  try {
+    qr = pocketQrDataUrl(url)
+  } catch (error) {
+    // A missing QR is a nuisance; a thrown renderer call is a dead settings window.
+    pushLog(`手机访问二维码生成失败：${error instanceof Error ? error.message : String(error)}`)
+  }
+  return qr === undefined ? status : { ...status, qr }
+}
+
+/** Act on phone access from the settings page; every action answers with the fresh status. */
+async function handlePocketAction(action: PocketAction): Promise<PocketSnapshot> {
+  const service = pocket()
+  switch (action.kind) {
+    case 'rotate':
+      service.rotatePassword()
+      break
+    case 'setPassword': {
+      const result = service.setPassword(action.value)
+      if (!result.ok) return { ...pocketSnapshot(), error: result.reason }
+      break
+    }
+    case 'select':
+      await service.select(action.address)
+      break
+    default:
+      break
+  }
+  return pocketSnapshot()
+}
+
 function settingsSnapshot(): SettingsSnapshot {
   const path = join(bridgeDir(), SHELL_SETTINGS_FILENAME)
   return {
@@ -1196,7 +1256,10 @@ function settingsSnapshot(): SettingsSnapshot {
       checkDesktopOnStart: shellSettings.updates.checkDesktopOnStart,
       checkDshOnStart: shellSettings.updates.checkDshOnStart,
       browserEnabled: shellSettings.browser.enabled,
+      pocketEnabled: shellSettings.pocket.enabled,
+      pocketPort: shellSettings.pocket.port,
     },
+    pocket: pocketSnapshot(),
     facts: {
       desktopVersion: app.getVersion(),
       dshVersion: activeDshVersion,
@@ -1235,6 +1298,14 @@ function saveSettings(input: SettingsInput): SettingsSaveResult {
   renameSync(temporary, path)
   shellSettings = readShellSettings()
   pushLog(`桌面端设置已保存：${merged.changed.join('、')}`)
+  // Phone access is a listener the shell owns, so it follows the save immediately instead of
+  // waiting for a restart. It is safe to call on every save: `apply()` only restarts when the port
+  // actually changed.
+  if (merged.changed.some((key) => key.startsWith('pocket.'))) {
+    void pocket().apply(shellSettings.pocket).catch((error: unknown) => {
+      pushLog(`手机访问应用设置失败：${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
   const restartRequired = merged.changed.some((key) => key.startsWith('service.') || key.startsWith('proxy.'))
   return { ok: true, changed: merged.changed, restartRequired }
 }
@@ -1251,6 +1322,7 @@ function installSettingsWindow(): void {
     snapshot: settingsSnapshot,
     save: saveSettings,
     restart: () => { restartShell('设置页请求保存并重启') },
+    pocket: handlePocketAction,
     isShellDocument: isLauncherSender,
   })
   window.install()
@@ -1957,6 +2029,15 @@ async function boot(): Promise<void> {
   })
 
   cookieHeader = await authenticate(ready.authUrl, ready.port)
+
+  // Phone access starts here and not earlier: a gateway without the cookie would answer the phone
+  // with DSH's own authentication page instead of ours, which looks like a broken password.
+  void pocket().apply(shellSettings.pocket).then(status => {
+    if (status.running) pushLog(`手机访问已开启：${status.url ?? ''}（DSH 仍只监听 ${LOOPBACK}:${String(port)}）`)
+    else if (status.error !== undefined) pushLog(`手机访问未开启：${status.error}`)
+  }).catch((error: unknown) => {
+    pushLog(`手机访问启动失败：${error instanceof Error ? error.message : String(error)}`)
+  })
   if (cookieHeader === undefined && loadMode !== 'token') {
     pushLog('回退：无法换取 cookie，改用一次性认证地址导航（与 Tauri 版行为一致）')
   }
@@ -2192,6 +2273,10 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (updateTimer !== undefined) clearInterval(updateTimer)
   void (async () => {
+    // The phone listener goes first: it is the only surface reachable from outside this machine,
+    // and it must not outlive the guard in front of it by even a moment.
+    await pocketService?.dispose().catch(() => {})
+    pocketService = undefined
     // Stop the host first: it holds files the installer may need to replace.
     await host?.stop().catch(() => {})
     await agentBridge?.close().catch(() => {})

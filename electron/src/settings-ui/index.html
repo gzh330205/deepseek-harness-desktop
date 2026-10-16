@@ -52,6 +52,21 @@
     button:hover { border-color: var(--accent); }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button[disabled] { opacity: .5; cursor: default; }
+    button.small { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+    select {
+      font: inherit; padding: 5px 6px; color: var(--fg); background: var(--field);
+      border: 1px solid var(--line); border-radius: 6px; max-width: 100%;
+    }
+    code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; word-break: break-all; }
+    .pocket { display: grid; grid-template-columns: 152px 1fr; gap: 14px; align-items: start; margin-top: 12px; }
+    .pocket[hidden] { display: none; }
+    #pocketQr { width: 148px; height: 148px; padding: 4px; background: #fff; border-radius: 8px;
+      image-rendering: pixelated; }
+    .pocket p { margin: 0 0 8px; }
+    .pocket .line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .pocket .k { color: var(--muted); font-size: 12px; min-width: 56px; }
+    .pocket .state { font-size: 12px; color: var(--muted); }
+    .pocket .state.error { color: var(--danger); }
   </style>
 </head>
 <body>
@@ -98,6 +113,35 @@
   </section>
 
   <section>
+    <h2>手机访问（局域网）</h2>
+    <div class="row">
+      <label>允许手机访问</label>
+      <div class="checks"><label><input type="checkbox" id="pocketEnabled" data-testid="pocket-enabled" /> 同一 WiFi 下的手机可以打开这台电脑上的 DSH</label></div>
+    </div>
+    <div class="row">
+      <label for="pocketPort">访问端口</label>
+      <input id="pocketPort" type="number" min="1024" max="65535" step="1" data-testid="pocket-port" />
+    </div>
+    <div class="pocket" id="pocketBox" hidden>
+      <img id="pocketQr" alt="手机扫码打开" />
+      <div>
+        <div class="line"><span class="k">地址</span><code id="pocketUrl" data-testid="pocket-url">—</code></div>
+        <div class="line">
+          <span class="k">密码</span><code id="pocketPassword" data-testid="pocket-password">—</code>
+          <button type="button" class="small" id="pocketRotate" data-testid="pocket-rotate">刷新</button>
+          <button type="button" class="small" id="pocketCustom" data-testid="pocket-custom">自定义</button>
+        </div>
+        <div class="line">
+          <span class="k">本机地址</span>
+          <select id="pocketAddress" data-testid="pocket-address"></select>
+        </div>
+        <p class="state" id="pocketState" data-testid="pocket-state"></p>
+      </div>
+    </div>
+    <p class="hint" id="pocketHint"></p>
+  </section>
+
+  <section>
     <h2>更新检查</h2>
     <div class="checks">
       <label><input type="checkbox" id="checkDesktopOnStart" data-testid="check-desktop" /> 启动时检查桌面端更新</label>
@@ -125,6 +169,15 @@
     const portHintEl = document.getElementById('portHint')
     const proxyEnabledEl = document.getElementById('proxyEnabled')
     const fields = ['httpProxy', 'httpsProxy', 'noProxy'].map((id) => document.getElementById(id))
+    const pocketEnabledEl = document.getElementById('pocketEnabled')
+    const pocketPortEl = document.getElementById('pocketPort')
+    const pocketBoxEl = document.getElementById('pocketBox')
+    const pocketQrEl = document.getElementById('pocketQr')
+    const pocketUrlEl = document.getElementById('pocketUrl')
+    const pocketPasswordEl = document.getElementById('pocketPassword')
+    const pocketAddressEl = document.getElementById('pocketAddress')
+    const pocketStateEl = document.getElementById('pocketState')
+    const pocketHintEl = document.getElementById('pocketHint')
     let snapshot
 
     function setStatus(message, isError) {
@@ -149,6 +202,10 @@
       document.getElementById('checkDesktopOnStart').checked = v.checkDesktopOnStart
       document.getElementById('checkDshOnStart').checked = v.checkDshOnStart
       document.getElementById('browserEnabled').checked = v.browserEnabled !== false
+      pocketEnabledEl.checked = v.pocketEnabled === true
+      pocketPortEl.value = String(v.pocketPort)
+      pocketPortEl.placeholder = '41730'
+      renderPocket(state.pocket || {})
       const rows = [
         ['桌面端版本', state.facts.desktopVersion],
         ['随包 DSH', state.facts.runtimeVersion + '（' + state.facts.runtimeSource + '）'],
@@ -165,6 +222,47 @@
       }
     }
 
+    /** Render the live phone-access state: code, address, password and why it is not running. */
+    function renderPocket(pocket) {
+      pocketBoxEl.hidden = pocket.url === undefined
+      pocketQrEl.src = pocket.qr || ''
+      pocketUrlEl.textContent = pocket.url || '—'
+      pocketPasswordEl.textContent = pocket.password || '—'
+      const candidates = pocket.candidates || []
+      if (pocketAddressEl.options.length !== candidates.length + 1) {
+        pocketAddressEl.replaceChildren()
+        const automatic = document.createElement('option')
+        automatic.value = ''
+        automatic.textContent = '自动选择'
+        pocketAddressEl.append(automatic)
+        for (const candidate of candidates) {
+          const option = document.createElement('option')
+          option.value = candidate.address
+          option.textContent = candidate.address + (candidate.virtual ? '（虚拟网卡）' : '') + ' · ' + candidate.name
+          pocketAddressEl.append(option)
+        }
+      }
+      pocketAddressEl.value = pocket.selected || ''
+      pocketStateEl.textContent = pocket.error
+        ? pocket.error
+        : pocket.running ? '正在运行' : ''
+      pocketStateEl.classList.toggle('error', Boolean(pocket.error))
+      pocketHintEl.textContent = pocket.enabled === true
+        ? '手机与电脑连同一个 WiFi，扫码后输入密码即可；密码可以随时刷新，刷新后已登录的手机会被登出。'
+        : '打开后会在本机另起一个带密码的入口（DSH 自己仍然只监听 127.0.0.1）。关掉开关会立即断开手机。'
+    }
+
+    /** Ask main for an action and re-render from the answer it returns. */
+    async function pocketAction(action) {
+      try {
+        const pocket = await api.pocket(action)
+        renderPocket(pocket || {})
+        if (pocket && pocket.error) setStatus(pocket.error, true)
+      } catch (error) {
+        setStatus(String(error), true)
+      }
+    }
+
     function collect() {
       const close = document.querySelector('input[name="close"]:checked')
       return {
@@ -177,6 +275,8 @@
         checkDesktopOnStart: document.getElementById('checkDesktopOnStart').checked,
         checkDshOnStart: document.getElementById('checkDshOnStart').checked,
         browserEnabled: document.getElementById('browserEnabled').checked,
+        pocketEnabled: pocketEnabledEl.checked,
+        pocketPort: pocketPortEl.value.trim() === '' ? undefined : Number(pocketPortEl.value),
       }
     }
 
@@ -201,6 +301,15 @@
     } else {
       api.get().then(fill).catch((error) => { setStatus(String(error), true) })
       document.getElementById('save').addEventListener('click', () => { void save() })
+      document.getElementById('pocketRotate').addEventListener('click', () => { void pocketAction({ kind: 'rotate' }) })
+      document.getElementById('pocketCustom').addEventListener('click', () => {
+        const value = window.prompt('输入新的访问密码（8–64 位英文字母或数字）')
+        if (value === null) return
+        void pocketAction({ kind: 'setPassword', value: value.trim() })
+      })
+      pocketAddressEl.addEventListener('change', () => {
+        void pocketAction({ kind: 'select', address: pocketAddressEl.value })
+      })
       document.getElementById('close').addEventListener('click', () => { void api.close() })
       document.getElementById('restart').addEventListener('click', async () => {
         if (await save()) await api.restart()

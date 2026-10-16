@@ -25,6 +25,7 @@
     "smoke": "node build.mjs && node scripts/smoke.mjs cookie",
     "smoke:token": "node build.mjs && node scripts/smoke.mjs token",
     "smoke:proxy": "node build.mjs && node scripts/smoke.mjs proxy",
+    "smoke:pocket": "node build.mjs && node scripts/smoke-pocket.mjs",
     "runtime:prepare": "node scripts/prepare-runtime.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "package:debug": "node scripts/package-debug.mjs",
@@ -37,6 +38,7 @@
     "electron": "44.0.0",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
+    "jsqr": "^1.4.0",
     "typescript": "~5.7.3"
   },
   "pnpm": {
@@ -44,5 +46,8 @@
       "electron",
       "esbuild"
     ]
+  },
+  "dependencies": {
+    "qrcode-generator": "^2.0.4"
   }
 }

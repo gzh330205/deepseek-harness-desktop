@@ -38,7 +38,7 @@ async function startService(): Promise<Fixture> {
   let serial = 0
   const service = createPocketService({
     bridgeDir: dir,
-    upstream: { host: '127.0.0.1', port: upstream },
+    upstream: () => ({ host: '127.0.0.1', port: upstream }),
     dshCookie: () => 'dsh-auth=shell-cookie',
     log: () => {},
     candidates: () => addresses.map(address => ({ address, name: 'test', virtual: false })),

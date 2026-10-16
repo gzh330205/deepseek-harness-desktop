@@ -70,6 +70,8 @@ if (isSettingsDocument()) {
     save: (input: unknown) => ipcRenderer.invoke(IPC.settingsSave, input) as Promise<{ ok: boolean; reason?: string; changed?: string[]; restartRequired?: boolean }>,
     close: () => ipcRenderer.invoke(IPC.settingsClose) as Promise<boolean>,
     restart: () => ipcRenderer.invoke(IPC.settingsRestart) as Promise<boolean>,
+    /** Phone access: rotate the password, pin an address, or just re-read the status. */
+    pocket: (action: unknown) => ipcRenderer.invoke(IPC.pocketAction, action) as Promise<unknown>,
   }))
 }
 
