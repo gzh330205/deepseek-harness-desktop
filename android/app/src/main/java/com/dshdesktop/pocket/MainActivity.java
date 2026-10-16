@@ -8,6 +8,8 @@ import android.webkit.CookieManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
+import android.view.KeyEvent;
+import android.view.inputmethod.EditorInfo;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
@@ -72,6 +74,9 @@ public final class MainActivity extends AppCompatActivity {
   /** The address currently loaded, so a session that expires knows where to sign in again. */
   private String current;
 
+  /** When the last connect started, so one Enter press cannot become two logins. */
+  private long lastConnectAt;
+
   /** Whether the browser engine has proven itself capable; connects are refused until it has. */
   private boolean engineChecked;
   private boolean engineTooOld;
@@ -129,6 +134,30 @@ public final class MainActivity extends AppCompatActivity {
     webView.loadUrl("about:blank");
 
     rememberPassword.setChecked(store.rememberPassword());
+
+    // The password field is the only thing left to type once an address arrives by link, so Enter there
+    // means "connect" instead of dismissing the keyboard. Two details matter: a raw Enter arrives as
+    // IME_NULL *and* as a key event (acting on both fires two logins, which the rate limiter then
+    // counts), and a multi-line field would swallow Enter as a newline instead of an action.
+    passwordInput.setSingleLine(true);
+    passwordInput.setOnEditorActionListener((view, actionId, event) -> {
+      // 一次回车可能既来 key event 又来 IME action，两边都处理就会发两次登录（日志里那对相隔 7ms 的
+      // 401 就是这么来的），于是去抖一道。
+      if (System.currentTimeMillis() - lastConnectAt < 1000) {
+        return true;
+      }
+      final boolean enter = event != null
+          && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+          && event.getAction() == KeyEvent.ACTION_DOWN;
+      if (!enter && actionId != EditorInfo.IME_ACTION_DONE) {
+        return false;
+      }
+      android.util.Log.i("DshPocket", "回车连接 actionId=" + actionId + " event=" + (event != null));
+      connect(addressInput.getText().toString());
+      return true;
+    });
+
+    handleConnectLink(getIntent());
     String remembered = store.password();
     if (remembered != null) {
       passwordInput.setText(remembered);
@@ -202,6 +231,46 @@ public final class MainActivity extends AppCompatActivity {
         status("没有找到应用商店，请手动更新「Android System WebView」。");
       }
     }
+  }
+
+  /**
+   * Pick up an address from `dshpocket://connect?url=…`.
+   *
+   * Focus goes to the password field: a link that filled in the address and then made the user hunt for
+   * the next box would be worse than typing it by hand.
+   *
+   * @param intent - The intent that started or resumed this activity.
+   */
+  private void handleConnectLink(Intent intent) {
+    if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) {
+      return;
+    }
+    String address = PocketAddress.fromConnectLink(intent.getDataString());
+    if (address == null) {
+      status("这个链接里没有可用的电脑地址。");
+      return;
+    }
+    android.util.Log.i("DshPocket", "深链接 → " + address);
+    addressInput.setText(address);
+    if (store.rememberPassword() && store.password() != null) {
+      connect(address);
+      return;
+    }
+    // A stale value from the last session must not look like the password the link expects.
+    passwordInput.setText("");
+    // `post`, not a direct call: at `onCreate` the tree is not laid out yet, and a focus request on an
+    // unattached view is silently dropped — the user then types the password into the address field.
+    passwordInput.post(() -> {
+      passwordInput.requestFocus();
+      status("地址已从链接填入，输入电脑上显示的访问密码即可。");
+    });
+  }
+
+  @Override
+  protected void onNewIntent(Intent intent) {
+    super.onNewIntent(intent);
+    setIntent(intent);
+    handleConnectLink(intent);
   }
 
   private void launchScanner() {
@@ -305,6 +374,9 @@ public final class MainActivity extends AppCompatActivity {
 
     String typedPassword = passwordInput.getText().toString().trim();
     boolean remember = rememberPassword.isChecked();
+    lastConnectAt = System.currentTimeMillis();
+    // 只记长度与地址：排查「为什么登录被拒」时，这两项足够区分「发送内容不对」和「凭据不对」。
+    android.util.Log.i("DshPocket", "连接 " + raw + " 密码长度=" + typedPassword.length() + " 记住=" + remember);
     showSetup();
     status(getString(R.string.probing));
     worker.execute(() -> attempt(candidates, typedPassword, remember));

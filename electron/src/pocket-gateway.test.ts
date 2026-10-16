@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { connect } from 'node:net'
 import type { Duplex } from 'node:stream'
+import { gunzipSync } from 'node:zlib'
 import { after, test } from 'node:test'
 
 import { createPocketRateLimiter, createPocketSessions } from './pocket-auth.ts'
-import { POCKET_COOKIE, createPocketGateway, type PocketGateway } from './pocket-gateway.ts'
+import { POCKET_COOKIE, acceptsGzip, createPocketGateway, type PocketGateway } from './pocket-gateway.ts'
 
 /** What the stub upstream saw, so the rewrite rules can be asserted rather than assumed. */
 interface Seen {
@@ -415,4 +416,115 @@ test('a session from one door does not open the other, and each has its own pass
     body: 'password=LanPass12',
   })
   assert.equal(wrongDoor.status, 401)
+})
+
+// --- compression --------------------------------------------------------------------------------
+
+/** A stub upstream that answers with a body the caller chooses. */
+async function startTextUpstream(options: { readonly body: string; readonly type: string; readonly encoding?: string; readonly vary?: string }): Promise<{ readonly port: number; readonly server: Server }> {
+  const server = createServer((_request, response) => {
+    const headers: Record<string, string> = { 'content-type': options.type, 'content-length': String(Buffer.byteLength(options.body)) }
+    if (options.encoding !== undefined) headers['content-encoding'] = options.encoding
+    if (options.vary !== undefined) headers.vary = options.vary
+    response.writeHead(200, headers)
+    response.end(options.body)
+  })
+  await new Promise<void>(resolve => { server.listen(0, '127.0.0.1', resolve) })
+  closers.push(() => new Promise<void>(resolve => { server.close(() => { resolve() }) }))
+  const address = server.address()
+  return { server, port: typeof address === 'object' && address !== null ? address.port : 0 }
+}
+
+/** One request through a fresh gateway in front of the given upstream. */
+async function fetchThrough(port: number, options: { readonly acceptEncoding?: string; readonly method?: string } = {}): Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer }> {
+  const gateway = await createPocketGateway({
+    scope: 'lan',
+    upstream: { host: '127.0.0.1', port },
+    listenAddress: '127.0.0.1',
+    port: 0,
+    allowedHosts: ['127.0.0.1'],
+    dshCookie: () => 'dsh-auth=x',
+    password: () => 'Test1234',
+    sessions: createPocketSessions(),
+    limiter: createPocketRateLimiter(),
+    log: () => {},
+  })
+  closers.push(() => gateway.close())
+  // Disable the password for this measurement: the point is the body, not the door.
+  const session = await createPocketSessions()
+  void session
+  const cookie = await login(gateway, 'Test1234')
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: '127.0.0.1',
+      port: gateway.port,
+      method: options.method ?? 'GET',
+      path: '/big.js',
+      headers: {
+        host: `127.0.0.1:${String(gateway.port)}`,
+        cookie,
+        ...(options.acceptEncoding === undefined ? {} : { 'accept-encoding': options.acceptEncoding }),
+      },
+    }, response => {
+      const chunks: Buffer[] = []
+      response.on('data', chunk => chunks.push(chunk as Buffer))
+      response.on('end', () => { resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) }) })
+    })
+    request.on('error', reject)
+    request.end()
+  })
+}
+
+const bigBody = `console.log(${JSON.stringify('x'.repeat(60_000))})`
+
+test('a large script is gzipped when the phone asks for it, and arrives intact', async () => {
+  const upstream = await startTextUpstream({ body: bigBody, type: 'application/javascript' })
+  const compressed = await fetchThrough(upstream.port, { acceptEncoding: 'gzip, deflate' })
+  assert.equal(compressed.status, 200)
+  assert.equal(compressed.headers['content-encoding'], 'gzip')
+  assert.equal(compressed.headers['content-length'], undefined, '压缩后长度未知，不能沿用上游的 content-length')
+  assert.match(String(compressed.headers.vary), /accept-encoding/iu)
+  assert.ok(compressed.body.length < bigBody.length / 4, `压缩后应显著更小：${String(compressed.body.length)} vs ${String(bigBody.length)}`)
+  assert.equal(gunzipSync(compressed.body).toString('utf8'), bigBody, '解压后必须与原文逐字节一致')
+})
+
+test('a client that does not ask for gzip gets the bytes as they are', async () => {
+  const upstream = await startTextUpstream({ body: bigBody, type: 'application/javascript' })
+  const plain = await fetchThrough(upstream.port)
+  assert.equal(plain.status, 200)
+  assert.equal(plain.headers['content-encoding'], undefined)
+  assert.equal(plain.body.toString('utf8'), bigBody)
+})
+
+test('gzip with q=0 means no, and small or already-encoded bodies are left alone', async () => {
+  const upstream = await startTextUpstream({ body: bigBody, type: 'application/javascript' })
+  const refused = await fetchThrough(upstream.port, { acceptEncoding: 'gzip;q=0' })
+  assert.equal(refused.headers['content-encoding'], undefined)
+  assert.equal(refused.body.toString('utf8'), bigBody)
+
+  const small = await startTextUpstream({ body: 'tiny', type: 'application/json' })
+  assert.equal((await fetchThrough(small.port, { acceptEncoding: 'gzip' })).headers['content-encoding'], undefined)
+
+  const encoded = await startTextUpstream({ body: 'binary-ish', type: 'text/plain', encoding: 'br' })
+  const already = await fetchThrough(encoded.port, { acceptEncoding: 'gzip' })
+  assert.equal(already.headers['content-encoding'], 'br', '上游已经编码过的不要二次压缩')
+
+  const image = await startTextUpstream({ body: 'x'.repeat(4_000), type: 'image/png' })
+  assert.equal((await fetchThrough(image.port, { acceptEncoding: 'gzip' })).headers['content-encoding'], undefined)
+})
+
+test('vary is merged, not replaced', async () => {
+  const upstream = await startTextUpstream({ body: bigBody, type: 'text/plain', vary: 'origin' })
+  const answer = await fetchThrough(upstream.port, { acceptEncoding: 'gzip' })
+  assert.equal(answer.headers.vary, 'origin, accept-encoding')
+})
+
+test('accept-encoding parsing handles the real header shapes', () => {
+  assert.equal(acceptsGzip('gzip'), true)
+  assert.equal(acceptsGzip('deflate, gzip;q=0.8'), true)
+  assert.equal(acceptsGzip('*'), true)
+  assert.equal(acceptsGzip('gzip;q=0'), false)
+  assert.equal(acceptsGzip('br, deflate'), false)
+  assert.equal(acceptsGzip(undefined), false)
+  assert.equal(acceptsGzip(['br', 'gzip']), true)
 })

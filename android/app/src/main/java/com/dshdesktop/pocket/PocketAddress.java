@@ -1,6 +1,7 @@
 package com.dshdesktop.pocket;
 
 import java.net.URI;
+import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -70,6 +71,45 @@ public final class PocketAddress {
       return null;
     }
     return scheme + "://" + hostForUrl(host) + ":" + port + "/";
+  }
+
+  /**
+   * Read the address out of a `dshpocket://connect?url=…` link.
+   *
+   * This is what makes the desktop's QR code usable by the **system camera**: any scanning app hands
+   * the URL to the browser, the browser hands our scheme to us, and the address arrives filled in with
+   * only the password left to type. The in-app scanner keeps working with plain addresses.
+   *
+   * @param link - The whole intent URI, or null.
+   * @returns The normalised address, or null when this is not a usable connect link.
+   */
+  static String fromConnectLink(String link) {
+    if (link == null) {
+      return null;
+    }
+    try {
+      URI uri = new URI(link.trim());
+      if (!"dshpocket".equalsIgnoreCase(uri.getScheme())) {
+        return null;
+      }
+      String raw = uri.getRawQuery();
+      if (raw == null) {
+        return null;
+      }
+      for (String pair : raw.split("&")) {
+        int equals = pair.indexOf('=');
+        if (equals <= 0) {
+          continue;
+        }
+        if ("url".equals(pair.substring(0, equals))) {
+          String value = URLDecoder.decode(pair.substring(equals + 1), "UTF-8");
+          return normalise(value);
+        }
+      }
+      return null;
+    } catch (Exception error) {
+      return null;
+    }
   }
 
   /** Re-add the brackets an IPv6 literal needs inside a URL. */

@@ -30,6 +30,17 @@
         <action android:name="android.intent.action.MAIN" />
         <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>
+      <!--
+        dshpocket://connect?url=… : the desktop's QR code becomes usable by any camera app, not only
+        our in-app scanner — the system camera opens this link, the app fills in the address and asks
+        for the password. Only the address travels this way; the password is always typed.
+      -->
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:host="connect" android:scheme="dshpocket" />
+      </intent-filter>
     </activity>
 
     <!--

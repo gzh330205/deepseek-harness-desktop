@@ -104,6 +104,7 @@
           android:layout_marginTop="10dp"
           android:autofillHints=""
           android:hint="@string/password_hint"
+          android:imeOptions="actionDone"
           android:inputType="textPassword"
           android:maxLines="1" />
 

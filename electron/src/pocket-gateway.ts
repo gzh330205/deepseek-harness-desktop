@@ -19,10 +19,58 @@
 
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
+import { createGzip } from 'node:zlib'
 import type { Duplex } from 'node:stream'
 
 import { constantTimeEqual, readCookie, type PocketRateLimiter, type PocketSessions } from './pocket-auth.ts'
 import { hostnameOf, isAllowedLanHost } from './pocket-net.ts'
+
+/**
+ * Size below which compressing costs more than it saves.
+ *
+ * The DSH client is dozens of plugin bundles plus a long session payload; the small stuff in between
+ * (icons, tiny JSON answers) should travel as it is.
+ */
+const COMPRESS_MIN_BYTES = 1024
+
+/** Content types worth compressing: text, JSON, JS, XML, SVG. Everything else is already compact. */
+const COMPRESSIBLE = /^(?:text\/|application\/(?:json|javascript|xml|x-ndjson|manifest\+json)|image\/svg)/iu
+
+/**
+ * Does this request accept gzip?
+ *
+ * Parsed rather than regex-matched because `q=0` means "explicitly not", and `*` means "anything".
+ *
+ * @param header - The `accept-encoding` header, if any.
+ * @returns True when gzip is acceptable.
+ */
+export function acceptsGzip(header: string | readonly string[] | undefined): boolean {
+  const raw = header === undefined ? '' : typeof header === 'string' ? header : header.join(',')
+  for (const part of raw.split(',')) {
+    const [name = '', ...params] = part.trim().toLowerCase().split(';')
+    if (name !== 'gzip' && name !== '*') continue
+    const q = params.map((param: string) => param.trim()).find((param: string) => param.startsWith('q='))
+    if (q !== undefined && Number(q.slice(2)) === 0) continue
+    return true
+  }
+  return false
+}
+
+/**
+ * Merge a value into a `vary` header without repeating tokens.
+ *
+ * @param existing - The header the upstream sent, if any.
+ * @param value - The token to add.
+ * @returns The merged header value.
+ */
+export function mergeVary(existing: string | string[] | undefined, value: string): string {
+  const tokens = (Array.isArray(existing) ? existing : existing === undefined ? [] : [existing])
+    .flatMap(entry => entry.split(','))
+    .map(entry => entry.trim())
+    .filter(entry => entry !== '')
+  if (!tokens.some(token => token.toLowerCase() === value.toLowerCase())) tokens.push(value)
+  return tokens.join(', ')
+}
 
 /** Session cookie name; also the marker the login page checks. */
 export const POCKET_COOKIE = 'dsh_pocket'
@@ -305,12 +353,30 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
         // The phone holds our session, not DSH's: relaying it would hand a loopback credential
         // to the network.
         if (lowered === 'set-cookie') continue
-        // `content-length` / `content-encoding` are deliberately kept: the body is piped through
-        // byte for byte (Node's http client does not decompress), so they still describe it.
+        // `content-length` / `content-encoding` describe the body and are kept as they are: without
+        // compression the body is piped through byte for byte (Node's http client does not
+        // decompress), so they still hold.
         outgoing[name] = value
       }
-      response.writeHead(upstreamResponse.statusCode ?? 502, outgoing)
-      upstreamResponse.pipe(response)
+
+      const status = upstreamResponse.statusCode ?? 502
+      const declaredLength = Number(upstreamResponse.headers['content-length'] ?? Number.NaN)
+      const compress = acceptsGzip(request.headers['accept-encoding'])
+        && upstreamResponse.headers['content-encoding'] === undefined
+        && COMPRESSIBLE.test(String(upstreamResponse.headers['content-type'] ?? ''))
+        && !(Number.isFinite(declaredLength) && declaredLength < COMPRESS_MIN_BYTES)
+        && status !== 204 && status !== 304
+        && (request.method ?? 'GET') !== 'HEAD'
+      if (compress) {
+        // A phone on mobile data is the whole point of this listener: the client's own bundles and a
+        // long session payload are the two biggest things crossing it.
+        delete outgoing['content-length']
+        outgoing['content-encoding'] = 'gzip'
+        outgoing['vary'] = mergeVary(upstreamResponse.headers.vary, 'accept-encoding')
+      }
+      response.writeHead(status, outgoing)
+      if (compress) upstreamResponse.pipe(createGzip()).pipe(response)
+      else upstreamResponse.pipe(response)
     })
     upstream.on('error', error => {
       stats.upstreamErrors += 1

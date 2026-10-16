@@ -2061,8 +2061,127 @@ window.__ModuleLoader__.load({
 
     const inject = ['slots', 'locale'];
 
+    /**
+     * 手机端的视口诊断（只在 App 内跑，输出到 console，开发与支持用）。
+     *
+     * 为什么先量再改：DSH 自己已经有窄屏行为（`SIDEBAR_AUTO_COLLAPSE = 1024`，窄屏把侧栏收成图标
+     * 栏），所以「手机布局」不该是另写一套，而应该是**补上它在 390px 宽下仍然不好的地方**。要补什么
+     * 必须用真实视口量出来，而不是照着别的项目抄一份 CSS。
+     */
+    function reportPhoneViewport(tag) {
+      try {
+        if (navigator.userAgent.indexOf('DshPocket') < 0) return;
+        const viewport = window.innerWidth;
+        const overflow = [];
+        const targets = [];
+        const all = document.querySelectorAll('body *');
+        for (const element of all) {
+          const rect = element.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          if (rect.width > viewport + 1 && overflow.length < 6) {
+            overflow.push(element.tagName.toLowerCase() + ' [' + String(element.getAttribute('class') || element.getAttribute('data-testid') || '').slice(0, 30) + '] w=' + Math.round(rect.width));
+          }
+          // 有效可点区域 = 盒子 + 伪元素撑出来的部分。只看盒子尺寸会把「已经补过可点区域」的按钮
+          // 继续算成不合格，于是永远看不到修复效果。
+          const after = window.getComputedStyle(element, '::after');
+          const padX = parseFloat(after.left) < 0 ? -parseFloat(after.left) : 0;
+          const padY = parseFloat(after.top) < 0 ? -parseFloat(after.top) : 0;
+          const hitWidth = rect.width + padX * 2;
+          const hitHeight = rect.height + padY * 2;
+          if (element.matches('button, a[href], input, select, [role="button"]') && (hitWidth < 44 || hitHeight < 44) && targets.length < 10) {
+            // 标签是重点：知道「哪个按钮 36x36」才知道该改哪一条 CSS，否则只能瞎猜。
+            const label = element.getAttribute('aria-label') || element.getAttribute('title') || (element.textContent || '').trim().slice(0, 14) || (element.getAttribute('class') || '').slice(0, 20);
+            // 祖先链：写 CSS 需要稳定的选择器，aria-label 会随语言变，类名才靠得住。
+            const chain = [];
+            let node = element.parentElement;
+            for (let depth = 0; node !== null && depth < 4; depth += 1, node = node.parentElement) {
+              const attrs = [];
+              if (node.getAttribute('data-testid')) attrs.push('data-testid=' + node.getAttribute('data-testid'));
+              if (node.getAttribute('data-windows-titlebar') !== null) attrs.push('data-windows-titlebar');
+              const cls = String(node.getAttribute('class') || '').split(/\s+/).filter(Boolean).slice(0, 3).join('.');
+              chain.push(node.tagName.toLowerCase() + (cls ? '.' + cls : '') + (attrs.length > 0 ? '[' + attrs.join(',') + ']' : ''));
+            }
+            targets.push(element.tagName.toLowerCase() + ' ' + Math.round(hitWidth) + 'x' + Math.round(hitHeight) + ' 「' + label + '」 ← ' + chain.join(' < '));
+          }
+        }
+        const mine = document.getElementById('dsh-pocket-mobile');
+        const sample = document.querySelector('button');
+        const sampleStyle = sample === null ? null : window.getComputedStyle(sample);
+        const rail = document.querySelector('[data-dsh-sidebar], aside, nav');
+        console.log('[dsh-pocket] 视口诊断(' + tag + ') ' + JSON.stringify({
+          viewport: [viewport, window.innerHeight],
+          documentWidth: document.documentElement.scrollWidth,
+          horizontalScroll: document.documentElement.scrollWidth > viewport,
+          railWidth: rail === null ? null : Math.round(rail.getBoundingClientRect().width),
+          overflowing: overflow,
+          smallTargetCount: targets.length,
+          smallTargets: targets,
+          styleElement: mine !== null,
+          styleRuleCount: mine === null || mine.sheet === null ? 0 : mine.sheet.cssRules.length,
+          sampleButtonMinHeight: sampleStyle === null ? null : sampleStyle.minHeight,
+          sampleButtonHeight: sampleStyle === null ? null : sampleStyle.height,
+        }));
+      } catch (error) {
+        console.warn('[dsh-pocket] 视口诊断失败', error);
+      }
+    }
+
+    /**
+     * 手机端样式（只在 App 内注入）。
+     *
+     * 依据是实测而不是想象：在 393×443 的手机视口上，DSH 自己的窄屏行为已经把侧栏收成 36px 图标栏、
+     * 页面**没有横向滚动**、也没有任何元素超出视口。真正的问题是**触控目标**——左栏 6 个按钮 36×36、
+     * 右上角 28×28、作曲区的两个下拉与「+」只有 28px 高，全都在 44px 之下。
+     *
+     * 所以这里只做三件事：把可点高度补到 44px、让输入框字号不触发视口缩放、让宽内容自己滚动而不是把
+     * 页面撑宽。DSH 的三栏与折叠逻辑一概不动——那是它的设计，也确实好用。
+     */
+    const PHONE_CSS = [
+      '@media (max-width: 600px) {',
+      // `!important` 是刻意用的：这里覆盖的是别人的设计系统，它对桌面调过尺度，且用组件级选择器把
+      // min-height 压到 0。不用 !important 就是「看起来注入了、实际没生效」——本文件的第一版正是如此，
+      // 靠实测指标才发现。
+      '  button, [role="button"], select, input, a[href] { min-height: 44px !important }',
+      // 图标按钮的宽度不动（改了会挤动图标栏），只用伪元素把可点区域向左右各扩 4px，正好补到 44px。
+      '  button { position: relative }',
+      '  button::after { content: ""; position: absolute; top: 0; bottom: 0; left: -4px; right: -4px }',
+      // 16px 是移动端输入框的分水岭：更小会在聚焦时缩放视口。
+      '  input, textarea, select { font-size: max(16px, 1em) !important }',
+      // 宽内容自己滚，页面不滚。
+      '  pre, table { max-width: 100%; overflow-x: auto }',
+      '  html, body { overflow-x: hidden }',
+      '}',
+    ].join('\n')
+
+    /** 注入一次；失败不影响 DSH（插件抛错会让整个界面起不来）。 */
+    function installPhoneStyles() {
+      try {
+        if (navigator.userAgent.indexOf('DshPocket') < 0) return 'skipped';
+        if (document.getElementById('dsh-pocket-mobile') !== null) return 'already';
+        const style = document.createElement('style');
+        style.id = 'dsh-pocket-mobile';
+        style.textContent = PHONE_CSS;
+        document.head.append(style);
+        return 'installed';
+      } catch (error) {
+        console.warn('[dsh-pocket] 手机端样式注入失败', error);
+        return 'failed';
+      }
+    }
+
     function apply(ctx) {
       try {
+        // 手机端：先量一次，等界面稳定后再量一次（首屏与稳定后的布局不同）。
+        try {
+          console.log('[dsh-pocket] 手机端样式：' + installPhoneStyles());
+          reportPhoneViewport('early');
+          setTimeout(() => { reportPhoneViewport('settled'); }, 6000);
+          setTimeout(() => { reportPhoneViewport('late'); }, 14000);
+          window.addEventListener('resize', () => { reportPhoneViewport('resize'); });
+        } catch (error) {
+          console.warn('[dsh-pocket] 诊断注册失败（不影响界面）', error);
+        }
+
         ctx.effect(
           () => ctx.locale.register(NS, { zh, en }),
           'dsh-desktop-shell: dictionaries',

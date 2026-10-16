@@ -46,6 +46,35 @@ public final class PocketAddressTest {
   }
 
   @Test
+  public void aConnectLinkYieldsTheAddressItCarries() {
+    assertEquals(
+        "http://10.1.6.35:41735/",
+        PocketAddress.fromConnectLink("dshpocket://connect?url=http%3A%2F%2F10.1.6.35%3A41735"));
+    // 未编码的写法也要能读：有些扫码器不编码
+    assertEquals(
+        "http://192.168.1.7:41730/",
+        PocketAddress.fromConnectLink("dshpocket://connect?url=http://192.168.1.7:41730"));
+    // 公网域名（命名隧道）也要认；https 的默认端口和手输地址一样会被补齐
+    assertEquals(
+        "https://pocket.example.com:443/",
+        PocketAddress.fromConnectLink("dshpocket://connect?url=https%3A%2F%2Fpocket.example.com"));
+    // 裸主机名按手输地址的规则处理（补 scheme 与网关默认端口），这样「我家电脑」这种写法也能用
+    assertEquals(
+        "http://my-desktop:41730/",
+        PocketAddress.fromConnectLink("dshpocket://connect?url=my-desktop"));
+  }
+
+  @Test
+  public void aConnectLinkWithoutAUsableAddressIsRefused() {
+    assertNull(PocketAddress.fromConnectLink("https://connect?url=http://10.0.0.5:41730"));
+    assertNull(PocketAddress.fromConnectLink("dshpocket://connect"));
+    assertNull(PocketAddress.fromConnectLink("dshpocket://connect?url="));
+    assertNull(PocketAddress.fromConnectLink("dshpocket://connect?url=%20%20"));
+    assertNull(PocketAddress.fromConnectLink("dshpocket://connect?other=1"));
+    assertNull(PocketAddress.fromConnectLink(null));
+  }
+
+  @Test
   public void nonsenseIsRefusedRatherThanGuessed() {
     assertNull(PocketAddress.normalise(null));
     assertNull(PocketAddress.normalise(""));
