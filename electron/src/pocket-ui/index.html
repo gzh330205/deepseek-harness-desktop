@@ -61,6 +61,13 @@
     .howto { margin: 8px 0 0; padding: 0 0 0 18px; color: var(--muted); font-size: 12px; }
     .howto li { margin: 2px 0; }
     .err { color: var(--danger); }
+    .warn-box {
+      display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+      border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+      border-radius: 8px; padding: 10px 12px; margin: 10px 0 0;
+    }
+    .warn-box[hidden] { display: none; }
+    .warn-box p { margin: 0; flex: 1 1 260px; font-size: 12px; line-height: 1.6; }
     .inline-hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
     #apkBox[hidden] { display: none; }
     footer { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
@@ -106,6 +113,15 @@
           <li>输入上面显示的 8 位密码。勾「记住密码」后，电脑上的 DSH 重启也不用重新输。</li>
         </ol>
       </div>
+    </div>
+    <div class="warn-box" id="firewallBox" hidden data-testid="firewall-box">
+      <p>
+        <strong>手机可能连不上局域网地址。</strong>
+        Windows 防火墙开着，但没有一条入站规则覆盖这个程序——手机能 ping 通电脑，却打不开页面。
+        点右边的按钮会自动弹出管理员确认（UAC），同意后恢复正常；也可以用管理员身份手动执行：
+        <br /><code id="firewallCommand"></code>
+      </p>
+      <button type="button" class="primary" id="firewallAllow" data-testid="firewall-allow">允许手机访问</button>
     </div>
     <p class="inline-hint" id="lanHint"></p>
   </section>
@@ -238,6 +254,14 @@
       $('lanHint').classList.toggle('err', Boolean(pocket.error));
     }
 
+    function renderFirewall(pocket) {
+      const firewall = pocket.firewall;
+      const show = firewall !== undefined && firewall.needsAttention === true
+        && (pocket.running === true || pocket.publicAccess !== undefined);
+      $('firewallBox').hidden = !show;
+      if (show) $('firewallCommand').textContent = 'netsh ' + firewall.command;
+    }
+
     function renderWan(values, pocket) {
       const wan = pocket.publicAccess || {};
       const mode = values.pocketTunnelMode === 'named' ? 'named' : 'quick';
@@ -276,6 +300,7 @@
       const values = (state && state.values) || {};
       const pocket = (state && state.pocket) || {};
       renderLan(values, pocket);
+      renderFirewall(pocket);
       renderWan(values, pocket);
       const apk = pocket.apkQr || pocket.apkUrl;
       $('apkHint').hidden = Boolean(apk);
@@ -370,6 +395,13 @@
         if (value !== null) void act({ kind: 'setPublicPassword', value: value.trim() });
       });
 
+      $('firewallAllow').addEventListener('click', async () => {
+        // The UAC prompt is the point: this is the one action in the page that changes the machine's
+        // security settings, so it is a button with an explanation, never something automatic.
+        setStatus('等待管理员确认…');
+        const pocket = await act({ kind: 'firewallAllow' });
+        if (pocket && pocket.firewall && pocket.firewall.covered) setStatus('已允许手机访问');
+      });
       $('apkToggle').addEventListener('click', () => { $('apkBox').hidden = !$('apkBox').hidden });
       $('close').addEventListener('click', () => { void api.close() });
     }
@@ -410,6 +442,9 @@
       setStatus('页面未获得桌面壳 API（preload 未加载）', true);
     } else {
       wire();
+      // Probe once on open: the answer decides whether the firewall hint shows at all, and a stale
+      // answer would either nag a correctly configured machine or hide a real problem.
+      void act({ kind: 'firewallCheck' });
       load();
       // A tunnel can die on its own (network change, cloudflared exit): keep the status honest.
       setInterval(() => { if (!saving) void load() }, 3000);

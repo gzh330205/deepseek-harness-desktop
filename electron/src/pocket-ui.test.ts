@@ -77,6 +77,21 @@ test('public access still needs a fresh acknowledgement, and the token never ent
   assert.doesNotMatch(script, /save\(\{[^}]*token/iu, 'token 不能走设置保存')
 })
 
+test('a blocked firewall is explained, and lifted only by a button', () => {
+  // The LAN listener is the only thing other devices connect *to*, and Windows blocks it. The hint
+  // must carry the manual command too, because the elevated path can be refused (or managed by group
+  // policy) and a dead-end hint would leave the user with a phone that pings but cannot open a page.
+  assert.match(markup, /id="firewallBox" hidden/u)
+  assert.match(markup, /id="firewallCommand"/u)
+  assert.match(markup, /id="firewallAllow"/u)
+  assert.match(script, /kind: 'firewallAllow'/u)
+  assert.match(script, /kind: 'firewallCheck'/u)
+  const render = /function renderFirewall\(pocket\)[\s\S]*?\n    \}/u.exec(script)?.[0] ?? ''
+  assert.notEqual(render, '')
+  assert.match(render, /needsAttention === true/u, '只在真的需要时才提示')
+  assert.match(render, /netsh /u)
+})
+
 test('the page tells the user how to connect on the phone, for both doors', () => {
   const howto = [...markup.matchAll(/<ol class="howto">[\s\S]*?<\/ol>/gu)].map(match => match[0])
   assert.ok(howto.length >= 3, `应该有三段「手机上怎么连」：局域网、公网、App（实际 ${howto.length}）`)

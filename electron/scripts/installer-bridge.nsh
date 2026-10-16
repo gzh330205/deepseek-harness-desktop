@@ -35,7 +35,46 @@
 ;
 ; By the time customInstall runs, installApplicationFiles, registryAddInstallInfo and
 ; the shortcuts are all done (installSection.nsh:66-69), so launching here is safe.
+; ─── Let other devices reach the LAN listener ───────────────────────────────
+;
+; Phone access listens on the LAN, and Windows blocks incoming connections by default. Without an
+; inbound rule the phone pings the PC fine, the app reports the gateway as running, and the page
+; simply never opens. Measured on a real machine: the only rule present covered a single profile and
+; had been left behind by a Windows prompt, so a fresh install would have had nothing.
+;
+; The shell also checks this at runtime and offers a one-click fix when the rule is missing (group
+; policy, a refused prompt, a portable copy that was never installed). This is the attempt that means
+; most users never see that hint.
+;
+; `profile=any protocol=any`: the LAN port is configurable in the settings, so a rule tied to a port
+; number would stop working the moment someone changed it.
+;
+; Needs elevation, and a per-user install has none, hence the exit code check and the log line
+; rather than treating failure as an error.
+!macro DSH_FIREWALL_ADD
+  nsExec::ExecToLog '"$SYSDIR\netsh.exe" advfirewall firewall add rule name="DSH Desktop phone access" dir=in action=allow program="$INSTDIR\${APP_EXECUTABLE_FILENAME}" protocol=any profile=any enable=yes'
+  Pop $DshCommandResult
+  ${If} $DshCommandResult != 0
+    DetailPrint "Firewall rule not added (no elevation); the app offers a one-click fix."
+  ${Else}
+    DetailPrint "Firewall rule added for phone access."
+  ${EndIf}
+!macroend
+
+; Uninstall must not leave a hole behind. Ignoring the result is deliberate: a machine where the rule
+; was managed by group policy has nothing to delete, and that is not a failed uninstall.
+!macro DSH_FIREWALL_REMOVE
+  nsExec::ExecToLog '"$SYSDIR\netsh.exe" advfirewall firewall delete rule name="DSH Desktop phone access"'
+  Pop $DshCommandResult
+!macroend
+
+!macro customUnInstall
+  !insertmacro DSH_FIREWALL_REMOVE
+!macroend
+
 !macro customInstall
+  ; Runs after installApplicationFiles, so $INSTDIR and the executable are both in place.
+  !insertmacro DSH_FIREWALL_ADD
   ${GetParameters} $R0
   ${GetOptions} $R0 "/UPDATE" $R1
   ${IfNot} ${Errors}

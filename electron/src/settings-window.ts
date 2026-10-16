@@ -21,6 +21,7 @@ import {
   SETTINGS_WINDOW_WIDTH,
   titleBarPalette,
 } from './constants.ts'
+import type { PocketFirewallStatus } from './pocket-firewall.ts'
 import type { PocketStatus } from './pocket-service.ts'
 import type { SettingsInput } from './settings-shape.ts'
 
@@ -31,6 +32,14 @@ export interface PocketSnapshot extends PocketStatus {
   /** Where the phone app comes from, and its QR code: scanning it installs the client. */
   readonly apkUrl?: string
   readonly apkQr?: string
+  /**
+   * Whether Windows Firewall lets other devices reach the LAN listener.
+   *
+   * The product does not create this rule on a fresh machine, and a blocked port looks exactly like a
+   * broken gateway from the phone's side — pings work, the app reports itself running, the page never
+   * opens. Cached rather than probed per render: the query costs a PowerShell start-up.
+   */
+  readonly firewall?: PocketFirewallStatus
 }
 
 /** What the settings page may ask phone access to do. */
@@ -46,6 +55,10 @@ export type PocketAction =
   | { readonly kind: 'rotatePublicPassword' }
   | { readonly kind: 'setPublicPassword'; readonly value: string }
   | { readonly kind: 'setTunnelToken'; readonly value: string }
+  // Windows Firewall: check whether the LAN listener is reachable from another device, and ask for
+  // elevation to add the rule. Never silent — the second one raises a UAC prompt.
+  | { readonly kind: 'firewallCheck' }
+  | { readonly kind: 'firewallAllow' }
 
 /** What the settings page renders. */
 export interface SettingsSnapshot {

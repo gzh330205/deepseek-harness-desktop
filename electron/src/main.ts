@@ -100,6 +100,7 @@ import { ensureServicePort, readShellSettings, type ShellSettings } from './sett
 import { mergeSettingsInput, type SettingsInput } from './settings-shape.ts'
 import { SettingsWindow, type PocketAction, type PocketSnapshot, type SettingsSnapshot, type SettingsSaveResult } from './settings-window.ts'
 import { createPocketService, type PocketService } from './pocket-service.ts'
+import { allowFirewall, probeFirewall, type PocketFirewallStatus } from './pocket-firewall.ts'
 import { pocketQrDataUrl } from './pocket-qr.ts'
 import { createMarketWindow, installForVerification, installGithubForVerification } from './market-open.ts'
 import { marketChildEnvironment, resolveMarketRuntime } from './market-install.ts'
@@ -1283,6 +1284,21 @@ function pocket(): PocketService {
 }
 
 /** Status for the settings page, with the code to scan when a listener is up. */
+/**
+ * Firewall status, refreshed on demand.
+ *
+ * Cached because the query spawns PowerShell (hundreds of milliseconds) and the settings page polls
+ * every three seconds; an explicit `firewallCheck` action refreshes it.
+ */
+let pocketFirewall: PocketFirewallStatus | undefined
+
+async function refreshPocketFirewall(): Promise<PocketFirewallStatus> {
+  pocketFirewall = await probeFirewall({ programPath: app.getPath('exe') })
+  pushLog(`手机访问：Windows 防火墙${pocketFirewall.firewallOn ? '已开启' : '未开启'}，`
+    + `${pocketFirewall.covered ? `已有入站规则（${pocketFirewall.profiles}）` : '没有覆盖本程序的入站规则'}`)
+  return pocketFirewall
+}
+
 function pocketSnapshot(): PocketSnapshot {
   const status = pocket().status()
   // The phone app's download link does not depend on a listener being up: the user needs it *before*
@@ -1294,7 +1310,12 @@ function pocketSnapshot(): PocketSnapshot {
     // A missing QR is a nuisance; a thrown renderer call is a dead settings window.
     pushLog(`手机 App 二维码生成失败：${error instanceof Error ? error.message : String(error)}`)
   }
-  const withApp: PocketSnapshot = { ...status, apkUrl: POCKET_APK_URL, ...(apkQr === undefined ? {} : { apkQr }) }
+  const withApp: PocketSnapshot = {
+    ...status,
+    apkUrl: POCKET_APK_URL,
+    ...(apkQr === undefined ? {} : { apkQr }),
+    ...(pocketFirewall === undefined ? {} : { firewall: pocketFirewall }),
+  }
   const url = status.url
   if (url === undefined) return withApp
   let qr: string | undefined
@@ -1351,6 +1372,19 @@ async function handlePocketAction(action: PocketAction): Promise<PocketSnapshot>
     case 'setTunnelToken':
       service.setTunnelToken(action.value)
       break
+    case 'firewallCheck':
+      await refreshPocketFirewall()
+      break
+    case 'firewallAllow': {
+      // Elevation happens in the user's face (UAC). A refusal is reported, not swallowed: the hint
+      // must not keep claiming the door is closed because nothing was attempted.
+      const allowed = await allowFirewall(app.getPath('exe'))
+      const status = await refreshPocketFirewall()
+      if (!allowed) return { ...pocketSnapshot(), error: '没有获得管理员权限，防火墙规则未添加。' }
+      if (!status.covered) return { ...pocketSnapshot(), error: '规则添加后仍未检测到，可能是策略由组策略管理。' }
+      pushLog('手机访问：已添加入站规则，手机现在可以连局域网地址')
+      break
+    }
     default:
       break
   }
@@ -2196,7 +2230,12 @@ async function boot(): Promise<void> {
   // Phone access starts here and not earlier: a gateway without the cookie would answer the phone
   // with DSH's own authentication page instead of ours, which looks like a broken password.
   void pocket().apply(shellSettings.pocket).then(status => {
-    if (status.running) pushLog(`手机访问已开启：${status.url ?? ''}（DSH 仍只监听 ${LOOPBACK}:${String(port)}）`)
+    if (status.running) {
+      pushLog(`手机访问已开启：${status.url ?? ''}（DSH 仍只监听 ${LOOPBACK}:${String(port)}）`)
+      // Probe only when a listener is up: the answer is meaningless otherwise, and it costs a
+      // PowerShell start-up. The result lands in the log, so "手机上打不开" has a first place to look.
+      void refreshPocketFirewall()
+    }
     else if (status.error !== undefined) pushLog(`手机访问未开启：${status.error}`)
     // A tunnel the user opened before the restart comes back by itself; one they never accepted
     // cannot, because the record that says they did is only written by an accepted start.
