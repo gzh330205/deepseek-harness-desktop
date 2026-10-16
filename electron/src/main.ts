@@ -16,7 +16,7 @@
  * - `proxy`: spike S2, `dsh-app://app/` reverse-proxied onto the loopback host.
  */
 
-import { BrowserWindow, Menu, Notification, WebContentsView, app, dialog, ipcMain, nativeImage, nativeTheme, screen, session, shell } from 'electron'
+import { BrowserWindow, Menu, Notification, WebContentsView, app, clipboard, dialog, ipcMain, nativeImage, nativeTheme, screen, session, shell } from 'electron'
 import { createHash, randomBytes } from 'node:crypto'
 
 import minisignSmokeFixture from './fixtures/minisign-smoke.json' with { type: 'json' }
@@ -153,6 +153,7 @@ let stopping = false
 let pendingInstaller: string | undefined
 let updateWindow: UpdateWindow | undefined
 let settingsWindow: SettingsWindow | undefined
+let pocketWindowRef: SettingsWindow | undefined
 let pocketService: PocketService | undefined
 let marketWindow: ReturnType<typeof createMarketWindow> | undefined
 let updateController: UpdateController | undefined
@@ -1023,6 +1024,64 @@ function pluginsMenuTemplate(): Electron.MenuItemConstructorOptions[] {
 const MENU_TEMPLATES: Record<ShellMenuName, () => Electron.MenuItemConstructorOptions[]> = {
   app: appMenuTemplate,
   plugins: pluginsMenuTemplate,
+  pocket: pocketMenuTemplate,
+}
+
+/**
+ * The 手机访问 menu.
+ *
+ * Status and the two switches live here so the common case needs no window at all: "is the phone door
+ * open, and what is the address" is answerable from a menu. Starting public access does *not*: it
+ * needs the disclaimer, so that item opens the window where the confirmation lives, instead of
+ * repeating the gate in a menu that cannot show its text.
+ */
+function pocketMenuTemplate(): Electron.MenuItemConstructorOptions[] {
+  const status = pocketSnapshot()
+  const publicAccess = status.publicAccess
+  const lanUrl = status.url
+  return [
+    { label: '打开手机访问设置…', click: () => { openPocketWindow() } },
+    { type: 'separator' },
+    {
+      label: `局域网访问（${status.enabled ? (status.running ? '已开启' : '未运行') : '已关闭'}）`,
+      type: 'checkbox',
+      checked: status.enabled === true,
+      click: (item) => {
+        const result = saveSettings({ pocketEnabled: item.checked })
+        if (!result.ok) pushLog(`手机访问开关写入失败：${result.reason}`)
+        pushLog(item.checked ? '手机访问已开启（菜单）' : '手机访问已关闭（菜单）')
+      },
+    },
+    {
+      label: publicAccess.running ? '公网访问（运行中）' : '公网访问（已关闭）',
+      type: 'checkbox',
+      checked: publicAccess.running === true,
+      enabled: publicAccess.running === true || publicAccess.available === true,
+      click: (item) => {
+        if (item.checked) {
+          // Turning it *on* needs the acknowledgement, which lives in the window.
+          openPocketWindow()
+          return
+        }
+        void pocket().stopTunnel().then(() => {
+          const saved = saveSettings({ pocketTunnelEnabled: false })
+          if (!saved.ok) pushLog(`公网访问开关写入失败：${saved.reason}`)
+          pushLog('公网访问已关闭（菜单）')
+        })
+      },
+    },
+    { type: 'separator' },
+    {
+      label: lanUrl === undefined ? '复制局域网地址（未运行）' : `复制局域网地址（${lanUrl}）`,
+      enabled: lanUrl !== undefined,
+      click: () => { clipboard.writeText(lanUrl ?? '') },
+    },
+    {
+      label: publicAccess.url === undefined ? '复制公网地址（未运行）' : `复制公网地址（${publicAccess.url}）`,
+      enabled: publicAccess.url !== undefined,
+      click: () => { clipboard.writeText(publicAccess.url ?? '') },
+    },
+  ]
 }
 
 /**
@@ -1384,8 +1443,36 @@ function installSettingsWindow(): void {
     pocket: handlePocketAction,
     isShellDocument: isLauncherSender,
   })
+  // The IPC handlers are installed once, here, and the checks inside them accept every shell page —
+  // so the phone-access window below can use the same bridge without registering a second handler.
   window.install()
   settingsWindow = window
+
+  const pocketWindow = new SettingsWindow({
+    appRoot: app.getAppPath(),
+    snapshot: settingsSnapshot,
+    save: saveSettings,
+    restart: () => { restartShell('手机访问页请求保存并重启') },
+    pocket: handlePocketAction,
+    isShellDocument: isLauncherSender,
+    page: { directory: 'pocket', title: `${PRODUCT_NAME} 手机访问`, width: 760, height: 820 },
+  })
+  pocketWindowRef = pocketWindow
+}
+
+/**
+ * Open the phone-access window.
+ *
+ * It is a shell window rather than a DSH page on purpose: the gateway, the tunnel and the passwords
+ * live in this process, so the page that configures them talks to the shell directly instead of going
+ * through a bridge. The DSH sidebar entry links here.
+ */
+function openPocketWindow(): void {
+  if (pocketWindowRef === undefined) return
+  pocketWindowRef.open()
+  // Logged because this is the one step of the sidebar entry that happens in this process: when a user
+  // says "点菜单没反应", the log says whether the shell was even asked.
+  pushLog('已打开手机访问窗口')
 }
 
 function installUpdates(): void {
@@ -1516,7 +1603,7 @@ async function driveSmokeMinisign(): Promise<void> {
  */
 async function driveSmokeMenu(): Promise<void> {
   const report: Record<string, unknown> = {}
-  for (const name of ['app'] as const) {
+  for (const name of ['app', 'pocket'] as const) {
     let labels: readonly string[] = []
     let menu: Electron.Menu | undefined
     const closed = new Promise<boolean>((resolve) => {
@@ -1529,6 +1616,16 @@ async function driveSmokeMenu(): Promise<void> {
     menu?.closePopup()
     report[name] = { opened: await closed, labels }
   }
+  // The phone-access window is opened from its own menu item: prove the page really paints, because a
+  // wrong path, a CSP that blocks the inline script or a preload that threw all look like a working
+  // menu item until someone clicks it.
+  try {
+    openPocketWindow()
+    report.pocketWindow = await pocketWindowRef?.probe() ?? { loaded: false, selectors: {} }
+  } catch (error) {
+    report.pocketWindow = { loaded: false, error: String(error) }
+  }
+
   // The logo is an image on a `file://` page, so a missing `img-src` in its CSP blocks it
   // silently — which shipped once and left the title bar with no icon.
   if (titleBarView !== undefined && !titleBarView.webContents.isDestroyed()) {
@@ -1966,7 +2063,7 @@ async function boot(): Promise<void> {
     // Every menu the strip may open is one the templates table knows. This check used to be a
     // hardcoded 'app', so adding a menu silently produced a button that did nothing — add new
     // names here too (and the Record<ShellMenuName, …> type insists the template exists).
-    if (name !== 'app' && name !== 'plugins') return false
+    if (name !== 'app' && name !== 'plugins' && name !== 'pocket') return false
     const rect = typeof anchor === 'object' && anchor !== null ? anchor as Record<string, unknown> : undefined
     const valid = rect !== undefined
       && typeof rect.x === 'number' && typeof rect.y === 'number' && typeof rect.height === 'number'
@@ -2166,6 +2263,11 @@ async function boot(): Promise<void> {
     mainWindow.focus()
     void offerLegacyCleanup()
   }
+  // Drivers that only *write a report* must run before `finishSmoke`: it schedules `app.exit` a few
+  // hundred milliseconds later, and a driver that waits for a menu to close (or a window to paint)
+  // never finishes its report — the file simply never appears, which looks like "the flag did nothing".
+  if (process.env[SMOKE_MENU_ENV] === '1') await driveSmokeMenu()
+
   finishSmoke(await smokeResult(gate.version, ready.port, target))
 
   // Upgrade rehearsal: drive the update path with no window. Last, so the normal smoke
@@ -2173,7 +2275,6 @@ async function boot(): Promise<void> {
   if (process.env[SMOKE_UPDATE_ENV] === '1') await driveSmokeUpdate()
   if (process.env[SMOKE_NOTIFY_ENV] === '1') await driveSmokeNotify()
   if (process.env[SMOKE_CRASH_ENV] === '1') await driveSmokeCrash()
-  if (process.env[SMOKE_MENU_ENV] === '1') await driveSmokeMenu()
   if (process.env[SMOKE_MINISIGN_ENV] === '1') await driveSmokeMinisign()
   if (process.env[SMOKE_SUPPORT_ENV] === '1') {
     const path = await collectSupportBundle()

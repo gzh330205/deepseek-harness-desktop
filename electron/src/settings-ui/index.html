@@ -113,88 +113,11 @@
   </section>
 
   <section>
-    <h2>手机访问（局域网）</h2>
-    <div class="row">
-      <label>允许手机访问</label>
-      <div class="checks"><label><input type="checkbox" id="pocketEnabled" data-testid="pocket-enabled" /> 同一 WiFi 下的手机可以打开这台电脑上的 DSH</label></div>
-    </div>
-    <div class="row">
-      <label for="pocketPort">访问端口</label>
-      <input id="pocketPort" type="number" min="1024" max="65535" step="1" data-testid="pocket-port" />
-    </div>
-    <div class="pocket" id="pocketAppBox" hidden>
-      <img id="pocketAppQr" alt="手机扫码下载 App" />
-      <div>
-        <div class="line"><span class="k">手机 App</span><code id="pocketAppUrl" data-testid="pocket-app-url">—</code></div>
-        <p class="state">用手机扫码下载安装（Android 8.0 及以上）。装好后回到这里扫下面那个码连接。</p>
-      </div>
-    </div>
-    <div class="pocket" id="pocketBox" hidden>
-      <img id="pocketQr" alt="手机扫码打开" />
-      <div>
-        <div class="line"><span class="k">地址</span><code id="pocketUrl" data-testid="pocket-url">—</code></div>
-        <div class="line">
-          <span class="k">密码</span><code id="pocketPassword" data-testid="pocket-password">—</code>
-          <button type="button" class="small" id="pocketRotate" data-testid="pocket-rotate">刷新</button>
-          <button type="button" class="small" id="pocketCustom" data-testid="pocket-custom">自定义</button>
-        </div>
-        <div class="line">
-          <span class="k">本机地址</span>
-          <select id="pocketAddress" data-testid="pocket-address"></select>
-        </div>
-        <p class="state" id="pocketState" data-testid="pocket-state"></p>
-      </div>
-    </div>
-    <p class="hint" id="pocketHint"></p>
-  </section>
-
-  <section>
-    <h2>手机访问（公网）</h2>
+    <h2>手机访问</h2>
     <p class="hint">
-      不在同一 WiFi 时用这条通道：流量经 Cloudflare 隧道，公网地址不会直接暴露你的电脑。
-      公网访问要密码，且<strong>每次开启都要重新确认</strong>；用完请关闭。
+      手机访问已移到 DSH 侧边栏的「<strong>手机访问</strong>」入口：那里局域网与公网分开配置，带连接二维码、
+      实时状态与手机 App 下载。放在一个地方是为了让同一份设置不会长出两套界面。
     </p>
-    <div class="row">
-      <label>隧道方式</label>
-      <div class="checks">
-        <label><input type="radio" name="pocketTunnelMode" value="quick" data-testid="tunnel-mode-quick" /> 快速隧道（每次一个随机地址，最省事）</label>
-        <label><input type="radio" name="pocketTunnelMode" value="named" data-testid="tunnel-mode-named" /> 命名隧道（固定域名，需要自己的域名与 Tunnel Token）</label>
-      </div>
-    </div>
-    <div class="row">
-      <label for="pocketTunnelPort">本地转发端口</label>
-      <input id="pocketTunnelPort" type="number" min="1024" max="65535" step="1" data-testid="pocket-tunnel-port" />
-    </div>
-    <div id="pocketNamedBox" hidden>
-      <div class="row">
-        <label for="pocketTunnelDomain">公网域名</label>
-        <input id="pocketTunnelDomain" type="text" placeholder="pocket.example.com" data-testid="pocket-tunnel-domain" />
-      </div>
-      <div class="row">
-        <label for="pocketTunnelToken">Tunnel Token</label>
-        <input id="pocketTunnelToken" type="password" placeholder="只保存在本机，不写入设置文件" data-testid="pocket-tunnel-token" />
-      </div>
-    </div>
-    <div class="row">
-      <label>公网访问</label>
-      <div class="checks">
-        <button type="button" id="pocketTunnelStart" data-testid="pocket-tunnel-start">开启公网访问</button>
-        <button type="button" id="pocketTunnelStop" data-testid="pocket-tunnel-stop">关闭公网访问</button>
-      </div>
-    </div>
-    <div class="pocket" id="pocketTunnelBox" hidden>
-      <img id="pocketTunnelQr" alt="手机扫码打开公网地址" />
-      <div>
-        <div class="line"><span class="k">公网地址</span><code id="pocketTunnelUrl" data-testid="pocket-tunnel-url">—</code></div>
-        <div class="line">
-          <span class="k">公网密码</span><code id="pocketTunnelPassword" data-testid="pocket-tunnel-password">—</code>
-          <button type="button" class="small" id="pocketTunnelRotate" data-testid="pocket-tunnel-rotate">刷新</button>
-          <button type="button" class="small" id="pocketTunnelCustom" data-testid="pocket-tunnel-custom">自定义</button>
-        </div>
-        <p class="state" id="pocketTunnelState" data-testid="pocket-tunnel-state"></p>
-      </div>
-    </div>
-    <p class="hint" id="pocketTunnelHint"></p>
   </section>
 
   <section>
@@ -225,15 +148,6 @@
     const portHintEl = document.getElementById('portHint')
     const proxyEnabledEl = document.getElementById('proxyEnabled')
     const fields = ['httpProxy', 'httpsProxy', 'noProxy'].map((id) => document.getElementById(id))
-    const pocketEnabledEl = document.getElementById('pocketEnabled')
-    const pocketPortEl = document.getElementById('pocketPort')
-    const pocketBoxEl = document.getElementById('pocketBox')
-    const pocketQrEl = document.getElementById('pocketQr')
-    const pocketUrlEl = document.getElementById('pocketUrl')
-    const pocketPasswordEl = document.getElementById('pocketPassword')
-    const pocketAddressEl = document.getElementById('pocketAddress')
-    const pocketStateEl = document.getElementById('pocketState')
-    const pocketHintEl = document.getElementById('pocketHint')
     let snapshot
 
     function setStatus(message, isError) {
@@ -258,10 +172,6 @@
       document.getElementById('checkDesktopOnStart').checked = v.checkDesktopOnStart
       document.getElementById('checkDshOnStart').checked = v.checkDshOnStart
       document.getElementById('browserEnabled').checked = v.browserEnabled !== false
-      pocketEnabledEl.checked = v.pocketEnabled === true
-      pocketPortEl.value = String(v.pocketPort)
-      pocketPortEl.placeholder = '41730'
-      renderPocketAll(state.pocket || {})
       const rows = [
         ['桌面端版本', state.facts.desktopVersion],
         ['随包 DSH', state.facts.runtimeVersion + '（' + state.facts.runtimeSource + '）'],
@@ -280,82 +190,9 @@
 
     /** Render the live phone-access state: code, address, password and why it is not running. */
     /** The public section: separate address, separate password, and it can be off while the LAN one is on. */
-    function renderPocketTunnel(publicAccess, mode, domain) {
-      const box = document.getElementById('pocketTunnelBox')
-      const state = document.getElementById('pocketTunnelState')
-      const hint = document.getElementById('pocketTunnelHint')
-      const named = mode === 'named'
-      document.getElementById('pocketNamedBox').hidden = !named
-      for (const radio of document.querySelectorAll('input[name="pocketTunnelMode"]')) {
-        radio.checked = radio.value === mode
-      }
-      document.getElementById('pocketTunnelDomain').value = domain || ''
-      box.hidden = publicAccess.url === undefined
-      document.getElementById('pocketTunnelQr').src = publicAccess.qr || ''
-      document.getElementById('pocketTunnelUrl').textContent = publicAccess.url || '—'
-      document.getElementById('pocketTunnelPassword').textContent = publicAccess.password || '—'
-      state.textContent = publicAccess.error
-        ? publicAccess.error
-        : publicAccess.running
-          ? '正在运行' + (publicAccess.customPassword ? '（密码已固定）' : '（快速隧道每次换密码）')
-          : publicAccess.available === false
-            ? '这台电脑上没有随包的隧道程序，公网访问不可用'
-            : ''
-      state.classList.toggle('error', Boolean(publicAccess.error))
-      hint.textContent = publicAccess.running
-        ? '公网地址已公开在互联网上，虽然要密码，也请用完就关。'
-        : named
-          ? '命名隧道需要先在 Cloudflare 建好隧道，把公网域名指向 http://127.0.0.1:' + (publicAccess.port || '') + '，再填入域名与 Token。'
-          : '开启后会通过 Cloudflare 起一条临时隧道；如果连不上，先关掉本机的代理/VPN（TUN 模式最容易拦隧道）。'
-    }
-
-    function renderPocket(pocket) {
-      // The download link is shown whether or not a listener is up: the user needs the app before
-      // there is anything to connect to.
-      const appBox = document.getElementById('pocketAppBox')
-      appBox.hidden = !pocket.apkQr
-      document.getElementById('pocketAppQr').src = pocket.apkQr || ''
-      document.getElementById('pocketAppUrl').textContent = pocket.apkUrl || '—'
-      pocketBoxEl.hidden = pocket.url === undefined
-      pocketQrEl.src = pocket.qr || ''
-      pocketUrlEl.textContent = pocket.url || '—'
-      pocketPasswordEl.textContent = pocket.password || '—'
-      const candidates = pocket.candidates || []
-      if (pocketAddressEl.options.length !== candidates.length + 1) {
-        pocketAddressEl.replaceChildren()
-        const automatic = document.createElement('option')
-        automatic.value = ''
-        automatic.textContent = '自动选择'
-        pocketAddressEl.append(automatic)
-        for (const candidate of candidates) {
-          const option = document.createElement('option')
-          option.value = candidate.address
-          option.textContent = candidate.address + (candidate.virtual ? '（虚拟网卡）' : '') + ' · ' + candidate.name
-          pocketAddressEl.append(option)
-        }
-      }
-      pocketAddressEl.value = pocket.selected || ''
-      pocketStateEl.textContent = pocket.error
-        ? pocket.error
-        : pocket.running ? '正在运行' : ''
-      pocketStateEl.classList.toggle('error', Boolean(pocket.error))
-      pocketHintEl.textContent = pocket.enabled === true
-        ? '手机与电脑连同一个 WiFi，扫码后输入密码即可；密码可以随时刷新，刷新后已登录的手机会被登出。'
-        : '打开后会在本机另起一个带密码的入口（DSH 自己仍然只监听 127.0.0.1）。关掉开关会立即断开手机。'
-    }
-
     /** Render both halves of phone access from one status answer. */
-    function renderPocketAll(pocket) {
-      renderPocket(pocket || {})
-      const publicAccess = (pocket && pocket.publicAccess) || {}
-      renderPocketTunnel(publicAccess, publicAccess.mode || 'quick', publicAccess.domain || '')
-    }
-
     /** Ask main for an action and re-render from the answer it returns. */
-    async function pocketAction(action) {
       try {
-        const pocket = await api.pocket(action)
-        renderPocketAll(pocket)
         if (pocket && pocket.error) setStatus(pocket.error, true)
       } catch (error) {
         setStatus(String(error), true)
@@ -369,10 +206,6 @@
      * for whoever reaches it) does not become less true because the user saw it yesterday.
      */
     async function startPublicAccess() {
-      const mode = (document.querySelector('input[name="pocketTunnelMode"]:checked') || {}).value
-      const domain = document.getElementById('pocketTunnelDomain').value.trim()
-      const token = document.getElementById('pocketTunnelToken').value.trim()
-      if (mode === 'named' && token !== '') void pocketAction({ kind: 'setTunnelToken', value: token })
       if (mode === 'named' && domain === '') {
         setStatus('命名隧道要先填公网域名', true)
         return
@@ -386,7 +219,6 @@
       if (!agreed) return
       // Configuration first, so the start uses what the page shows right now.
       await save()
-      await pocketAction({ kind: 'startTunnel', acceptedDisclaimer: true })
     }
 
     function collect() {
@@ -401,15 +233,6 @@
         checkDesktopOnStart: document.getElementById('checkDesktopOnStart').checked,
         checkDshOnStart: document.getElementById('checkDshOnStart').checked,
         browserEnabled: document.getElementById('browserEnabled').checked,
-        pocketEnabled: pocketEnabledEl.checked,
-        pocketPort: pocketPortEl.value.trim() === '' ? undefined : Number(pocketPortEl.value),
-        // The tunnel's on/off is not part of the form: it needs the disclaimer, so it has its own
-        // buttons. Everything else about it is ordinary configuration.
-        pocketTunnelPort: document.getElementById('pocketTunnelPort').value.trim() === ''
-          ? undefined
-          : Number(document.getElementById('pocketTunnelPort').value),
-        pocketTunnelMode: (document.querySelector('input[name="pocketTunnelMode"]:checked') || {}).value,
-        pocketTunnelDomain: document.getElementById('pocketTunnelDomain').value.trim(),
       }
     }
 
@@ -434,27 +257,14 @@
     } else {
       api.get().then(fill).catch((error) => { setStatus(String(error), true) })
       document.getElementById('save').addEventListener('click', () => { void save() })
-      document.getElementById('pocketRotate').addEventListener('click', () => { void pocketAction({ kind: 'rotate' }) })
-      document.getElementById('pocketCustom').addEventListener('click', () => {
         const value = window.prompt('输入新的访问密码（8–64 位英文字母或数字）')
         if (value === null) return
-        void pocketAction({ kind: 'setPassword', value: value.trim() })
       })
-      pocketAddressEl.addEventListener('change', () => {
-        void pocketAction({ kind: 'select', address: pocketAddressEl.value })
       })
-      document.getElementById('pocketTunnelStart').addEventListener('click', () => { void startPublicAccess() })
-      document.getElementById('pocketTunnelStop').addEventListener('click', () => { void pocketAction({ kind: 'stopTunnel' }) })
-      document.getElementById('pocketTunnelRotate').addEventListener('click', () => { void pocketAction({ kind: 'rotatePublicPassword' }) })
-      document.getElementById('pocketTunnelCustom').addEventListener('click', () => {
         const value = window.prompt('输入固定的公网访问密码（8–64 位英文字母或数字）')
         if (value === null) return
-        void pocketAction({ kind: 'setPublicPassword', value: value.trim() })
       })
-      document.getElementById('pocketTunnelToken').addEventListener('change', (event) => {
-        void pocketAction({ kind: 'setTunnelToken', value: event.target.value.trim() })
       })
-      for (const radio of document.querySelectorAll('input[name="pocketTunnelMode"]')) {
         radio.addEventListener('change', () => {
           // Saved, because the mode decides how the next start behaves.
           void save()

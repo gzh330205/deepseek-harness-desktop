@@ -6,7 +6,7 @@ import { gunzipSync } from 'node:zlib'
 import { after, test } from 'node:test'
 
 import { createPocketRateLimiter, createPocketSessions } from './pocket-auth.ts'
-import { POCKET_COOKIE, acceptsGzip, createPocketGateway, type PocketGateway } from './pocket-gateway.ts'
+import { POCKET_COOKIE, POCKET_MARKER_HEADER, acceptsGzip, createPocketGateway, type PocketGateway } from './pocket-gateway.ts'
 
 /** What the stub upstream saw, so the rewrite rules can be asserted rather than assumed. */
 interface Seen {
@@ -123,6 +123,8 @@ interface Reply {
   readonly status: number
   readonly headers: Record<string, string | string[] | undefined>
   readonly body: string
+  /** The gateway's self-identification header, as the phone client reads it. */
+  readonly marker: string | undefined
 }
 
 function call(gateway: PocketGateway, options: {
@@ -149,7 +151,12 @@ function call(gateway: PocketGateway, options: {
       const chunks: Buffer[] = []
       response.on('data', chunk => chunks.push(chunk as Buffer))
       response.on('end', () => {
-        resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks).toString('utf8') })
+        resolve({
+          status: response.statusCode ?? 0,
+          headers: response.headers,
+          body: Buffer.concat(chunks).toString('utf8'),
+          marker: response.headers[POCKET_MARKER_HEADER] as string | undefined,
+        })
       })
     })
     request.on('error', reject)
@@ -527,4 +534,18 @@ test('accept-encoding parsing handles the real header shapes', () => {
   assert.equal(acceptsGzip('br, deflate'), false)
   assert.equal(acceptsGzip(undefined), false)
   assert.equal(acceptsGzip(['br', 'gzip']), true)
+})
+
+test('every answer carries the marker that says "this really is the gateway"', async () => {
+  // The phone client refuses to trust an answer without it, which is what stops a foreign 200 from
+  // being mistaken for a working computer.
+  const { gateway } = await startGateway()
+  const page = await call(gateway, { path: '/__pocket/login' })
+  assert.equal(page.status, 200)
+  assert.equal(page.marker, '1', '登录页必须带标记头')
+
+  const cookie = await login(gateway, 'Test1234')
+  const served = await call(gateway, { cookie })
+  assert.equal(served.status, 200)
+  assert.equal(served.marker, '1', '代理透传的响应也必须带标记头')
 })

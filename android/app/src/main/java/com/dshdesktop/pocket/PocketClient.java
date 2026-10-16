@@ -72,8 +72,14 @@ public final class PocketClient {
     try {
       HttpURLConnection connection = open(baseUrl, "GET", PROBE_TIMEOUT_MS);
       int status = connection.getResponseCode();
+      boolean gateway = isGateway(connection);
       drain(status >= 400 ? connection.getErrorStream() : connection.getInputStream());
       connection.disconnect();
+      if (!gateway) {
+        // Something answered, but it is not a DSH gateway: a web server, a captive portal, the wrong
+        // port. Saying so is the whole point — otherwise the phone "connects" to a stranger's 200.
+        return new Probe(false, false, status, "这个地址不是 DSH 的「手机访问」入口");
+      }
       if (status == 401) {
         // The gateway's own login page: reachable, and it wants the password.
         return new Probe(true, true, 401, null);
@@ -109,9 +115,14 @@ public final class PocketClient {
         out.write(body);
       }
       int status = connection.getResponseCode();
+      boolean gateway = isGateway(connection);
       drain(status >= 400 ? connection.getErrorStream() : connection.getInputStream());
       String setCookie = connection.getHeaderField("Set-Cookie");
       connection.disconnect();
+      if (!gateway) {
+        // A stranger's 303 is not a session: only our gateway may hand one out.
+        return new Login(false, null, "这个地址不是 DSH 的「手机访问」入口");
+      }
       if (status == 401) {
         return new Login(false, null, "密码不正确");
       }
@@ -129,6 +140,21 @@ public final class PocketClient {
     } catch (Exception error) {
       return new Login(false, null, describe(error));
     }
+  }
+
+  /**
+   * Response header the gateway adds to every answer.
+   *
+   * The client requires it before believing an answer: "any 200 means already signed in" once made a
+   * GitHub URL look like the user's computer, and it stayed saved forever.
+   */
+  static final String MARKER_HEADER = "X-Dsh-Pocket";
+
+  /** The gateway's marker value. */
+  static final String MARKER_VALUE = "1";
+
+  private static boolean isGateway(HttpURLConnection connection) {
+    return MARKER_VALUE.equals(connection.getHeaderField(MARKER_HEADER));
   }
 
   private static HttpURLConnection open(String url, String method, int timeoutMs) throws Exception {

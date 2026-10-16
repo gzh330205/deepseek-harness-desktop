@@ -88,8 +88,19 @@ export interface SettingsSaveResult {
   readonly restartRequired?: boolean
 }
 
+/**
+ * Shell-owned pages.
+ *
+ * This class is what opens them, so the IPC ownership check has to know all of them: a page the shell
+ * loads is allowed to talk to the shell, anything else is not. (The class name is older than the second
+ * page — it is really "a window showing a page the shell owns".)
+ */
+export const SHELL_PAGE_DIRECTORIES = ['/settings/', '/pocket/'] as const
+
 export interface SettingsWindowOptions {
   readonly appRoot: string
+  /** Which shell page this window shows, and what to call it. Settings when omitted. */
+  readonly page?: { readonly directory: string; readonly title: string; readonly width: number; readonly height: number }
   readonly snapshot: () => SettingsSnapshot
   readonly save: (input: SettingsInput) => SettingsSaveResult
   readonly restart: () => void
@@ -104,18 +115,20 @@ export class SettingsWindow {
 
   private create(): BrowserWindow {
     const palette = titleBarPalette(nativeTheme.shouldUseDarkColors)
+    const page = this.options.page
+      ?? { directory: 'settings', title: `${PRODUCT_NAME} 设置`, width: SETTINGS_WINDOW_WIDTH, height: SETTINGS_WINDOW_HEIGHT }
     const window = new BrowserWindow({
-      width: SETTINGS_WINDOW_WIDTH,
-      height: SETTINGS_WINDOW_HEIGHT,
-      minWidth: SETTINGS_WINDOW_WIDTH,
-      minHeight: SETTINGS_WINDOW_HEIGHT,
+      width: page.width,
+      height: page.height,
+      minWidth: page.width,
+      minHeight: Math.min(560, page.height),
       resizable: true,
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
       center: true,
       show: false,
-      title: `${PRODUCT_NAME} 设置`,
+      title: page.title,
       backgroundColor: palette.background,
       webPreferences: {
         preload: join(this.options.appRoot, 'dist', 'preload.cjs'),
@@ -129,7 +142,7 @@ export class SettingsWindow {
     })
     window.setMenuBarVisibility(false)
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    void window.loadFile(join(this.options.appRoot, 'dist', 'settings', 'index.html'))
+    void window.loadFile(join(this.options.appRoot, 'dist', page.directory, 'index.html'))
     window.on('closed', () => { this.window = undefined })
     return window
   }
@@ -150,10 +163,42 @@ export class SettingsWindow {
     if (this.window !== undefined && !this.window.isDestroyed()) this.window.close()
   }
 
+  /**
+   * Wait until the page has loaded, then report what is on it.
+   *
+   * Used by the smoke run: a window whose page never painted (wrong path, CSP that blocks its own
+   * script, a preload that threw) looks exactly like a window that works until someone clicks it.
+   *
+   * @param timeoutMs - How long to wait.
+   * @returns Whether the document finished and which of the given selectors exist.
+   */
+  async probe(timeoutMs = 8_000): Promise<{ readonly loaded: boolean; readonly selectors: Record<string, boolean> }> {
+    const window = this.window
+    if (window === undefined || window.isDestroyed()) return { loaded: false, selectors: {} }
+    const contents = window.webContents
+    const loaded = contents.isLoading()
+      ? await new Promise<boolean>(resolve => {
+          const timer = setTimeout(() => { resolve(false) }, timeoutMs)
+          contents.once('did-finish-load', () => { clearTimeout(timer); resolve(true) })
+          contents.once('did-fail-load', () => { clearTimeout(timer); resolve(false) })
+        })
+      : true
+    if (!loaded) return { loaded: false, selectors: {} }
+    try {
+      const selectors = await contents.executeJavaScript(
+        `(() => { const ids = ${JSON.stringify(['status', 'lanQr', 'wanState', 'apkToggle', 'lanEnabled'])};`
+        + ' const out = {}; for (const id of ids) out[id] = document.getElementById(id) !== null; return out })()',
+      ) as Record<string, boolean>
+      return { loaded: true, selectors }
+    } catch {
+      return { loaded: true, selectors: {} }
+    }
+  }
+
   install(): void {
     const owned = (url: string): boolean => {
       if (!this.options.isShellDocument(url)) return false
-      return url.includes('/settings/')
+      return SHELL_PAGE_DIRECTORIES.some(directory => url.includes(directory))
     }
 
     ipcMain.handle(IPC.settingsGet, (event) => {

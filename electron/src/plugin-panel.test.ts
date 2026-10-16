@@ -111,7 +111,8 @@ function boot(options: { chipApplies?: boolean; browserEnabled?: boolean } = {})
   }
   // `navigator` is a getter-only global in modern Node, so it needs a property definition.
   Object.defineProperty(globalScope, 'navigator', {
-    value: { clipboard: { writeText: async () => {} } },
+    // `userAgent` matters: the phone-layout code decides whether it is running inside the app.
+    value: { userAgent: '', clipboard: { writeText: async () => {} } },
     configurable: true,
   })
   globalScope.fetch = async () => ({

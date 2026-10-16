@@ -122,6 +122,7 @@ pnpm minisign:check      # 真实产物往返：真钥签名 → 自校验通过
   手机扫码就能装。
 - **`latest.json` 多了一个 `apk` 段**（包名、版本、minSdk/targetSdk、固定 URL、sha256）。这是附加字段：
   `fetchManifest` 只读它认识的键，老客户端不受影响。
+- **配置入口**：标题栏「手机访问」菜单（`应用`/`插件` 旁边）——菜单里能看状态、开关局域网访问、关闭公网访问、复制两种地址；「打开手机访问设置…」打开的是一个独立窗口（`src/pocket-ui/`，复用设置窗口的桥），里面局域网与公网分区，默认显示同一 WiFi 的连接二维码（可刷新），手机 App 的下载二维码收在按钮后面。设置窗口不再承载手机访问，只留一句指引。
 - **smoke 是发布闸门**：打包版 smoke（`scripts/smoke.mjs cookie --packaged`）与手机访问网关 smoke
   （`scripts/smoke-pocket.mjs`）都在签名与上传**之前**跑，任一失败即拒绝发布（`--skip-smoke` 可绕过，但要先弄清楚原因）。
 - **APK 的签名密钥**：`android/keys/dsh-pocket.jks` + `keys/keystore.properties`（都在 `.gitignore` 里，另备份于

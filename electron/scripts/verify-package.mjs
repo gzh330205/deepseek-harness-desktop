@@ -66,6 +66,17 @@ try {
   fail(`app.asar 里没有市场窗口页面 ${marketPage}：${String(error)}`)
 }
 if (!marketHtml.includes('__DSH_MARKET__')) fail('市场窗口页面没有引用 __DSH_MARKET__ 桥')
+
+// The phone-access window is a shell surface too — and the one the DSH sidebar entry opens. A missing
+// page means the entry opens an empty window, which is exactly the silent loss this script catches.
+const pocketPage = join('dist', 'pocket', 'index.html')
+let pocketHtml = ''
+try {
+  pocketHtml = (await archive.readFile(pocketPage)).toString('utf8')
+} catch (error) {
+  fail(`app.asar 里没有手机访问窗口页面 ${pocketPage}：${String(error)}`)
+}
+if (!pocketHtml.includes('__DSH_SETTINGS__')) fail('手机访问窗口页面没有引用 __DSH_SETTINGS__ 桥')
 // `dist/main.js` is checked through the IPC channel names rather than the menu label: esbuild emits
 // ASCII by default, so the Chinese label is written as `\uXXXX` escapes and a literal match would
 // fail on a perfectly good build.

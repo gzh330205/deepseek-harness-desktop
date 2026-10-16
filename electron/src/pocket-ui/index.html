@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>手机访问</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115; --panel: #161a22; --fg: #e8ebf2; --muted: #8d97ab;
+      --line: rgba(255,255,255,.10); --field: #0b0d12; --accent: #4c6ef5; --danger: #f07a7a; --ok: #4ec9a0;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f3f3f3; --panel: #ffffff; --fg: #1f1f1f; --muted: #666e7a;
+        --line: rgba(0,0,0,.12); --field: #ffffff; --accent: #3b5bdb; --danger: #c0392b; --ok: #199a6f;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 18px 20px 16px;
+      background: var(--bg); color: var(--fg);
+      font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      user-select: none;
+    }
+    h1 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    p.hint { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+    section { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; background: var(--panel); }
+    section > h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .3px; }
+    .row { display: grid; grid-template-columns: 132px 1fr; gap: 10px; align-items: center; margin-bottom: 8px; }
+    .row:last-child { margin-bottom: 0; }
+    label { color: var(--fg); }
+    input[type="text"], input[type="number"], input[type="password"] {
+      width: 100%; padding: 6px 8px; color: var(--fg); background: var(--field);
+      border: 1px solid var(--line); border-radius: 6px; font: inherit;
+    }
+    input[type="number"] { max-width: 120px; }
+    .checks { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+    .checks label { display: flex; align-items: center; gap: 6px; }
+    button {
+      font: inherit; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--line);
+      color: var(--fg); background: transparent; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button[disabled] { opacity: .5; cursor: default; }
+    button.small { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+    select {
+      font: inherit; padding: 5px 6px; color: var(--fg); background: var(--field);
+      border: 1px solid var(--line); border-radius: 6px; max-width: 100%;
+    }
+    code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; word-break: break-all; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+    .tag.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+    .tag.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+    .connect { display: grid; grid-template-columns: 156px 1fr; gap: 14px; align-items: start; margin-top: 6px; }
+    .connect[hidden] { display: none; }
+    .connect img { width: 152px; height: 152px; padding: 4px; background: #fff; border-radius: 8px; image-rendering: pixelated; }
+    .connect .line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .connect .k { color: var(--muted); font-size: 12px; min-width: 56px; }
+    .howto { margin: 8px 0 0; padding: 0 0 0 18px; color: var(--muted); font-size: 12px; }
+    .howto li { margin: 2px 0; }
+    .err { color: var(--danger); }
+    .inline-hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+    #apkBox[hidden] { display: none; }
+    footer { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+    #status { flex: 1; font-size: 12px; color: var(--muted); min-height: 18px; }
+    #status.error { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <h1>手机访问</h1>
+  <p class="hint">让手机打开这台电脑上的 DSH。同一 WiFi 用第一条通道；不在同一 WiFi 时用第二条（流量经 Cloudflare 隧道）。手机端装「DSH 口袋」App 后扫码即可。</p>
+
+  <section>
+    <h2>局域网（同一 WiFi）</h2>
+    <div class="row">
+      <label>允许手机访问</label>
+      <div class="checks">
+        <label><input type="checkbox" id="lanEnabled" data-testid="lan-enabled" /> 打开后本机另起一个带密码的入口（DSH 自己仍只监听 127.0.0.1）</label>
+      </div>
+    </div>
+    <div class="row">
+      <label for="lanPort">访问端口</label>
+      <input id="lanPort" type="number" min="1024" max="65535" step="1" data-testid="lan-port" />
+    </div>
+
+    <div class="connect" id="lanConnect" hidden>
+      <img id="lanQr" alt="手机扫码连接" />
+      <div>
+        <div class="line"><span class="k">状态</span><span class="tag ok" id="lanState">正在运行</span></div>
+        <div class="line"><span class="k">地址</span><code id="lanUrl" data-testid="lan-url">—</code></div>
+        <div class="line">
+          <span class="k">密码</span><code id="lanPassword" data-testid="lan-password">—</code>
+          <button type="button" class="small" id="lanRotate" data-testid="lan-rotate">换一个密码</button>
+          <button type="button" class="small" id="lanCustom" data-testid="lan-custom">自定义</button>
+        </div>
+        <div class="line">
+          <span class="k">本机地址</span>
+          <select id="lanAddress" data-testid="lan-address"></select>
+          <button type="button" class="small" id="lanRefreshQr" data-testid="lan-refresh-qr">刷新二维码</button>
+        </div>
+        <ol class="howto">
+          <li>手机装好「DSH 口袋」（见页面底部的下载按钮）。</li>
+          <li>用 App 扫左边这个二维码，或手动填上面的地址。</li>
+          <li>输入上面显示的 8 位密码。勾「记住密码」后，电脑上的 DSH 重启也不用重新输。</li>
+        </ol>
+      </div>
+    </div>
+    <p class="inline-hint" id="lanHint"></p>
+  </section>
+
+  <section>
+    <h2>公网（不在同一 WiFi 时）</h2>
+    <div class="row">
+      <label>状态</label>
+      <div class="checks"><span class="tag" id="wanState" data-testid="wan-state">未开启</span></div>
+    </div>
+    <div class="row">
+      <label>隧道方式</label>
+      <div class="checks">
+        <label><input type="radio" name="wanMode" value="quick" data-testid="wan-mode-quick" /> 快速隧道（地址每次随机，不用配置）</label>
+        <label><input type="radio" name="wanMode" value="named" data-testid="wan-mode-named" /> 命名隧道（固定域名，需要域名 + Tunnel Token）</label>
+      </div>
+    </div>
+    <div class="row">
+      <label for="wanPort">本地转发端口</label>
+      <input id="wanPort" type="number" min="1024" max="65535" step="1" data-testid="wan-port" />
+    </div>
+    <div id="wanNamed" hidden>
+      <div class="row">
+        <label for="wanDomain">公网域名</label>
+        <input id="wanDomain" type="text" placeholder="pocket.example.com" data-testid="wan-domain" />
+      </div>
+      <div class="row">
+        <label for="wanToken">Tunnel Token</label>
+        <input id="wanToken" type="password" placeholder="eyJ… 只保存在本机，不写入设置文件" data-testid="wan-token" />
+      </div>
+      <p class="inline-hint">在 Cloudflare 控制台建好隧道后：把公网域名指向 <code id="wanServiceUrl">http://127.0.0.1:41731</code>，Token 从隧道页的 Add a replica 里复制。</p>
+    </div>
+
+    <div class="connect" id="wanConnect" hidden>
+      <img id="wanQr" alt="手机扫码连接公网地址" />
+      <div>
+        <div class="line"><span class="k">公网地址</span><code id="wanUrl" data-testid="wan-url">—</code></div>
+        <div class="line">
+          <span class="k">公网密码</span><code id="wanPassword" data-testid="wan-password">—</code>
+          <button type="button" class="small" id="wanRotate" data-testid="wan-rotate">换一个密码</button>
+          <button type="button" class="small" id="wanCustom" data-testid="wan-custom">自定义</button>
+        </div>
+        <ol class="howto">
+          <li>手机在任何网络（4G/5G 也行）打开「DSH 口袋」。</li>
+          <li>扫左边的码或填上面的公网地址（<strong>手机装不上 App 时也可直接用手机浏览器打开这个地址</strong>）。</li>
+          <li>输入公网密码。用完请回来点「关闭公网访问」。</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>开启 / 关闭</label>
+      <div class="checks">
+        <button type="button" class="primary" id="wanStart" data-testid="wan-start">开启公网访问</button>
+        <button type="button" id="wanStop" data-testid="wan-stop">关闭公网访问</button>
+      </div>
+    </div>
+    <p class="inline-hint" id="wanHint"></p>
+  </section>
+
+  <section>
+    <h2>手机 App</h2>
+    <div class="row">
+      <label>DSH 口袋</label>
+      <div class="checks">
+        <button type="button" id="apkToggle" data-testid="apk-toggle">下载手机 App（APK）</button>
+        <span class="inline-hint" id="apkHint">Android 8.0 及以上；用手机相机扫码下载安装。</span>
+      </div>
+    </div>
+    <div class="connect" id="apkBox" hidden>
+      <img id="apkQr" alt="手机扫码下载 App" />
+      <div>
+        <div class="line"><span class="k">下载地址</span><code id="apkUrl" data-testid="apk-url">—</code></div>
+        <ol class="howto">
+          <li>用手机相机（不是 App 里的扫码）扫左边的码，下载 APK 后点开安装。</li>
+          <li>装好后回到上面第一条通道，扫那里的连接码。</li>
+        </ol>
+        <p class="inline-hint">系统提示「未知来源」时要允许一次；安装包没有 Play 商店签名，这是正常现象。</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span id="status"></span>
+    <button type="button" class="small" id="close">关闭</button>
+  </footer>
+
+  <script>
+    const api = window.__DSH_SETTINGS__;
+    const $ = (id) => document.getElementById(id);
+    let saving = false;
+
+    function setStatus(text, bad) {
+      $('status').textContent = text || '';
+      $('status').classList.toggle('error', Boolean(bad));
+    }
+
+    function renderLan(values, pocket) {
+      $('lanEnabled').checked = values.pocketEnabled === true;
+      $('lanPort').value = values.pocketPort ?? '';
+      const running = pocket.running === true && pocket.url !== undefined;
+      $('lanConnect').hidden = !running;
+      if (running) {
+        $('lanQr').src = pocket.qr || '';
+        $('lanUrl').textContent = pocket.url;
+        $('lanPassword').textContent = pocket.password || '—';
+        const candidates = pocket.candidates || [];
+        const select = $('lanAddress');
+        if (select.options.length !== candidates.length + 1) {
+          select.replaceChildren();
+          const auto = document.createElement('option');
+          auto.value = '';
+          auto.textContent = '自动选择';
+          select.append(auto);
+          for (const candidate of candidates) {
+            const option = document.createElement('option');
+            option.value = candidate.address;
+            option.textContent = candidate.address + (candidate.virtual ? '（虚拟网卡）' : '') + ' · ' + candidate.name;
+            select.append(option);
+          }
+        }
+        select.value = pocket.selected || '';
+        $('lanState').textContent = '正在运行';
+      }
+      $('lanHint').textContent = pocket.error
+        ? pocket.error
+        : running
+          ? ''
+          : '打开开关并「保存」后会出现连接二维码；关掉会立即断开手机。';
+      $('lanHint').classList.toggle('err', Boolean(pocket.error));
+    }
+
+    function renderWan(values, pocket) {
+      const wan = pocket.publicAccess || {};
+      const mode = values.pocketTunnelMode === 'named' ? 'named' : 'quick';
+      for (const radio of document.querySelectorAll('input[name="wanMode"]')) {
+        radio.checked = radio.value === mode;
+      }
+      $('wanNamed').hidden = mode !== 'named';
+      $('wanPort').value = values.pocketTunnelPort ?? '';
+      $('wanDomain').value = values.pocketTunnelDomain || '';
+      $('wanServiceUrl').textContent = 'http://127.0.0.1:' + (values.pocketTunnelPort ?? '');
+      $('wanToken').placeholder = wan.hasToken ? 'eyJ… 已保存（留空则不修改）' : 'eyJ… 只保存在本机，不写入设置文件';
+
+      const running = wan.running === true;
+      const state = $('wanState');
+      state.textContent = wan.error ? ('失败：' + wan.error) : running ? '运行中' : '未开启';
+      state.className = 'tag' + (wan.error ? ' bad' : running ? ' ok' : '');
+      $('wanConnect').hidden = !running || wan.url === undefined;
+      if (running) {
+        $('wanQr').src = wan.qr || '';
+        $('wanUrl').textContent = wan.url || '—';
+        $('wanPassword').textContent = wan.password || '—';
+      }
+      $('wanStart').disabled = running || !wan.available;
+      $('wanHint').textContent = wan.available === false
+        ? '这台电脑上没找到随包的隧道程序，公网访问不可用。'
+        : wan.error
+          ? '失败原因见上面的状态。常见：本机代理/VPN 拦了隧道（TUN 模式最常见）、命名隧道的域名/Token 或 Service URL 端口不对。'
+          : running
+            ? '公网地址已公开在互联网上，虽然要密码，也请用完就关。'
+            : mode === 'named'
+              ? '先在 Cloudflare 建好隧道与路由，再填域名和 Token，然后点「开启公网访问」。'
+              : '点「开启公网访问」即可，不需要域名或 Token；每次开启地址都会变。';
+    }
+
+    function render(state) {
+      const values = (state && state.values) || {};
+      const pocket = (state && state.pocket) || {};
+      renderLan(values, pocket);
+      renderWan(values, pocket);
+      const apk = pocket.apkQr || pocket.apkUrl;
+      $('apkHint').hidden = Boolean(apk);
+      if (apk) {
+        $('apkQr').src = pocket.apkQr || '';
+        $('apkUrl').textContent = pocket.apkUrl || '—';
+      }
+    }
+
+    async function load() {
+      try {
+        const state = await api.get();
+        render(state);
+        if (!saving) setStatus('');
+      } catch (error) {
+        setStatus('读取状态失败：' + String(error), true);
+      }
+    }
+
+    async function act(action) {
+      try {
+        const pocket = await api.pocket(action);
+        const state = await api.get();
+        render({ ...state, pocket: pocket || state.pocket });
+        if (pocket && pocket.error) setStatus(pocket.error, true);
+        return pocket;
+      } catch (error) {
+        setStatus('操作失败：' + String(error), true);
+        return null;
+      }
+    }
+
+    async function save(patch, note) {
+      saving = true;
+      setStatus('正在保存…');
+      try {
+        const result = await api.save(patch);
+        if (!result.ok) {
+          setStatus(result.reason || '保存失败', true);
+          return false;
+        }
+        setStatus(note || '已保存');
+        await load();
+        return true;
+      } catch (error) {
+        setStatus('保存失败：' + String(error), true);
+        return false;
+      } finally {
+        saving = false;
+      }
+    }
+
+    const currentMode = () => (document.querySelector('input[name="wanMode"]:checked') || {}).value || 'quick';
+
+    function wire() {
+      $('lanEnabled').addEventListener('change', () => {
+        void save({ pocketEnabled: $('lanEnabled').checked, pocketPort: Number($('lanPort').value) || undefined },
+          $('lanEnabled').checked ? '局域网访问已开启' : '局域网访问已关闭');
+      });
+      $('lanPort').addEventListener('change', () => {
+        void save({ pocketPort: Number($('lanPort').value) || undefined }, '端口已保存');
+      });
+      $('lanRotate').addEventListener('click', () => { void act({ kind: 'rotate' }) });
+      $('lanCustom').addEventListener('click', () => {
+        const value = window.prompt('输入新的局域网访问密码（8–64 位英文字母或数字）');
+        if (value !== null) void act({ kind: 'setPassword', value: value.trim() });
+      });
+      $('lanAddress').addEventListener('change', () => { void act({ kind: 'select', address: $('lanAddress').value }) });
+      // 「刷新二维码」: 重新读状态并重画，换了网络/换了网卡后地址会跟着更新。
+      $('lanRefreshQr').addEventListener('click', () => { setStatus('已刷新'); void load() });
+
+      for (const radio of document.querySelectorAll('input[name="wanMode"]')) {
+        radio.addEventListener('change', () => { void save({ pocketTunnelMode: currentMode() }, '隧道方式已保存') });
+      }
+      $('wanPort').addEventListener('change', () => {
+        void save({ pocketTunnelPort: Number($('wanPort').value) || undefined }, '转发端口已保存');
+      });
+      $('wanDomain').addEventListener('change', () => {
+        void save({ pocketTunnelDomain: $('wanDomain').value.trim() }, '公网域名已保存');
+      });
+      $('wanToken').addEventListener('change', () => {
+        // The token never enters the settings document: it travels as its own action and is stored
+        // next to the passwords, readable only by this user.
+        void act({ kind: 'setTunnelToken', value: $('wanToken').value.trim() });
+        $('wanToken').value = '';
+      });
+      $('wanStart').addEventListener('click', () => { void startWan() });
+      $('wanStop').addEventListener('click', () => { void act({ kind: 'stopTunnel' }) });
+      $('wanRotate').addEventListener('click', () => { void act({ kind: 'rotatePublicPassword' }) });
+      $('wanCustom').addEventListener('click', () => {
+        const value = window.prompt('输入固定的公网访问密码（8–64 位英文字母或数字）');
+        if (value !== null) void act({ kind: 'setPublicPassword', value: value.trim() });
+      });
+
+      $('apkToggle').addEventListener('click', () => { $('apkBox').hidden = !$('apkBox').hidden });
+      $('close').addEventListener('click', () => { void api.close() });
+    }
+
+    async function startWan() {
+      const mode = currentMode();
+      const domain = $('wanDomain').value.trim();
+      if (mode === 'named' && domain === '') {
+        setStatus('命名隧道要先填公网域名', true);
+        return;
+      }
+      const agreed = window.confirm(
+        '开启后，互联网上的任何人只要拿到地址和密码，就能操作你这台电脑上的 DSH，'
+        + '而 DSH 可以读写文件、执行命令。\n\n'
+        + '建议：只在需要时开启，用完立即关闭；不要把这个地址分享给别人。\n\n'
+        + '确定要开启公网访问吗？',
+      );
+      if (!agreed) return;
+
+      // Configuration first, so the tunnel starts with what the page shows right now.
+      await save({ pocketTunnelMode: mode, pocketTunnelDomain: domain }, '配置已保存');
+      $('wanStart').disabled = true;
+      $('wanState').textContent = '正在启动…（最多等约 45 秒）';
+      $('wanState').className = 'tag';
+      try {
+        const pocket = await act({ kind: 'startTunnel', acceptedDisclaimer: true });
+        if (pocket && pocket.publicAccess && pocket.publicAccess.running) {
+          setStatus('公网访问已开启');
+        } else if (pocket && pocket.publicAccess && pocket.publicAccess.error) {
+          setStatus(pocket.publicAccess.error, true);
+        }
+      } finally {
+        await load();
+      }
+    }
+
+    if (!api) {
+      setStatus('页面未获得桌面壳 API（preload 未加载）', true);
+    } else {
+      wire();
+      load();
+      // A tunnel can die on its own (network change, cloudflared exit): keep the status honest.
+      setInterval(() => { if (!saving) void load() }, 3000);
+    }
+  </script>
+</body>
+</html>

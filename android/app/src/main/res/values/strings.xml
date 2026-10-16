@@ -10,6 +10,7 @@
   <string name="connect">连接</string>
   <string name="rescan">重新扫码</string>
   <string name="reconnect">重连</string>
+  <string name="edit_address">改地址</string>
   <string name="clear">清除</string>
   <string name="probing">正在寻找电脑…</string>
   <string name="connected">已连接</string>

@@ -35,7 +35,7 @@
 - 应用图标使用 `src-tauri/icons/whale-original.png` 及其派生资产，不要替换。
 - 主窗口 `dragDropEnabled` 必须保持 `false`（Windows 下 Tauri 原生拖拽会拦截前端 HTML5 drag/drop）。
 - **插件只能从壳内市场装**：不要再引入第二套市场 UI，也不要让 dsh 去 spawn 安装。路径固定为 市场窗口 → `MarketService` → `bin/node.exe + pnpm.cjs`（`cwd` = profile、`shell:false`）；dsh 侧的 `dsh-plugin-manager` 会用 `process.execPath`（GUI 壳 exe）起子进程，在本平台因 `cwd` 不存在而 `ENOENT`，安装/更新/回滚/源迁移四项一起失效。三条必须守住的规则：目录准入判据是包声明 `dsh.bundle.patch`；装完必须登记 `dsh.profile.bundles`；**pnpm 失败时绝不改 profile**（半登记的 bundle 会让 harness 起不来）。
-- **设置只有一个入口**：壳自己的设置窗口（`electron/src/settings-window.ts` + `IPC.settingsGet/Save`）。插件注入的 DSH 设置页「桌面端」已移除，**不要**再往 DSH 设置页里加桌面端设置——两套界面必然漂移。
+- **每一项设置只有一个入口**：常规设置是壳自己的设置窗口（`electron/src/settings-window.ts` + `IPC.settingsGet/Save`）；**手机访问是例外**，它有自己的窗口（`electron/src/pocket-ui/`，标题栏「手机访问」菜单打开），设置窗口里只留一句指引。无论哪一项，**不要**让同一个设置在两个地方都能改——两套界面必然漂移。插件注入的 DSH 设置页「桌面端」已移除，也不要再往 DSH 页面里加壳的配置界面。
 - 更新顺序：启动前置门禁通过 → 启动 DSH 服务 → 进入 DSH 页面后先静默检查桌面更新（检查期间不弹窗，仅发现新版本时弹出居中的 `desktop-update` 窗口，下载安装期间锁定主窗口）→ 桌面无更新或用户选择“暂不更新”后才检查 DSH 更新（同样静默检查，有更新则弹出居中的 `dsh-update-prompt` 窗口询问是否更新；用户选择更新后，右下角 `update-overlay` 无边框小窗口显示更新进度，更新完成后再回到居中弹窗询问立即重启或稍后重启；更新期间不阻塞 DSH 使用）。两个启动检查的开关由 DSH 面板的 `updates.checkDesktopOnStart` / `updates.checkDshOnStart` 控制。
 - 启动时主窗口保持 `visible: false`，由前端 `show_launcher` 命令在首帧绘制后显示，避免空白窗口。
 - Windows 下所有子进程（dsh.cmd、netstat、taskkill 等）必须使用 `CREATE_NO_WINDOW` 隐藏控制台窗口。

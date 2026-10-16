@@ -42,6 +42,14 @@ final class TestHttpServer implements Closeable {
   /** What the handler wants to answer. */
   static final class Response {
     int status = 200;
+    /**
+     * Whether this answer carries the gateway's marker header.
+     *
+     * True by default so every test stands in for our own gateway; a test that wants a *stranger*
+     * (a web server, a captive portal) turns it off — which is exactly the case that once let a GitHub
+     * URL be saved as the user's computer.
+     */
+    boolean gatewayMarker = true;
     String body = "";
     final Map<String, String> headers = new LinkedHashMap<>();
   }
@@ -123,6 +131,9 @@ final class TestHttpServer implements Closeable {
     byte[] payload = response.body.getBytes(StandardCharsets.UTF_8);
     StringBuilder out = new StringBuilder();
     out.append("HTTP/1.1 ").append(response.status).append(" X\r\n");
+    if (response.gatewayMarker) {
+      out.append("X-Dsh-Pocket: 1\r\n");
+    }
     for (Map.Entry<String, String> header : response.headers.entrySet()) {
       out.append(header.getKey()).append(": ").append(header.getValue()).append("\r\n");
     }

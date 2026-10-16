@@ -93,6 +93,14 @@ Status: implemented
 - 签名密钥在 `android/keys/`（不入库）并备份到 `%USERPROFILE%\.dsh-desktop-keys\`；构建说明见
   [android/README.md](../../../android/README.md)。
 
+## 真机报障后的修复
+
+用户在自己的手机上实测后报了两个问题，都在
+[入口与配置界面](2026-10-16-pocket-ui.md) 里记着完整链条：扫码器把「下载 App」的 GitHub 链接当成电脑地址
+（地址解析丢路径 + 探测信任任何 200 → 外站地址被存下来反复自动打开）、扫码界面是横屏。修法分别是地址解析
+拒绝带路径的 URL、网关加 `X-Dsh-Pocket` 标记头且客户端必须看到、顶栏加「改地址」、以及声明自己的竖屏
+`PocketCaptureActivity`。
+
 ## 与后续阶段的关系
 
 公网隧道（P3）、移动布局与压缩保活（P4）、发版集成（P5）的计划见

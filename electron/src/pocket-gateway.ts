@@ -72,6 +72,16 @@ export function mergeVary(existing: string | string[] | undefined, value: string
   return tokens.join(', ')
 }
 
+/**
+ * Response header that identifies this gateway.
+ *
+ * The phone client verifies it before trusting an answer. Without it, "any 200 means I am already
+ * signed in" made a foreign server's 200 look like a working computer — a real report: the desktop's
+ * app-download QR code is a GitHub URL, and the phone ended up saving `https://github.com:443/` as
+ * the user's PC.
+ */
+export const POCKET_MARKER_HEADER = 'x-dsh-pocket'
+
 /** Session cookie name; also the marker the login page checks. */
 export const POCKET_COOKIE = 'dsh_pocket'
 
@@ -266,6 +276,7 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
     response.writeHead(status, {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
+      [POCKET_MARKER_HEADER]: '1',
       ...headers,
     })
     response.end(body)
@@ -367,6 +378,7 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
         && !(Number.isFinite(declaredLength) && declaredLength < COMPRESS_MIN_BYTES)
         && status !== 204 && status !== 304
         && (request.method ?? 'GET') !== 'HEAD'
+      outgoing[POCKET_MARKER_HEADER] = '1'
       if (compress) {
         // A phone on mobile data is the whole point of this listener: the client's own bundles and a
         // long session payload are the two biggest things crossing it.

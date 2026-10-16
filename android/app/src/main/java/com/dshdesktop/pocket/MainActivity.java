@@ -25,6 +25,7 @@ import com.journeyapps.barcodescanner.ScanOptions;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -102,10 +103,17 @@ public final class MainActivity extends AppCompatActivity {
       if (result.getContents() == null) {
         return;
       }
-      String scanned = PocketAddress.normalise(result.getContents());
+      String contents = result.getContents() == null ? "" : result.getContents().trim();
+      String scanned = PocketAddress.normalise(contents);
       if (scanned == null) {
         showSetup();
-        status("这个二维码里没有可用的地址");
+        // The desktop shows two codes: one opens the app, one is the address. Scanning the wrong one
+        // used to produce a nonsense "address" and a saved bad entry; now it says what it is.
+        if (contents.toLowerCase(Locale.ROOT).contains(".apk")) {
+          status("这是手机 App 的安装包，请用手机相机扫它下载；这台电脑的地址是另一个二维码。");
+        } else {
+          status("这个二维码里没有可用的电脑地址");
+        }
         return;
       }
       addressInput.setText(scanned);
@@ -118,6 +126,16 @@ public final class MainActivity extends AppCompatActivity {
       launchScanner();
     });
     findViewById(R.id.reconnectButton).setOnClickListener(view -> connect(addressInput.getText().toString()));
+    // Always available, even while a page is on screen: without it the only way back to the editor was
+    // "scan again", which is how a wrong address became a trap.
+    findViewById(R.id.editAddressButton).setOnClickListener(view -> {
+      if (current != null) {
+        addressInput.setText(current);
+      }
+      showSetup();
+      addressInput.requestFocus();
+      status("改好地址后点「连接」。");
+    });
     findViewById(R.id.connectButton).setOnClickListener(view -> connect(addressInput.getText().toString()));
 
     if (state != null) {
@@ -276,9 +294,11 @@ public final class MainActivity extends AppCompatActivity {
   private void launchScanner() {
     ScanOptions options = new ScanOptions();
     options.setDesiredBarcodeFormats(ScanOptions.QR_CODE);
-    options.setPrompt("对准电脑设置页上的二维码");
+    options.setPrompt("对准电脑上「手机访问」页面的二维码");
     options.setBeepEnabled(false);
     options.setOrientationLocked(true);
+    // Portrait: our own subclass is declared upright in the manifest (the library's is landscape).
+    options.setCaptureActivity(PocketCaptureActivity.class);
     scanner.launch(options);
   }
 
@@ -389,6 +409,10 @@ public final class MainActivity extends AppCompatActivity {
       PocketClient.Probe probe = PocketClient.probe(url);
       if (!probe.reachable) {
         lastError = probe.error;
+        // Something answered that is not a gateway (a web server, a captive portal): stop offering it.
+        if (probe.error != null && probe.error.contains("不是 DSH")) {
+          store.forgetAddress(url);
+        }
         continue;
       }
       if (!probe.needsLogin) {

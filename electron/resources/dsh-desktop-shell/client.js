@@ -2070,7 +2070,9 @@ window.__ModuleLoader__.load({
      */
     function reportPhoneViewport(tag) {
       try {
-        if (navigator.userAgent.indexOf('DshPocket') < 0) return;
+        // `userAgent` can be absent in minimal hosts (the plugin test harness is one); a real WebView
+        // always has it, and when it is missing the answer is simply "not the phone app".
+        if (phoneUserAgent().indexOf('DshPocket') < 0) return;
         const viewport = window.innerWidth;
         const overflow = [];
         const targets = [];
@@ -2153,10 +2155,19 @@ window.__ModuleLoader__.load({
       '}',
     ].join('\n')
 
+    /** The user agent, or an empty string where the host does not provide one. */
+    function phoneUserAgent() {
+      try {
+        return typeof navigator === 'undefined' ? '' : String(navigator.userAgent ?? '');
+      } catch {
+        return '';
+      }
+    }
+
     /** 注入一次；失败不影响 DSH（插件抛错会让整个界面起不来）。 */
     function installPhoneStyles() {
       try {
-        if (navigator.userAgent.indexOf('DshPocket') < 0) return 'skipped';
+        if (phoneUserAgent().indexOf('DshPocket') < 0) return 'skipped';
         if (document.getElementById('dsh-pocket-mobile') !== null) return 'already';
         const style = document.createElement('style');
         style.id = 'dsh-pocket-mobile';

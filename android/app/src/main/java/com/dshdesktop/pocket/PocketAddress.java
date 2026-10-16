@@ -56,6 +56,14 @@ public final class PocketAddress {
     if (!scheme.equals("http") && !scheme.equals("https")) {
       return null;
     }
+    // A gateway address has **no path**. Refusing paths instead of silently dropping them is the fix
+    // for a real bug report: the desktop's "download the app" QR code is a GitHub URL, the scanner
+    // dropped everything after the host, and the app then happily treated `https://github.com:443/`
+    // as the user's computer. An address that is not a bare origin is not an address.
+    String rawPath = uri.getRawPath();
+    if (rawPath != null && !rawPath.isEmpty() && !rawPath.equals("/")) {
+      return null;
+    }
     String host = uri.getHost();
     if (host == null || host.isEmpty()) {
       return null;
@@ -81,7 +89,8 @@ public final class PocketAddress {
    * only the password left to type. The in-app scanner keeps working with plain addresses.
    *
    * @param link - The whole intent URI, or null.
-   * @returns The normalised address, or null when this is not a usable connect link.
+   * @returns The normalised address, or null when this is not a usable connect link (including a
+   *   link whose `url` carries a path — that is a web page, not a computer's gateway).
    */
   static String fromConnectLink(String link) {
     if (link == null) {

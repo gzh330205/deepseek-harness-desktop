@@ -50,6 +50,33 @@ public final class PocketClientTest {
   }
 
   @Test
+  public void aStrangers200IsNotAComputer() throws Exception {
+    // 真机报障的回归用例：桌面上的「下载 App」二维码是 GitHub 链接，扫码器丢掉路径后成了
+    // https://github.com:443/ ，而它的 200 被当成了「已登录」，于是这个外站地址被存下来并每次自动打开。
+    String base = serve((request, response) -> {
+      response.status = 200;
+      response.gatewayMarker = false;
+      response.body = "<html>github</html>";
+    });
+    PocketClient.Probe probe = PocketClient.probe(base);
+    assertFalse(probe.reachable);
+    assertNotNull(probe.error);
+    assertTrue("应该报「不是 DSH 入口」而不是当成可用地址：" + probe.error, probe.error.contains("不是 DSH"));
+  }
+
+  @Test
+  public void aStrangers303IsNotASession() throws Exception {
+    String base = serve((request, response) -> {
+      response.status = 303;
+      response.gatewayMarker = false;
+      response.headers.put("Set-Cookie", "dsh_pocket=fake; Path=/");
+    });
+    PocketClient.Login login = PocketClient.login(base, "whatever");
+    assertFalse(login.ok);
+    assertTrue("应该报「不是 DSH 入口」而不是当成会话：" + login.error, login.error.contains("不是 DSH"));
+  }
+
+  @Test
   public void a401MeansReachableButSignInRequired() throws Exception {
     String base = serve((request, response) -> {
       response.status = 401;

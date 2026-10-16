@@ -85,6 +85,22 @@ public final class PocketStore {
     plain.edit().putString(KEY_ADDRESSES, String.join(SEPARATOR, kept)).apply();
   }
 
+  /**
+   * Drop one address.
+   *
+   * Used when a probe proves it is not a DSH gateway at all: keeping a stranger's URL in the list
+   * means every launch tries it again, which is exactly the trap a user reported.
+   *
+   * @param address a normalised base URL
+   */
+  public void forgetAddress(String address) {
+    List<String> kept = addresses();
+    if (!kept.remove(address)) {
+      return;
+    }
+    plain.edit().putString(KEY_ADDRESSES, String.join(SEPARATOR, kept)).apply();
+  }
+
   /** Forget the computer entirely: addresses, password and the remember flag. */
   public void forget() {
     plain.edit().remove(KEY_ADDRESSES).remove(KEY_REMEMBER).apply();

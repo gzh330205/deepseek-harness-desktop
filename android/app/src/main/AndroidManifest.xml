@@ -44,10 +44,16 @@
     </activity>
 
     <!--
-      The scanner activity is declared by zxing-android-embedded itself (sensorLandscape + its own
-      capture theme). Redeclaring it here only fights the manifest merger, and the runtime
-      `ScanOptions.setOrientationLocked(true)` is what actually keeps it upright.
+      The library's own CaptureActivity is `sensorLandscape`, so scanning forced a sideways view.
+      Redeclaring *that* activity fights the manifest merger (theme + orientation differ), so we
+      declare a subclass of our own instead: portrait, same capture theme, nothing else changed.
     -->
+    <activity
+      android:name=".PocketCaptureActivity"
+      android:configChanges="orientation|screenSize|keyboardHidden"
+      android:exported="false"
+      android:screenOrientation="portrait"
+      android:theme="@style/zxing_CaptureTheme" />
 
   </application>
 </manifest>

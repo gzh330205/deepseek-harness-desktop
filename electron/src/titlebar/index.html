@@ -50,6 +50,9 @@
          menu duplicated what the keyboard does and only added a second button. -->
     <button type="button" data-menu="app" aria-haspopup="menu">应用</button>
     <button type="button" data-menu="plugins" aria-haspopup="menu">插件</button>
+    <!-- Phone access lives here rather than in the settings window: it is a feature the shell owns,
+         and this strip is where the shell's own entries go. -->
+    <button type="button" data-menu="pocket" aria-haspopup="menu">手机访问</button>
   </nav>
   <script>
     // The preload exposes exactly one object here: no ipcRenderer, no Node.

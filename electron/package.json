@@ -28,6 +28,7 @@
     "smoke:pocket": "node build.mjs && node scripts/smoke-pocket.mjs",
     "preview:market": "node scripts/preview-market.mjs",
     "preview:settings": "node scripts/preview-settings.mjs",
+    "preview:pocket": "node scripts/preview-pocket.mjs",
     "runtime:prepare": "node scripts/prepare-runtime.mjs",
     "cloudflared:prepare": "node scripts/prepare-cloudflared.mjs",
     "verify:package": "node scripts/verify-package.mjs",
