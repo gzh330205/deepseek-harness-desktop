@@ -122,6 +122,11 @@ if (cloudflaredArtifact !== undefined) {
 if (skipBuild) {
   if (!existsSync(artifactPath)) fail(`--skip-build 但找不到产物：${artifactPath}`)
 } else {
+  // `dist/` is what the packaged app actually runs, and it is built here on purpose: `package:win`
+  // does the same, and skipping it once meant shipping an installer whose settings page lacked a
+  // feature that was already committed.
+  process.stdout.write('==> node build.mjs\n')
+  execFileSync(process.execPath, [join(root, 'build.mjs')], { cwd: root, stdio: 'inherit' })
   process.stdout.write('==> electron-builder --win nsis\n')
   execFileSync(process.execPath, [
     join(root, 'node_modules', 'electron-builder', 'cli.js'),
