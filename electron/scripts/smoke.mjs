@@ -39,10 +39,17 @@ if (packaged && !existsSync(packagedExecutable)) {
   process.exit(1)
 }
 
+// An agent session running inside the app exports `ELECTRON_RUN_AS_NODE=1` to its children, which turns
+// any Electron binary into plain Node — the app then exits immediately without doing anything. Strip it
+// (and its console twin) so the smoke tests the app rather than the harness that started it.
+const childEnvironment = { ...process.env }
+delete childEnvironment.ELECTRON_RUN_AS_NODE
+delete childEnvironment.ELECTRON_NO_ATTACH_CONSOLE
+
 const child = spawn(packaged ? packagedExecutable : electronPath, packaged ? [] : [root], {
   cwd: root,
   env: {
-    ...process.env,
+    ...childEnvironment,
     DSH_DESKTOP_SMOKE: '1',
     DSH_DESKTOP_LOAD_MODE: loadMode,
     DSH_DESKTOP_PORT: port,

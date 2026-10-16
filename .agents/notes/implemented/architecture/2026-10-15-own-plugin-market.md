@@ -82,6 +82,7 @@ Status: implemented
 
 - `scripts/preview-market.mjs`：用**真实目录数据** + 打桩 `__DSH_MARKET__` 桥把同一份 `dist/market/index.html` 渲染到浏览器里，于是"好不好看"可以截图评审而不是靠想象（市场是 Electron 窗口，截图工具看不到它）。
 - `src/market-ui.test.ts`：把上述四个 bug 变成静态守卫（只能有一个 `<style>`、`[hidden]` 兜底存在、`.catbar` 不得 wrap、脚本查的每个 id 必须存在于标记、市场控件必须按 `.market-only` 整块切换、页面必须自报渲染、CSP 保留且脚本不得出现 `fetch`/`innerHTML`）。
+- `scripts/smoke-market.mjs` 自己清环境：在**应用内的会话**里运行 smoke 时，spawn 出去的 packaged exe 会继承 `ELECTRON_RUN_AS_NODE=1`，于是它被当成普通 node 跑、**1 秒内零输出退出**——现象和"构建坏了"一模一样（发版收尾时实测踩到，白查一轮）。现在两个 smoke 脚本（`smoke.mjs` / `smoke-market.mjs`）都在 spawn 前删掉它，并且"一行日志都没写就退出"立刻报错并点名这个变量，而不是干等满超时。
 - 界面本身：设计令牌（OKLCH 颜色 / 间距 / 圆角 / 字号 / 时长）、头部三行内解决（标题+profile、标签页、工具栏）、分类栏单行横向滚动、列表占满剩余高度、卡片分层次（名称+分类+状态 → star/下载/作者 → 两行描述 → **能力标签，碰机器的能力用琥珀色警示**）、空结果与骨架屏、按钮/输入/chip 的 hover·active·focus-visible·disabled 态、`prefers-reduced-motion`。
 
 ### 证据（本批）

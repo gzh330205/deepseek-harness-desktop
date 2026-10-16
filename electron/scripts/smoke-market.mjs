@@ -43,10 +43,18 @@ const fail = message => {
   process.exit(1)
 }
 
+// Strip the two variables that make an Electron binary behave like something else. An agent session
+// running inside the app hands `ELECTRON_RUN_AS_NODE=1` to every child it starts: the packaged app then
+// executes its main script as a plain Node program and exits in about a second, writing nothing at all.
+// That failure used to surface as "等待超时（180s），只看到：无", which reads like a broken build.
+const childEnvironment = { ...process.env }
+delete childEnvironment.ELECTRON_RUN_AS_NODE
+delete childEnvironment.ELECTRON_NO_ATTACH_CONSOLE
+
 const child = spawn(executable, [], {
   cwd: root,
   env: {
-    ...process.env,
+    ...childEnvironment,
     DSH_DESKTOP_USER_DATA_DIR: userData,
     DSH_DESKTOP_DSH_HOME: join(userData, 'dsh-home'),
     DSH_DESKTOP_PORT: process.env.DSH_DESKTOP_MARKET_SMOKE_PORT ?? '41736',
@@ -70,7 +78,14 @@ const wanted = ['market window ready', 'market page loaded', 'market runtime ok'
 let seen = []
 while (Date.now() < deadline) {
   await new Promise(resolvePromise => setTimeout(resolvePromise, 1000))
-  if (!existsSync(log)) continue
+  if (!existsSync(log)) {
+    // Exiting before the first log line is not a slow start: report it now instead of after the
+    // timeout, and name the environment trap that produces exactly this (see the spawn above).
+    if (child.exitCode !== null) {
+      fail(`应用启动后立刻退出（exit ${String(child.exitCode)}），一行日志都没写；若在应用内的会话里运行，检查是否继承了 ELECTRON_RUN_AS_NODE`)
+    }
+    continue
+  }
   const text = readFileSync(log, 'utf8')
   if (/market page failed to load/u.test(text)) {
     stop()
