@@ -21,6 +21,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -98,6 +99,22 @@ if (!existsSync(runtimeManifestPath)) {
 const runtimeManifest = JSON.parse(readFileSync(runtimeManifestPath, 'utf8'))
 if (runtimeManifest.shell !== version) {
   fail(`随包运行时是为 ${String(runtimeManifest.shell)} 构建的，与要发布的 ${version} 不一致：先运行 pnpm runtime:prepare`)
+}
+
+// The tunnel binary is part of what the user gets: a missing or stale one ships a feature that
+// cannot start, and the installer is the last place to find that out.
+const cloudflaredPin = JSON.parse(readFileSync(join(root, 'cloudflared-pin.json'), 'utf8'))
+const cloudflaredArtifact = cloudflaredPin.artifacts?.['win32-x64']
+const cloudflaredPath = join(root, 'resources', 'cloudflared', 'cloudflared.exe')
+if (!existsSync(cloudflaredPath)) {
+  fail('缺少随包 cloudflared：先运行 `pnpm cloudflared:prepare`')
+}
+if (cloudflaredArtifact !== undefined) {
+  const digest = createHash('sha256').update(readFileSync(cloudflaredPath)).digest('hex')
+  if (digest !== cloudflaredArtifact.sha256) {
+    fail(`随包 cloudflared 与 pin 不一致（pin ${String(cloudflaredPin.version)}）：实际 ${digest}`)
+  }
+  process.stdout.write(`==> 随包 cloudflared ${String(cloudflaredPin.version)} 哈希与 pin 一致\n`)
 }
 
 // 2. Build.

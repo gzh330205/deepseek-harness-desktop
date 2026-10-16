@@ -17,6 +17,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -135,6 +136,23 @@ if (wronglyPacked.length > 0) fail(`意外的 unpacked 条目：${wronglyPacked[
 
 for (const required of ['dsh-desktop-shell/index.js', 'dsh-desktop-shell/client.js']) {
   if (!existsSync(join(resources, required))) fail(`缺少面板插件资源：resources/${required}`)
+}
+
+// The tunnel binary for phone access over the internet: it must be physically present (it is
+// spawned, so an ASAR path would fail at the worst moment) and byte-identical to the pinned release.
+// A wrong or missing binary here means the feature silently cannot work after installation.
+{
+  const pin = JSON.parse(readFileSync(join(root, 'cloudflared-pin.json'), 'utf8'))
+  const pinned = pin.artifacts?.['win32-x64']
+  const binary = join(resources, 'cloudflared', 'cloudflared.exe')
+  if (!existsSync(binary)) {
+    fail('缺少随包 cloudflared：resources/cloudflared/cloudflared.exe（先运行 pnpm cloudflared:prepare）')
+  }
+  const digest = createHash('sha256').update(readFileSync(binary)).digest('hex')
+  if (pinned !== undefined && digest !== pinned.sha256) {
+    fail(`随包 cloudflared 与 pin 不一致（${pin.version}）：实际 ${digest}`)
+  }
+  process.stdout.write(`cloudflared ${String(pin.version)} 已随包（${(statSync(binary).size / 1024 / 1024).toFixed(1)} MiB，哈希与 pin 一致）\n`)
 }
 
 // The plugin-management path: the shims must be physical, and pnpm's JS must be readable through

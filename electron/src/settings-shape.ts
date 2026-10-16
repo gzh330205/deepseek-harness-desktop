@@ -45,12 +45,27 @@ export interface SettingsInput {
   /** Phone access over the local network: off until the user turns it on. */
   readonly pocketEnabled?: boolean
   readonly pocketPort?: number
+  /** Public access through a Cloudflare tunnel; only ever turned on after the disclaimer. */
+  readonly pocketTunnelEnabled?: boolean
+  readonly pocketTunnelPort?: number
+  readonly pocketTunnelMode?: 'quick' | 'named'
+  /** The user's own hostname; required for a named tunnel. */
+  readonly pocketTunnelDomain?: string
+}
+
+/** The public side of phone access, as stored in `shell-settings.json`. */
+export interface PocketTunnelSettings {
+  readonly enabled: boolean
+  readonly port: number
+  readonly mode: 'quick' | 'named'
+  readonly domain: string
 }
 
 /** Phone access settings, as stored in `shell-settings.json`. */
 export interface PocketSettings {
   readonly enabled: boolean
   readonly port: number
+  readonly tunnel: PocketTunnelSettings
 }
 
 /**
@@ -61,7 +76,20 @@ export interface PocketSettings {
  */
 export const DEFAULT_POCKET_PORT = 41730
 
-export const DEFAULT_POCKET_SETTINGS: PocketSettings = { enabled: false, port: DEFAULT_POCKET_PORT }
+/**
+ * Port the public listener binds on loopback for the tunnel to reach.
+ *
+ * Deliberately its own listener rather than a second hostname on the LAN one: arriving on this port
+ * means "came through the internet", which is what decides the password, and no header can pretend
+ * otherwise.
+ */
+export const DEFAULT_POCKET_TUNNEL_PORT = 41731
+
+export const DEFAULT_POCKET_SETTINGS: PocketSettings = {
+  enabled: false,
+  port: DEFAULT_POCKET_PORT,
+  tunnel: { enabled: false, port: DEFAULT_POCKET_TUNNEL_PORT, mode: 'quick', domain: '' },
+}
 
 export type MergeSettingsResult =
   | { readonly ok: true; readonly document: Record<string, unknown>; readonly changed: readonly string[] }
@@ -159,6 +187,46 @@ export function mergeSettingsInput(raw: unknown, input: SettingsInput, defaultPo
   }
 
   const pocket = asRecord(document.pocket)
+  const tunnel = asRecord(pocket.tunnel)
+  if (input.pocketTunnelPort !== undefined) {
+    const port = input.pocketTunnelPort
+    if (!Number.isInteger(port) || port < MIN_SETTINGS_PORT || port > MAX_SETTINGS_PORT) {
+      return { ok: false, reason: `公网隧道端口必须是 ${String(MIN_SETTINGS_PORT)}–${String(MAX_SETTINGS_PORT)} 之间的整数` }
+    }
+    // Three listeners cannot share one port, and the failure would surface as a bind error in the
+    // log while the settings page looked fine.
+    if (port === nextPort) return { ok: false, reason: '公网隧道端口不能与 DSH 服务端口相同' }
+    if (port === readNumber(pocket, 'port')) return { ok: false, reason: '公网隧道端口不能与手机访问端口相同' }
+    if (readNumber(tunnel, 'port') !== port) {
+      tunnel.port = port
+      changed.push('pocket.tunnel.port')
+    }
+  }
+  if (input.pocketTunnelMode !== undefined) {
+    if (input.pocketTunnelMode !== 'quick' && input.pocketTunnelMode !== 'named') {
+      return { ok: false, reason: `不支持的隧道模式：${String(input.pocketTunnelMode)}` }
+    }
+    if (readString(tunnel, 'mode') !== input.pocketTunnelMode || tunnel.mode === undefined) {
+      tunnel.mode = input.pocketTunnelMode
+      changed.push('pocket.tunnel.mode')
+    }
+  }
+  if (input.pocketTunnelDomain !== undefined) {
+    const domain = input.pocketTunnelDomain.trim()
+    // A named tunnel is a hostname the user owns; refusing nonsense here is cheaper than a tunnel
+    // that registers and then has nowhere to answer.
+    if (domain !== '' && !/^[a-z0-9.-]+(?:\/[a-z0-9.-]*)?$/iu.test(domain)) {
+      return { ok: false, reason: '公网域名只能包含字母、数字、点和连字符' }
+    }
+    if (readString(tunnel, 'domain') !== domain) {
+      tunnel.domain = domain
+      changed.push('pocket.tunnel.domain')
+    }
+  }
+  if (input.pocketTunnelEnabled !== undefined && readBoolean(tunnel, 'enabled', false) !== input.pocketTunnelEnabled) {
+    tunnel.enabled = input.pocketTunnelEnabled
+    changed.push('pocket.tunnel.enabled')
+  }
   if (input.pocketPort !== undefined) {
     const port = input.pocketPort
     if (!Number.isInteger(port) || port < MIN_SETTINGS_PORT || port > MAX_SETTINGS_PORT) {
@@ -177,6 +245,7 @@ export function mergeSettingsInput(raw: unknown, input: SettingsInput, defaultPo
     changed.push('pocket.enabled')
   }
 
+  if (Object.keys(tunnel).length > 0) pocket.tunnel = tunnel
   const sections = { service, proxy, updates, browser }
   return {
     ok: true,

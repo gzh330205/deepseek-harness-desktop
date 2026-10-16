@@ -60,3 +60,24 @@ test('the form submits the two phone-access values the shell expects', () => {
   assert.match(markup, /data-testid="pocket-port"/u)
   assert.match(markup, /data-testid="pocket-enabled"/u)
 })
+
+test('the public section warns every time, and the form cannot switch it on', () => {
+  // The gate is the whole point of the public switch: DSH executes code for whoever reaches it.
+  assert.match(page, /开启公网访问前|开启后，互联网上的任何人/u)
+  assert.match(page, /window\.confirm\(/u)
+  assert.match(page, /acceptedDisclaimer: true/u)
+  // A form save must never carry the switch: only the confirmed button may open the door.
+  const collect = /function collect\(\)[\s\S]*?\n    \}/u.exec(page)?.[0] ?? ''
+  assert.notEqual(collect, '')
+  assert.equal(collect.includes('pocketTunnelEnabled'), false, '表单不能直接打开公网访问')
+  assert.match(collect, /pocketTunnelMode/u)
+})
+
+test('the public section can be closed and its password can be fixed', () => {
+  assert.match(page, /kind: 'stopTunnel'/u)
+  assert.match(page, /kind: 'rotatePublicPassword'/u)
+  assert.match(page, /kind: 'setPublicPassword'/u)
+  assert.match(page, /kind: 'setTunnelToken'/u)
+  // The token is entered as a secret and must not be echoed back into the page.
+  assert.match(page, /id="pocketTunnelToken" type="password"/u)
+})

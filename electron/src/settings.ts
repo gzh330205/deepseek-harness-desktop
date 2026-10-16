@@ -127,6 +127,18 @@ export function readShellSettings(): ShellSettings {
     pocket: {
       enabled: pocketRecord.enabled === true,
       port: typeof pocketRecord.port === 'number' ? pocketRecord.port : DEFAULT_POCKET_SETTINGS.port,
+      tunnel: (() => {
+        const tunnel = typeof pocketRecord.tunnel === 'object' && pocketRecord.tunnel !== null
+          ? pocketRecord.tunnel as Record<string, unknown>
+          : {}
+        const defaults = DEFAULT_POCKET_SETTINGS.tunnel
+        return {
+          enabled: tunnel.enabled === true,
+          port: typeof tunnel.port === 'number' ? tunnel.port : defaults.port,
+          mode: tunnel.mode === 'named' ? 'named' as const : 'quick' as const,
+          domain: typeof tunnel.domain === 'string' ? tunnel.domain : '',
+        }
+      })(),
     },
   }
 }

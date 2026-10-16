@@ -1,0 +1,12 @@
+{
+  "//": "The tunnel binary that ships inside the installer. Bumping the version is a deliberate act: update `version` and the artifact below, then run `node scripts/prepare-cloudflared.mjs --update-pin` to record the new hash, and read the Authenticode line it prints.",
+  "version": "2026.10.1",
+  "artifacts": {
+    "win32-x64": {
+      "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.10.1/cloudflared-windows-amd64.exe",
+      "sha256": "4d2490e74082c5d48dbfedaf92576fa5bd1702379ab88eb7faa0cfbe8dc891b6",
+      "signer": "CN=\"Cloudflare, Inc.\"",
+      "bytes": 55325120
+    }
+  }
+}

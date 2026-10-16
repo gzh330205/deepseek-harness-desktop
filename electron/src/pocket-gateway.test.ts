@@ -87,6 +87,7 @@ async function startGateway(overrides: { readonly host?: string; readonly passwo
   let password = overrides.password ?? 'Test1234'
   const clock = overrides.clock
   const gateway = await createPocketGateway({
+    scope: 'lan',
     upstream: { host: '127.0.0.1', port: upstream.port },
     listenAddress: '127.0.0.1',
     port: 0,
@@ -269,6 +270,7 @@ test('rotating the password signs the phone out at once', async () => {
   let password = 'Test1234'
   const sessions = createPocketSessions()
   const gateway = await createPocketGateway({
+    scope: 'lan',
     upstream: { host: '127.0.0.1', port: upstream.port },
     listenAddress: '127.0.0.1',
     port: 0,
@@ -353,6 +355,7 @@ test('the tunnel and request counters add up', async () => {
 test('an unreachable upstream answers 502 instead of hanging', async () => {
   // A port nothing listens on: the phone must get an explanation, not a spinner.
   const gateway = await createPocketGateway({
+    scope: 'lan',
     upstream: { host: '127.0.0.1', port: 1 },
     listenAddress: '127.0.0.1',
     port: 0,
@@ -369,4 +372,47 @@ test('an unreachable upstream answers 502 instead of hanging', async () => {
   assert.equal(reply.status, 502)
   assert.match(reply.body, /DSH 没有响应/u)
   assert.equal(gateway.stats().upstreamErrors, 1)
+})
+
+test('a session from one door does not open the other, and each has its own password', async () => {
+  const upstream = await startUpstream()
+  const shape = {
+    upstream: { host: '127.0.0.1', port: upstream.port },
+    listenAddress: '127.0.0.1',
+    port: 0,
+    allowedHosts: ['127.0.0.1'],
+    dshCookie: () => 'dsh-auth=cookie-from-shell',
+    limiter: createPocketRateLimiter(),
+    log: () => {},
+  }
+  // Separate session stores, exactly as the service wires them: the LAN password must not be a key to
+  // the internet-facing door, and the public one must not be a key to the sofa-facing door either.
+  const lan = await createPocketGateway({ ...shape, scope: 'lan', password: () => 'LanPass12', sessions: createPocketSessions() })
+  const publicDoor = await createPocketGateway({ ...shape, scope: 'public', password: () => 'PubPass12', sessions: createPocketSessions() })
+  closers.push(() => lan.close())
+  closers.push(() => publicDoor.close())
+
+  const lanCookie = await login(lan, 'LanPass12')
+  assert.equal((await call(lan, { cookie: lanCookie })).status, 200)
+  assert.equal((await call(publicDoor, { cookie: lanCookie })).status, 401, '局域网会话不能开公网的门')
+
+  // The page people actually type into names the door: "手机访问" on the sofa, "公网访问" from the
+  // internet, so a user who reached the wrong one can tell.
+  const publicLogin = await call(publicDoor, { path: '/__pocket/login' })
+  assert.equal(publicLogin.status, 200)
+  assert.match(publicLogin.body, /公网访问/u)
+  const lanLogin = await call(lan, { path: '/__pocket/login' })
+  assert.match(lanLogin.body, /手机访问/u)
+
+  const publicCookie = await login(publicDoor, 'PubPass12')
+  assert.equal((await call(publicDoor, { cookie: publicCookie })).status, 200)
+  assert.equal((await call(lan, { cookie: publicCookie })).status, 401, '公网会话也不能开局域网的门')
+
+  // The LAN password is not accepted on the public door, and vice versa.
+  const wrongDoor = await call(publicDoor, {
+    path: '/__pocket/login',
+    method: 'POST',
+    body: 'password=LanPass12',
+  })
+  assert.equal(wrongDoor.status, 401)
 })

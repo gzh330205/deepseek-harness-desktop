@@ -1195,9 +1195,24 @@ function showNotification(payload: unknown): void {
  * a listener. The upstream port is read through a function for the same reason: it is only settled
  * once the host has started.
  */
+/**
+ * The pinned tunnel binary, wherever this copy of the app keeps it.
+ *
+ * Dev runs from the checkout; a packaged app keeps it in `resources/cloudflared` next to the ASAR.
+ * Returning `undefined` (rather than a guess) is deliberate: the service then reports "public access
+ * is unavailable" instead of failing at the moment the user turns it on.
+ */
+function cloudflaredPath(): string | undefined {
+  const packaged = join(process.resourcesPath, 'cloudflared', 'cloudflared.exe')
+  const dev = join(app.getAppPath(), 'resources', 'cloudflared', 'cloudflared.exe')
+  return [packaged, dev].find(candidate => existsSync(candidate))
+}
+
 function pocket(): PocketService {
+  const tunnelBinary = cloudflaredPath()
   pocketService ??= createPocketService({
     bridgeDir: bridgeDir(),
+    ...(tunnelBinary === undefined ? {} : { tunnelBinary }),
     upstream: () => ({ host: LOOPBACK, port: activePort === 0 ? shellSettings.servicePort ?? channelSettings.defaultPort : activePort }),
     // Read fresh per request: a restarted DSH hands out a new cookie, and the gateway must follow
     // without anyone re-enabling the feature.
@@ -1237,6 +1252,36 @@ async function handlePocketAction(action: PocketAction): Promise<PocketSnapshot>
     case 'select':
       await service.select(action.address)
       break
+    case 'startTunnel': {
+      // The disclaimer is checked here and again in the service: this is the user-facing gate, the
+      // service's copy is what a future caller cannot forget.
+      const status = await service.startTunnel({ acceptedDisclaimer: action.acceptedDisclaimer })
+      if (status.publicAccess.running) {
+        // Recorded through the normal settings path, so the next boot restores what the user opened.
+        const saved = saveSettings({ pocketTunnelEnabled: true })
+        if (!saved.ok) pushLog(`公网访问开关写入失败：${saved.reason}`)
+        pushLog(`公网访问已开启：${status.publicAccess.url ?? ''}（本机 DSH 仍只监听 ${LOOPBACK}）`)
+      }
+      return pocketSnapshot()
+    }
+    case 'stopTunnel': {
+      await service.stopTunnel()
+      const saved = saveSettings({ pocketTunnelEnabled: false })
+      if (!saved.ok) pushLog(`公网访问开关写入失败：${saved.reason}`)
+      pushLog('公网访问已关闭')
+      return pocketSnapshot()
+    }
+    case 'rotatePublicPassword':
+      service.rotatePublicPassword()
+      break
+    case 'setPublicPassword': {
+      const result = service.setPublicPassword(action.value)
+      if (!result.ok) return { ...pocketSnapshot(), error: result.reason }
+      break
+    }
+    case 'setTunnelToken':
+      service.setTunnelToken(action.value)
+      break
     default:
       break
   }
@@ -1258,6 +1303,10 @@ function settingsSnapshot(): SettingsSnapshot {
       browserEnabled: shellSettings.browser.enabled,
       pocketEnabled: shellSettings.pocket.enabled,
       pocketPort: shellSettings.pocket.port,
+      pocketTunnelEnabled: shellSettings.pocket.tunnel.enabled,
+      pocketTunnelPort: shellSettings.pocket.tunnel.port,
+      pocketTunnelMode: shellSettings.pocket.tunnel.mode,
+      pocketTunnelDomain: shellSettings.pocket.tunnel.domain,
     },
     pocket: pocketSnapshot(),
     facts: {
@@ -2030,11 +2079,24 @@ async function boot(): Promise<void> {
 
   cookieHeader = await authenticate(ready.authUrl, ready.port)
 
+  // Where the tunnel binary was found is worth one line in the log: "public access is unavailable"
+  // is otherwise indistinguishable from "the user never turned it on".
+  const tunnelBinary = cloudflaredPath()
+  pushLog(tunnelBinary === undefined
+    ? '公网访问不可用：找不到随包的隧道程序'
+    : `公网访问可用的隧道程序：${tunnelBinary}`)
+
   // Phone access starts here and not earlier: a gateway without the cookie would answer the phone
   // with DSH's own authentication page instead of ours, which looks like a broken password.
   void pocket().apply(shellSettings.pocket).then(status => {
     if (status.running) pushLog(`手机访问已开启：${status.url ?? ''}（DSH 仍只监听 ${LOOPBACK}:${String(port)}）`)
     else if (status.error !== undefined) pushLog(`手机访问未开启：${status.error}`)
+    // A tunnel the user opened before the restart comes back by itself; one they never accepted
+    // cannot, because the record that says they did is only written by an accepted start.
+    return pocket().restoreTunnel()
+  }).then(status => {
+    if (status.publicAccess.running) pushLog(`公网访问已恢复：${status.publicAccess.url ?? ''}`)
+    else if (status.publicAccess.error !== undefined) pushLog(`公网访问未开启：${status.publicAccess.error}`)
   }).catch((error: unknown) => {
     pushLog(`手机访问启动失败：${error instanceof Error ? error.message : String(error)}`)
   })
@@ -2127,6 +2189,9 @@ async function smokeResult(version: string, port: number, target: string): Promi
     version,
     port,
     entry: resolveDshEntry() ?? null,
+    // Proves the packaged app can find the tunnel binary it shipped, which is a different question
+    // from whether the installer contains it.
+    tunnelBinary: cloudflaredPath() ?? null,
     overlay: host?.overlayPath ?? null,
     panelInjected: host?.injectedPanel ?? false,
     cookieAcquired: cookieHeader !== undefined,

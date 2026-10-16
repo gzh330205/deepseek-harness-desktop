@@ -16,12 +16,39 @@ import { generatePocketPassword, validatePocketPassword } from './pocket-auth.ts
 export const POCKET_STATE_FILENAME = 'pocket.json'
 export const POCKET_STATE_VERSION = 1
 
+export interface PocketTunnelRecord {
+  readonly mode: 'quick' | 'named'
+  /** The user's own hostname, in named mode. */
+  readonly domain?: string
+  /** Cloudflare Tunnel token; a credential, which is why it lives here and not in the settings file. */
+  readonly token?: string
+  /**
+   * Whether the disclaimer was accepted for this configuration.
+   *
+   * Written only when the user turns public access on themselves, and cleared when they turn it off —
+   * so a restart can restore a tunnel they opened, and can never open one they did not.
+   */
+  readonly accepted: boolean
+}
+
 export interface PocketState {
   readonly version: number
   /** LAN password; regenerated when the file is missing or the value cannot be used. */
   readonly lan: {
     readonly password: string
   }
+  /**
+   * Public password.
+   *
+   * Rotated on every start unless the user set a fixed one: a random `*.trycloudflare.com` hostname
+   * already changes every time, and a password that changes with it means a leaked address is useless
+   * as soon as the tunnel is restarted.
+   */
+  readonly public?: {
+    readonly password: string
+    readonly custom: boolean
+  }
+  readonly tunnel?: PocketTunnelRecord
   /** Address the user picked when automatic selection was wrong, if any. */
   readonly address?: string
 }
@@ -92,9 +119,46 @@ function parse(text: string): PocketState | undefined {
   // A hand-edited or truncated password is replaced rather than rejected: refusing to start would
   // leave the feature unusable with no way out from the settings page.
   if (password === '' || validatePocketPassword(password) !== undefined) return undefined
+  const publicRecord = typeof record.public === 'object' && record.public !== null ? record.public as Record<string, unknown> : {}
+  const publicPassword = typeof publicRecord.password === 'string' ? publicRecord.password : ''
+  const tunnelRecord = typeof record.tunnel === 'object' && record.tunnel !== null ? record.tunnel as Record<string, unknown> : {}
   return {
     version: POCKET_STATE_VERSION,
     lan: { password },
+    // A broken public password is simply dropped: it is regenerated at the next start, and an
+    // unusable value here must not stop the LAN side from working.
+    ...(validatePocketPassword(publicPassword) === undefined && publicPassword !== ''
+      ? { public: { password: publicPassword, custom: publicRecord.custom === true } }
+      : {}),
+    ...(tunnelRecord.mode === 'quick' || tunnelRecord.mode === 'named'
+      ? {
+          tunnel: {
+            mode: tunnelRecord.mode,
+            accepted: tunnelRecord.accepted === true,
+            ...(typeof tunnelRecord.domain === 'string' && tunnelRecord.domain !== '' ? { domain: tunnelRecord.domain } : {}),
+            ...(typeof tunnelRecord.token === 'string' && tunnelRecord.token !== '' ? { token: tunnelRecord.token } : {}),
+          },
+        }
+      : {}),
     ...(typeof record.address === 'string' && record.address !== '' ? { address: record.address } : {}),
   }
+}
+
+/**
+ * Write the tunnel record, keeping the rest of the state as it is.
+ *
+ * @param path - Absolute path of the state file.
+ * @param record - The record to store, or `undefined` to forget it.
+ */
+export function writePocketTunnelRecord(path: string, record: PocketTunnelRecord | undefined): void {
+  const current = readPocketState(path).state
+  const next: PocketState = record === undefined
+    ? {
+        version: current.version,
+        lan: current.lan,
+        ...(current.public === undefined ? {} : { public: current.public }),
+        ...(current.address === undefined ? {} : { address: current.address }),
+      }
+    : { ...current, tunnel: record }
+  writePocketState(path, next)
 }

@@ -91,6 +91,11 @@ export default {
   extraResources: [
     // The DSH panel plugin travels with the installer and is injected via --patch.
     { from: 'resources/dsh-desktop-shell', to: 'dsh-desktop-shell' },
+    // The tunnel binary for phone access over the internet. Deliberately outside the ASAR: it is
+    // spawned, and a path inside an archive passes `existsSync` and then fails with ENOENT.
+    // `prepare-cloudflared.mjs` pins the version and checks both the hash and Cloudflare's
+    // Authenticode signature; `verify-package.mjs` re-checks what actually landed in the installer.
+    { from: 'resources/cloudflared', to: 'cloudflared' },
     // Tray and window icons (tray.ts reads these from process.resourcesPath).
     { from: 'build/icons/icon.png', to: 'icon.png' },
     { from: 'build/icons/icon.ico', to: 'tray.ico' },

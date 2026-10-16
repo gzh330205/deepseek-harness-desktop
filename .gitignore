@@ -32,3 +32,6 @@ android/app/release/
 android/keys/
 *.jks
 *.keystore
+
+# The pinned tunnel binary is fetched by scripts/prepare-cloudflared.mjs, not committed.
+electron/resources/cloudflared/

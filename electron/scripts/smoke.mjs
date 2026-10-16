@@ -110,9 +110,15 @@ child.on('close', (code) => {
     process.exit(1)
   }
   const homeOk = dshHome === undefined || result.dshHome === dshHome
-  process.stdout.write(`\nSMOKE ${loadMode}${isolateHome ? ' (isolated home)' : ''}${packaged ? ' [packaged]' : ''} → ${result.ok === true && homeOk ? 'PASS' : 'FAIL'}\n`)
+  // A packaged run must be able to find the tunnel binary it shipped: "the installer contains it" and
+  // "the app can spawn it" are two different claims, and only the second one makes public access work.
+  const tunnelBinary = result.tunnelBinary
+  const tunnelOk = !packaged || (typeof tunnelBinary === 'string' && existsSync(tunnelBinary) && tunnelBinary.includes('cloudflared'))
+  if (!tunnelOk) process.stderr.write(`smoke: 打包版找不到随包的隧道程序：${JSON.stringify(tunnelBinary)}\n`)
+  const passed = result.ok === true && homeOk && tunnelOk
+  process.stdout.write(`\nSMOKE ${loadMode}${isolateHome ? ' (isolated home)' : ''}${packaged ? ' [packaged]' : ''} → ${passed ? 'PASS' : 'FAIL'}\n`)
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   if (!homeOk) process.stderr.write(`smoke: DSH home 未生效：期望 ${String(dshHome)}，实际 ${String(result.dshHome)}\n`)
   rmSync(userData, { recursive: true, force: true })
-  process.exit(result.ok === true && homeOk ? 0 : 1)
+  process.exit(passed ? 0 : 1)
 })

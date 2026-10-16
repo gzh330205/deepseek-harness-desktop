@@ -36,6 +36,13 @@ export type PocketAction =
   | { readonly kind: 'rotate' }
   | { readonly kind: 'setPassword'; readonly value: string }
   | { readonly kind: 'select'; readonly address: string }
+  // Public access. `acceptedDisclaimer` travels from the page because the confirmation is shown
+  // there; the service refuses the start without it.
+  | { readonly kind: 'startTunnel'; readonly acceptedDisclaimer: boolean }
+  | { readonly kind: 'stopTunnel' }
+  | { readonly kind: 'rotatePublicPassword' }
+  | { readonly kind: 'setPublicPassword'; readonly value: string }
+  | { readonly kind: 'setTunnelToken'; readonly value: string }
 
 /** What the settings page renders. */
 export interface SettingsSnapshot {
@@ -51,6 +58,10 @@ export interface SettingsSnapshot {
     readonly browserEnabled: boolean
     readonly pocketEnabled: boolean
     readonly pocketPort: number
+    readonly pocketTunnelEnabled: boolean
+    readonly pocketTunnelPort: number
+    readonly pocketTunnelMode: 'quick' | 'named'
+    readonly pocketTunnelDomain: string
   }
   /** Live phone-access state; `values` above is what the document says, this is what is running. */
   readonly pocket: PocketSnapshot

@@ -18,9 +18,10 @@ import { join } from 'node:path'
 
 import { createPocketRateLimiter, createPocketSessions, generatePocketPassword, validatePocketPassword } from './pocket-auth.ts'
 import { createPocketGateway, type PocketGateway, type PocketGatewayStats } from './pocket-gateway.ts'
+import { createPocketTunnel, type PocketTunnel, type PocketTunnelMode } from './pocket-tunnel.ts'
 import { listLanCandidates, type LanCandidate } from './pocket-net.ts'
-import { POCKET_STATE_FILENAME, readPocketState, writePocketState, type PocketState } from './pocket-state.ts'
-import { DEFAULT_POCKET_PORT, type PocketSettings } from './settings-shape.ts'
+import { POCKET_STATE_FILENAME, readPocketState, writePocketState, writePocketTunnelRecord, type PocketState, type PocketTunnelRecord } from './pocket-state.ts'
+import { DEFAULT_POCKET_SETTINGS, DEFAULT_POCKET_PORT, type PocketSettings } from './settings-shape.ts'
 
 /** Phone access preferences, shared with the settings document's shape. */
 export type PocketPreferences = PocketSettings
@@ -28,6 +29,27 @@ export type PocketPreferences = PocketSettings
 // Re-exported: the default port is part of this module's contract for callers that only build the
 // service (and for the settings page, which shows it as the placeholder).
 export { DEFAULT_POCKET_PORT }
+
+/** The public side, as the settings page renders it. */
+export interface PocketPublicStatus {
+  /** What the user asked for (the settings document). */
+  readonly enabled: boolean
+  /** Whether the tunnel is up. */
+  readonly running: boolean
+  readonly mode: PocketTunnelMode
+  readonly domain: string
+  /** The bound port of the loopback listener the tunnel forwards to. */
+  readonly port: number
+  readonly url?: string
+  readonly password: string
+  /** Whether the password is fixed by the user (so it does not rotate on every start). */
+  readonly customPassword: boolean
+  /** Named tunnels need a token before they can start. */
+  readonly hasToken: boolean
+  /** Whether the bundled binary was found at all. */
+  readonly available: boolean
+  readonly error?: string
+}
 
 export interface PocketStatus {
   /** What the user asked for. */
@@ -45,6 +67,8 @@ export interface PocketStatus {
   /** Why it is not running, when the user asked for it to be. */
   readonly error?: string
   readonly stats?: PocketGatewayStats
+  /** Public access state; always present so the page never has to guess. */
+  readonly publicAccess: PocketPublicStatus
 }
 
 export type PocketPasswordResult =
@@ -64,6 +88,15 @@ export interface PocketServiceOptions {
   /** The `name=value` DSH cookie the shell keeps for itself, read fresh per request. */
   readonly dshCookie: () => string | undefined
   readonly log: (line: string) => void
+  /**
+   * The bundled cloudflared.
+   *
+   * Absent means public access is unavailable here (the caller could not resolve the binary), which is
+   * reported instead of attempted.
+   */
+  readonly tunnelBinary?: string
+  /** Tunnel factory; injected by tests so the service's own logic is what gets exercised. */
+  readonly createTunnel?: (options: Parameters<typeof createPocketTunnel>[0]) => PocketTunnel
   /** Address candidates; injected for tests. */
   readonly candidates?: () => readonly LanCandidate[]
   /** Password source; injected for tests. */
@@ -78,6 +111,21 @@ export interface PocketService {
   select(address: string): Promise<PocketStatus>
   rotatePassword(): PocketStatus
   setPassword(value: string): PocketPasswordResult
+  /**
+   * Open public access.
+   *
+   * @param options - `acceptedDisclaimer` must be true: it is the only thing that makes the records
+   *   say "the user agreed to this", which is also what a later restart is allowed to restore.
+   */
+  startTunnel(options: { readonly acceptedDisclaimer: boolean }): Promise<PocketStatus>
+  /** Close public access and forget the acknowledgement, so a restart cannot reopen it. */
+  stopTunnel(): Promise<PocketStatus>
+  /** Restart a tunnel a previous run had open and the user had accepted. */
+  restoreTunnel(): Promise<PocketStatus>
+  rotatePublicPassword(): PocketStatus
+  setPublicPassword(value: string): PocketPasswordResult
+  /** Store (or clear) the named-tunnel token; it never enters the settings document. */
+  setTunnelToken(value: string): PocketStatus
   dispose(): Promise<void>
 }
 
@@ -95,7 +143,7 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
   const candidatesOf = options.candidates ?? ((): readonly LanCandidate[] => listLanCandidates())
 
   let gateway: PocketGateway | undefined
-  let preferences: PocketPreferences = { enabled: false, port: DEFAULT_POCKET_PORT }
+  let preferences: PocketPreferences = DEFAULT_POCKET_SETTINGS
   let lastError: string | undefined
 
   const persist = (next: PocketState): void => {
@@ -135,6 +183,7 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
       return
     }
     gateway = await createPocketGateway({
+      scope: 'lan',
       upstream: options.upstream(),
       listenAddress: wanted,
       port: preferences.port,
@@ -161,6 +210,133 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
     }
   }
 
+  // --- the public door ----------------------------------------------------------------------
+  //
+  // A second listener on loopback, plus the tunnel that publishes it. Separate sessions and a
+  // separate failure lock: a session earned on the LAN must not open the internet-facing door, and
+  // one attacker guessing on the internet must not lock the owner out of the sofa.
+  let publicGateway: PocketGateway | undefined
+  let tunnel: PocketTunnel | undefined
+  let tunnelError: string | undefined
+  const publicSessions = createPocketSessions()
+  const publicLimiter = createPocketRateLimiter()
+
+  const persistTunnel = (record: PocketTunnelRecord | undefined): void => {
+    try {
+      writePocketTunnelRecord(statePath, record)
+    } catch (error) {
+      options.log(`pocket: 隧道状态写入失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (record === undefined) {
+      const { tunnel: _forgotten, ...rest } = state
+      state = rest
+    } else {
+      state = { ...state, tunnel: record }
+    }
+  }
+
+  const publicPassword = (): string => {
+    const existing = state.public
+    if (existing !== undefined) return existing.password
+    const password = generate()
+    persist({ ...state, public: { password, custom: false } })
+    return password
+  }
+
+  const tunnelStatus = () => tunnel?.status() ?? { running: false, mode: preferences.tunnel.mode } as const
+
+  const publicStatus = (): PocketPublicStatus => ({
+    enabled: preferences.tunnel.enabled,
+    running: tunnelStatus().running === true && publicGateway !== undefined,
+    mode: preferences.tunnel.mode,
+    domain: preferences.tunnel.domain,
+    // The bound port, not the configured one: a configured 0 means the system chose, and the tunnel
+    // has to forward to what was actually bound.
+    port: publicGateway?.port ?? preferences.tunnel.port,
+    password: publicPassword(),
+    customPassword: state.public?.custom === true,
+    hasToken: (state.tunnel?.token ?? '') !== '',
+    available: options.tunnelBinary !== undefined,
+    ...(tunnelStatus().url === undefined ? {} : { url: tunnelStatus().url }),
+    ...(tunnelError === undefined ? {} : { error: tunnelError }),
+  })
+
+  const stopPublic = async (forget: boolean): Promise<void> => {
+    if (tunnel !== undefined) {
+      await tunnel.stop()
+      tunnel = undefined
+    }
+    if (publicGateway !== undefined) {
+      await publicGateway.close()
+      publicGateway = undefined
+    }
+    // Everyone signed in through the public door is signed out.
+    publicSessions.rotate()
+    tunnelError = undefined
+    if (forget) persistTunnel(undefined)
+  }
+
+  const startPublic = async (accepted: boolean): Promise<void> => {
+    tunnelError = undefined
+    if (options.tunnelBinary === undefined) {
+      tunnelError = '找不到随包的隧道程序（cloudflared），公网访问不可用'
+      return
+    }
+    const mode = preferences.tunnel.mode
+    const domain = preferences.tunnel.domain
+    const token = state.tunnel?.token ?? ''
+    if (mode === 'named' && (token === '' || domain === '')) {
+      tunnelError = '命名隧道需要先填好公网域名与 Tunnel Token'
+      return
+    }
+    // A quick tunnel gets a new random hostname on every start, so its password rotates with it: an
+    // address somebody saw yesterday is worth nothing today. A named tunnel is fixed, so its password
+    // is only rotated when the user asks.
+    if (state.public?.custom !== true && mode === 'quick') {
+      persist({ ...state, public: { password: generate(), custom: false } })
+    }
+    try {
+      publicGateway = await createPocketGateway({
+        scope: 'public',
+        upstream: options.upstream(),
+        // Loopback only: the tunnel is the only thing that may reach this door, which is what makes
+        // "arrived here" mean "came from the internet" without trusting a single header.
+        listenAddress: '127.0.0.1',
+        port: preferences.tunnel.port,
+        allowedHosts: ['127.0.0.1', 'localhost'],
+        dshCookie: options.dshCookie,
+        password: publicPassword,
+        sessions: publicSessions,
+        limiter: publicLimiter,
+        log: options.log,
+      })
+    } catch (error) {
+      tunnelError = `公网监听器启动失败：${error instanceof Error ? error.message : String(error)}`
+      options.log(`pocket: ${tunnelError}`)
+      return
+    }
+
+    const makeTunnel = options.createTunnel ?? createPocketTunnel
+    tunnel = makeTunnel({
+      binary: options.tunnelBinary,
+      originPort: publicGateway.port,
+      log: options.log,
+    })
+    const started = await tunnel.start(mode === 'named' ? { mode, token, domain } : { mode: 'quick' })
+    if (!started.running) {
+      tunnelError = started.error ?? '公网隧道没有起来'
+      await stopPublic(false)
+      persistTunnel(undefined)
+      return
+    }
+    persistTunnel({
+      mode,
+      accepted,
+      ...(domain === '' ? {} : { domain }),
+      ...(token === '' ? {} : { token }),
+    })
+  }
+
   const status = (): PocketStatus => ({
     enabled: preferences.enabled,
     running: gateway !== undefined,
@@ -170,13 +346,17 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
     ...(gateway === undefined ? {} : { url: gateway.url, address: gateway.address, stats: gateway.stats() }),
     ...(state.address === undefined ? {} : { selected: state.address }),
     ...(lastError === undefined ? {} : { error: lastError }),
+    publicAccess: publicStatus(),
   })
 
   return {
     status,
     async apply(next) {
       const portChanged = next.port !== preferences.port
-      preferences = { enabled: next.enabled, port: next.port }
+      // The tunnel half is not applied here on purpose: starting public access needs the disclaimer,
+      // so it goes through `startTunnel`. `apply` only ever brings the LAN listener in line, because
+      // it runs on every settings save.
+      preferences = { ...preferences, enabled: next.enabled, port: next.port, tunnel: next.tunnel }
       if (!next.enabled) {
         if (gateway !== undefined) await stop(true)
         return status()
@@ -204,8 +384,53 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
       sessions.rotate()
       return { ok: true, status: status() }
     },
+    async startTunnel({ acceptedDisclaimer }) {
+      if (!acceptedDisclaimer) {
+        // Refused, not silently allowed: the acknowledgement is the whole reason the switch is not a
+        // single mis-tap away from exposing this machine to the internet.
+        tunnelError = '开启公网访问前需要先确认免责声明'
+        return status()
+      }
+      await stopPublic(false)
+      await startPublic(true)
+      return status()
+    },
+    async stopTunnel() {
+      await stopPublic(true)
+      return status()
+    },
+    async restoreTunnel() {
+      if (!preferences.tunnel.enabled) return status()
+      if (state.tunnel?.accepted !== true) return status()
+      if (tunnelStatus().running) return status()
+      await startPublic(true)
+      return status()
+    },
+    rotatePublicPassword() {
+      persist({ ...state, public: { password: generate(), custom: false } })
+      publicSessions.rotate()
+      return status()
+    },
+    setPublicPassword(value) {
+      const reason = validatePocketPassword(value)
+      if (reason !== undefined) return { ok: false, reason }
+      persist({ ...state, public: { password: value, custom: true } })
+      publicSessions.rotate()
+      return { ok: true, status: status() }
+    },
+    setTunnelToken(value) {
+      const token = value.trim()
+      persistTunnel({
+        mode: preferences.tunnel.mode,
+        accepted: state.tunnel?.accepted === true,
+        ...(preferences.tunnel.domain === '' ? {} : { domain: preferences.tunnel.domain }),
+        ...(token === '' ? {} : { token }),
+      })
+      return status()
+    },
     async dispose() {
-      await stop(true)
+      await stop(false)
+      await stopPublic(true)
     },
   }
 }

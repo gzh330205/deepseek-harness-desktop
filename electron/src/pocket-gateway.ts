@@ -38,6 +38,15 @@ const HOP_BY_HOP = [
 ] as const
 
 export interface PocketGatewayOptions {
+  /**
+   * Which door this listener is.
+   *
+   * `lan` is the one bound to this machine's network address; `public` is the one bound to loopback
+   * for the tunnel to reach. They differ in exactly two ways, and both matter: which password is
+   * required, and which sessions are accepted (the caller passes separate session stores, so a
+   * session earned on the sofa cannot open the door to the internet).
+   */
+  readonly scope: 'lan' | 'public'
   /** Where DSH really listens — always loopback. */
   readonly upstream: { readonly host: string; readonly port: number }
   /** Address to bind; the address advertised to the phone. */
@@ -86,7 +95,7 @@ function escapeHtml(value: string): string {
 }
 
 /** The login page: no external resources, no script, sized for a phone. */
-function loginPage(options: { readonly message?: string; readonly retryAfterSeconds?: number }): string {
+function loginPage(options: { readonly message?: string; readonly retryAfterSeconds?: number; readonly scope?: 'lan' | 'public' }): string {
   const message = options.message === undefined
     ? ''
     : `<p class="msg">${escapeHtml(options.message)}${
@@ -114,13 +123,17 @@ button { width: 100%; margin-top: .85rem; padding: .75rem; font-size: 1rem; font
 footer { margin-top: 1.1rem; color: #6b7480; font-size: .78rem }
 </style></head>
 <body><form method="post" action="${LOGIN_PATH}">
-<h1>DSH Desktop 手机访问</h1>
-<p>请输入电脑上「设置 → 手机访问」里显示的访问密码。</p>
+<h1>DSH Desktop ${options.scope === 'public' ? '公网访问' : '手机访问'}</h1>
+<p>${options.scope === 'public'
+    ? '你正在通过互联网访问自己的电脑，请输入公网访问密码。'
+    : '请输入电脑上「设置 → 手机访问」里显示的访问密码。'}</p>
 ${message}
 <input name="password" type="password" inputmode="text" autocomplete="current-password"
   autofocus required minlength="8" maxlength="64" placeholder="访问密码">
 <button type="submit">进入 DSH</button>
-<footer>这是你自己的电脑。密码正确后，本次会话会一直有效，直到电脑上的 DSH 重启。</footer>
+<footer>${options.scope === 'public'
+    ? '这是你自己的电脑。用完请在电脑上关闭公网访问，或让密码轮换失效。'
+    : '这是你自己的电脑。密码正确后，本次会话会一直有效，直到电脑上的 DSH 重启。'}</footer>
 </form></body></html>`
 }
 
@@ -211,10 +224,11 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
   }
 
   const clientKey = (request: IncomingMessage): string => request.socket.remoteAddress ?? 'unknown'
+  const where = options.scope === 'public' ? '公网' : '局域网'
 
   const handleLogin = async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> => {
     if (request.method === 'GET') {
-      respond(response, 200, loginPage({}))
+      respond(response, 200, loginPage({ scope: options.scope }))
       return
     }
     if (request.method !== 'POST') {
@@ -225,12 +239,13 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
     const decision = options.limiter.check(key)
     if (!decision.allowed) {
       stats.refusedLocked += 1
-      options.log(`pocket: 登录被锁定（${decision.reason ?? 'ip'}），来源 ${key}`)
+      options.log(`pocket: [${where}] 登录被锁定（${decision.reason ?? 'ip'}），来源 ${key}`)
       respond(response, 429, loginPage({
         message: decision.reason === 'global'
           ? '失败次数过多，暂时拒绝所有登录尝试'
           : '失败次数过多，请稍后再试',
         retryAfterSeconds: decision.retryAfterSeconds,
+        scope: options.scope,
       }), { 'retry-after': String(decision.retryAfterSeconds) })
       return
     }
@@ -246,9 +261,10 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
       options.limiter.fail(key)
       stats.refusedAuth += 1
       const after = options.limiter.check(key)
-      options.log(`pocket: 密码错误，来源 ${key}${after.allowed ? '' : '（已锁定）'}`)
+      options.log(`pocket: [${where}] 密码错误，来源 ${key}${after.allowed ? '' : '（已锁定）'}`)
       respond(response, 401, loginPage({
         message: '密码不正确',
+        scope: options.scope,
         ...(after.allowed ? {} : { retryAfterSeconds: after.retryAfterSeconds }),
       }))
       return
@@ -258,7 +274,7 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
     // Only a same-site path may be redirected to; an absolute URL would turn this page into an
     // open redirect that someone could use to make the login look like it belongs elsewhere.
     const target = next.startsWith('/') && !next.startsWith('//') ? next : '/'
-    options.log(`pocket: 登录成功，来源 ${key}`)
+    options.log(`pocket: [${where}] 登录成功，来源 ${key}`)
     respond(response, 303, '', {
       location: target,
       'set-cookie': `${POCKET_COOKIE}=${options.sessions.issue()}; Path=/; HttpOnly; SameSite=Strict`,
@@ -298,7 +314,7 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
     })
     upstream.on('error', error => {
       stats.upstreamErrors += 1
-      options.log(`pocket: 上游不可达：${error.message}`)
+      options.log(`pocket: [${where}] 上游不可达：${error.message}`)
       if (response.headersSent) {
         response.destroy()
         return
@@ -311,9 +327,9 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
   const server: Server = createServer((request, response) => {
     stats.requests += 1
     const host = request.headers.host
-    if (!isAllowedLanHost(host, options.allowedHosts)) {
+    if (options.scope === 'lan' && !isAllowedLanHost(host, options.allowedHosts)) {
       stats.refusedHost += 1
-      options.log(`pocket: 拒绝非本机地址的 Host：${hostnameOf(host) ?? '(空)'}`)
+      options.log(`pocket: [${where}] 拒绝非本机地址的 Host：${hostnameOf(host) ?? '(空)'}`)
       respond(response, 403, refusalPage(
         '这个地址不是本机的访问地址',
         '请用设置页里显示的局域网地址（或它生成的二维码）打开，其它域名不会得到响应。',
@@ -363,7 +379,7 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
       socket.write(`HTTP/1.1 ${String(status)} ${reason}\r\nConnection: close\r\n\r\n`)
       socket.destroy()
     }
-    if (!isAllowedLanHost(host, options.allowedHosts)) {
+    if (options.scope === 'lan' && !isAllowedLanHost(host, options.allowedHosts)) {
       stats.refusedHost += 1
       refuse(403, 'Forbidden')
       return
@@ -428,14 +444,14 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
       // Logged, not just answered: a broken streaming channel is invisible from the phone (the page
       // simply keeps saying "connection lost") and this line is the only place that says why.
       stats.upstreamErrors += 1
-      options.log(`pocket: 上游 WebSocket 失败：${error.message}`)
+      options.log(`pocket: [${where}] 上游 WebSocket 失败：${error.message}`)
       refuse(502, 'Bad Gateway')
     })
     // A refusal (expired DSH session, unknown path) arrives as a plain response: relay its status
     // instead of leaving the phone waiting for a handshake that will never come.
     upstream.on('response', upstreamResponse => {
       if (upgraded) return
-      options.log(`pocket: 上游拒绝了 WebSocket 升级：HTTP ${String(upstreamResponse.statusCode ?? 0)}`)
+      options.log(`pocket: [${where}] 上游拒绝了 WebSocket 升级：HTTP ${String(upstreamResponse.statusCode ?? 0)}`)
       refuse(upstreamResponse.statusCode ?? 502, 'Upgrade Refused')
     })
     upstream.end()
@@ -452,7 +468,7 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
   // passed a real port must see the same number it will advertise.
   const bound = server.address()
   const boundPort = typeof bound === 'object' && bound !== null ? bound.port : options.port
-  options.log(`pocket: 局域网网关已启动 http://${options.listenAddress}:${String(boundPort)}（上游 ${authority}）`)
+  options.log(`pocket: [${where}] 网关已启动 http://${options.listenAddress}:${String(boundPort)}（上游 ${authority}）`)
 
   return {
     address: options.listenAddress,
@@ -468,7 +484,7 @@ export async function createPocketGateway(options: PocketGatewayOptions): Promis
       server.closeIdleConnections()
       server.closeAllConnections()
       await closed
-      options.log('pocket: 局域网网关已停止')
+      options.log(`pocket: [${where}] 网关已停止`)
     },
   }
 }
