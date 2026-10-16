@@ -14,8 +14,8 @@ def hasSigningKey = keystoreProperties.containsKey('storeFile')
 
 // The APK's own version, independent of the desktop shell's: it is shipped as its own release asset
 // (P5) and updates on its own schedule.
-def pocketVersionName = '1.0.0'
-def pocketVersionCode = 1
+def pocketVersionName = '1.0.1'
+def pocketVersionCode = 2
 
 android {
   namespace 'com.dshdesktop.pocket'
