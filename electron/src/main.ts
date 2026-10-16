@@ -46,6 +46,7 @@ import {
   SMOKE_MINISIGN_ENV,
   SMOKE_NOTIFY_ENV,
   SMOKE_SUPPORT_ENV,
+  POCKET_APK_URL,
   SMOKE_UPDATE_ENV,
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_STARTUP_DELAY_MS,
@@ -1225,16 +1226,25 @@ function pocket(): PocketService {
 /** Status for the settings page, with the code to scan when a listener is up. */
 function pocketSnapshot(): PocketSnapshot {
   const status = pocket().status()
+  // The phone app's download link does not depend on a listener being up: the user needs it *before*
+  // they have anything to connect to.
+  let apkQr: string | undefined
+  try {
+    apkQr = pocketQrDataUrl(POCKET_APK_URL, { cellSize: 3 })
+  } catch (error) {
+    // A missing QR is a nuisance; a thrown renderer call is a dead settings window.
+    pushLog(`手机 App 二维码生成失败：${error instanceof Error ? error.message : String(error)}`)
+  }
+  const withApp: PocketSnapshot = { ...status, apkUrl: POCKET_APK_URL, ...(apkQr === undefined ? {} : { apkQr }) }
   const url = status.url
-  if (url === undefined) return status
+  if (url === undefined) return withApp
   let qr: string | undefined
   try {
     qr = pocketQrDataUrl(url)
   } catch (error) {
-    // A missing QR is a nuisance; a thrown renderer call is a dead settings window.
     pushLog(`手机访问二维码生成失败：${error instanceof Error ? error.message : String(error)}`)
   }
-  return qr === undefined ? status : { ...status, qr }
+  return qr === undefined ? withApp : { ...withApp, qr }
 }
 
 /** Act on phone access from the settings page; every action answers with the fresh status. */

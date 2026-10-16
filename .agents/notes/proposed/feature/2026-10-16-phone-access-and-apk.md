@@ -6,19 +6,16 @@ Status: proposed
 > - Android 客户端（P2）已落地：[implemented: Android 客户端](../../implemented/feature/2026-10-16-pocket-apk.md)
 > - 公网隧道（P3）已落地：[implemented: 公网门](../../implemented/feature/2026-10-16-pocket-public-access.md)
 > - 移动布局与压缩（P4）已落地：[implemented: 移动布局与传输压缩](../../implemented/feature/2026-10-16-pocket-mobile-layout.md)
+> - 发版集成（P5）已落地：[implemented: 发版集成](../../implemented/feature/2026-10-16-pocket-release-integration.md)
 >
-> 本笔记只覆盖**尚未开工**的部分：发版集成（P5）。
+> **P1–P5 全部落地，本笔记的规划部分已全部完成。**保留它是为了留下当初的取舍记录；后续若要继续做
+> （例如手机端自更新、前台服务保活），应新开一篇 proposed 而不是改这篇。
 
 ## Problem
 
 - **发版时要把 APK 一起交付**：现在 release 只传 Windows 安装包 + 签名 + `latest.json`。
 
 ## Proposal
-
-### P5 发版集成
-
-- `release-electron.mjs` 产出并上传 `DSH.Pocket_<version>.apk`，APK 内做版本检查。
-- 打包态 smoke 扩展：现有 `scripts/smoke-pocket.mjs` 已覆盖网关；再加隧道与 APK 资产的存在性断言。
 
 ## Alternatives considered
 
@@ -29,7 +26,6 @@ Status: proposed
 
 ## Acceptance criteria
 
-- **发版**：release 脚本上传 APK，`latest.json` 与 APK 版本一致。
 
 ## Risks
 

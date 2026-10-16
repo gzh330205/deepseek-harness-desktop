@@ -22,7 +22,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter as pathDelimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,6 +38,7 @@ const dryRun = args.includes('--dry-run')
 const prerelease = args.includes('--prerelease')
 const confirmed = args.includes('--yes')
 const skipBuild = args.includes('--skip-build')
+const skipSmoke = args.includes('--skip-smoke')
 const notesIndex = args.indexOf('--notes')
 const notes = notesIndex >= 0 ? args[notesIndex + 1] : undefined
 
@@ -142,6 +143,125 @@ execFileSync(process.execPath, [
   join(root, 'scripts', 'verify-package.mjs'), '--dir', join(outputDir, 'win-unpacked'),
 ], { cwd: root, stdio: 'inherit' })
 
+// 2c. The Android client is part of what this release delivers, so it is built and inspected here
+// rather than by hand: an unsigned or mis-versioned APK must fail the release, not reach the phone.
+const apkName = 'DSH.Pocket.apk'
+const apkPath = join(outputDir, apkName)
+
+/** The Android SDK, resolved the way the Gradle build itself resolves it. */
+function androidSdkRoot() {
+  const fromEnv = process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT
+  if (fromEnv !== undefined && existsSync(fromEnv)) return fromEnv
+  const local = join(repoRoot, 'android', 'local.properties')
+  if (existsSync(local)) {
+    const line = readFileSync(local, 'utf8').split('\n').find(entry => entry.startsWith('sdk.dir='))
+    if (line !== undefined) {
+      const value = line.slice('sdk.dir='.length).trim()
+      if (existsSync(value)) return value
+    }
+  }
+  fail('找不到 Android SDK：设置 ANDROID_HOME，或在 android/local.properties 写 sdk.dir')
+}
+
+/** The newest build-tools directory; the APK tools live there. */
+function buildToolsDir() {
+  const root = join(androidSdkRoot(), 'build-tools')
+  if (!existsSync(root)) fail(`Android SDK 里没有 build-tools：${root}`)
+  const versions = readdirSync(root)
+    .filter(entry => /^\d/u.test(entry))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  const newest = versions.at(-1)
+  if (newest === undefined) fail(`Android SDK 的 build-tools 是空的：${root}`)
+  return join(root, newest)
+}
+
+const apkSource = join(repoRoot, 'android', 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk')
+if (!skipBuild) {
+  process.stdout.write('==> gradlew :app:assembleRelease（Android 客户端）\n')
+  const androidDir = join(repoRoot, 'android')
+  // `gradlew.bat` is a batch file, and Node cannot spawn one directly on Windows (ENOENT/EINVAL):
+  // it has to go through the command interpreter. Arguments are fixed literals, never user input.
+  const gradle = process.platform === 'win32'
+    ? [process.env.ComSpec ?? 'cmd.exe', ['/c', join(androidDir, 'gradlew.bat'), ':app:assembleRelease', '--console=plain']]
+    : [join(androidDir, 'gradlew'), [':app:assembleRelease', '--console=plain']]
+  execFileSync(gradle[0], gradle[1], { cwd: androidDir, stdio: 'inherit' })
+}
+if (!existsSync(apkSource)) {
+  fail(`找不到 Android 客户端产物：${apkSource}（先运行 android 下的 gradlew :app:assembleRelease）`)
+}
+
+const tools = buildToolsDir()
+const aapt = join(tools, process.platform === 'win32' ? 'aapt2.exe' : 'aapt2')
+const apksigner = join(tools, process.platform === 'win32' ? 'apksigner.bat' : 'apksigner')
+
+/**
+ * Run one of the Android SDK's tools.
+ *
+ * `apksigner` is a batch file on Windows, and Node cannot spawn those directly (EINVAL): the command
+ * interpreter has to do it. Arguments here are fixed literals — no user input reaches this call.
+ *
+ * @param tool - Absolute path of the tool.
+ * @param args - Arguments to pass.
+ * @returns The tool's stdout.
+ */
+function runTool(tool, args) {
+  const batch = /\.(?:bat|cmd)$/iu.test(tool)
+  const file = batch ? process.env.ComSpec ?? 'cmd.exe' : tool
+  const full = batch ? ['/c', tool, ...args] : args
+  return execFileSync(file, full, { encoding: 'utf8', windowsHide: true })
+}
+// `aapt2 dump badging` prints human-readable lines; reading the package identity out of them is how
+// the release proves the APK matches what android/app/build.gradle declares.
+const badging = runTool(aapt, ['dump', 'badging', apkSource])
+const apkVersion = /versionName='([^']+)'/u.exec(badging)?.[1]
+const apkVersionCode = /versionCode='(\d+)'/u.exec(badging)?.[1]
+const apkPackage = /package: name='([^']+)'/u.exec(badging)?.[1]
+// build-tools 36 renamed this line from `sdkVersion:` to `minSdkVersion:`, so accept both rather than
+// depending on which build-tools a machine happens to have.
+const apkMinSdk = /(?:minSdkVersion|sdkVersion):'(\d+)'/u.exec(badging)?.[1]
+const apkTargetSdk = /targetSdkVersion:'(\d+)'/u.exec(badging)?.[1]
+if (apkPackage === undefined || apkVersion === undefined || apkVersionCode === undefined
+  || apkMinSdk === undefined || apkTargetSdk === undefined) {
+  // These four numbers describe which phones can install this at all, so they are not optional.
+  fail('APK 元数据读不出来（包名/版本/minSdk/targetSdk），产物可能损坏')
+}
+process.stdout.write('==> apksigner verify（手机客户端必须已签名）\n')
+const signatureReport = runTool(apksigner, ['verify', '--verbose', '--print-certs', apkSource])
+if (!/Verified using v2 scheme/u.test(signatureReport)) {
+  fail('APK 没有通过 v2 签名校验：拒绝发布未签名的手机客户端')
+}
+const signerLine = /Signer #1 certificate DN: (.+)/u.exec(signatureReport)?.[1]?.trim() ?? '(未知)'
+// A stable asset name: `releases/latest/download/DSH.Pocket.apk` then always serves the newest client,
+// which is what the settings page turns into a QR code that never has to be regenerated.
+copyFileSync(apkSource, apkPath)
+const apkBytes = readFileSync(apkPath)
+const apkSha256 = createHash('sha256').update(apkBytes).digest('hex')
+process.stdout.write(`==> ${apkName}：${(apkBytes.length / 1024 / 1024).toFixed(1)} MiB，包名 ${apkPackage}，`
+  + `版本 ${apkVersion}(${apkVersionCode})，minSdk ${String(apkMinSdk)}，targetSdk ${String(apkTargetSdk)}，`
+  + `签名者 ${signerLine}\n`)
+process.stdout.write(`    sha256 ${apkSha256}\n`)
+
+// 2d. The smokes are release gates, not decoration: they boot the packaged shell and the gateway and
+// talk to them over real sockets. This is the last moment to catch a broken build before it is public
+// — and before every installed copy starts updating itself to it.
+if (!skipSmoke) {
+  process.stdout.write('==> smoke：打包版壳\n')
+  try {
+    execFileSync(process.execPath, [join(root, 'scripts', 'smoke.mjs'), 'cookie', '--packaged'],
+      { cwd: root, stdio: 'inherit' })
+  } catch {
+    fail('打包版 smoke 失败：拒绝发布（--skip-smoke 可跳过，但请先弄清原因）')
+  }
+  process.stdout.write('==> smoke：手机访问网关\n')
+  try {
+    execFileSync(process.execPath, [join(root, 'scripts', 'smoke-pocket.mjs')], { cwd: root, stdio: 'inherit' })
+  } catch {
+    fail('网关 smoke 失败：拒绝发布（--skip-smoke 可跳过，但请先弄清原因）')
+  }
+} else {
+  process.stdout.write('==> 已跳过 smoke（--skip-smoke）\n')
+}
+
 // 3. Sign with the Tauri/minisign key. Empty password is this key's configuration, and
 //    going through a shell would swallow the empty argument, so call the CLI directly.
 const keyPath = resolve(repoRoot, process.env.DSH_DESKTOP_SIGNING_KEY_PATH ?? 'electron/keys/dsh-desktop.key')
@@ -180,6 +300,20 @@ const manifestJson = {
     },
   },
   shell: { minimum: '0.3.0', channel: prerelease ? 'prerelease' : 'stable' },
+  // The phone client travels in the same release but updates on its own schedule. The field is
+  // additive on purpose: `fetchManifest` reads the keys it knows and ignores the rest, so older
+  // clients keep updating exactly as before.
+  apk: {
+    package: apkPackage,
+    version: apkVersion,
+    versionCode: Number(apkVersionCode),
+    minSdk: Number(apkMinSdk),
+    targetSdk: Number(apkTargetSdk),
+    // A stable asset name, so `releases/latest/download/DSH.Pocket.apk` is a permanent link that
+    // always serves the newest client — that is what the settings page turns into a QR code.
+    url: `https://github.com/${REPO}/releases/latest/download/${apkName}`,
+    sha256: apkSha256,
+  },
 }
 mkdirSync(outputDir, { recursive: true })
 const manifestPath = join(outputDir, 'latest.json')
@@ -188,12 +322,13 @@ process.stdout.write(`==> latest.json 已生成：${manifestPath}\n`)
 
 if (dryRun) {
   process.stdout.write('\n发布计划（--dry-run，未上传）：\n')
-  // Mirror the real invocation: one release, three assets.
+  // Mirror the real invocation: one release, four assets.
   process.stdout.write([
     `  gh release create v${version} \\`,
     `    ${artifactPath} \\`,
     `    ${signaturePath} \\`,
     `    ${manifestPath} \\`,
+    `    ${apkPath} \\`,
     `    --repo ${REPO} --title v${version}${prerelease ? ' --prerelease' : ''} --notes "…"`,
     '',
   ].join('\n'))
@@ -223,7 +358,7 @@ function resolveGh() {
 process.stdout.write('==> gh release create\n')
 execFileSync(resolveGh(), [
   'release', 'create', `v${version}`,
-  artifactPath, signaturePath, manifestPath,
+  artifactPath, signaturePath, manifestPath, apkPath,
   '--repo', REPO,
   '--title', `v${version}`,
   '--notes', notes,
@@ -236,5 +371,6 @@ process.stdout.write([
   `   ${prerelease ? '（预发布：releases/latest 不会指向它，已安装的 Tauri 客户端不受影响）' : '（正式发布：已安装的 Tauri 客户端会在下次检查时迁移到 Electron 版）'}`,
   `   下载页: https://github.com/${REPO}/releases/tag/v${version}`,
   `   清单:   https://github.com/${REPO}/releases/latest/download/latest.json`,
+  `   手机端: https://github.com/${REPO}/releases/latest/download/${apkName}`,
   '',
 ].join('\n'))

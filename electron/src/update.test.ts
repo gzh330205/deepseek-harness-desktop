@@ -137,3 +137,37 @@ test('a file that does not match the manifest signature is rejected', async () =
   writeFileSync(empty, Buffer.alloc(0))
   assert.equal((await verifyInstaller(empty, signature, publicKey)).ok, false)
 })
+
+test('a manifest carrying the phone client still parses with the shipped reader', async () => {
+  // The release script grew an `apk` section for the Android client. Clients in the field read the
+  // keys they know and ignore the rest, and this pins that promise: the same manifest that now ships
+  // a phone app must keep updating desktops exactly as before.
+  const manifest = {
+    version: '0.4.0',
+    notes: 'https://github.com/gzh330205/deepseek-harness-desktop/releases/tag/v0.4.0',
+    pub_date: '2026-10-16T06:38:16Z',
+    platforms: {
+      'windows-x86_64': { signature, url: 'https://example.invalid/setup.exe' },
+    },
+    shell: { minimum: '0.3.0', channel: 'stable' },
+    apk: {
+      package: 'com.dshdesktop.pocket',
+      version: '1.0.0',
+      versionCode: 1,
+      minSdk: 26,
+      targetSdk: 34,
+      url: 'https://github.com/gzh330205/deepseek-harness-desktop/releases/latest/download/DSH.Pocket.apk',
+      sha256: 'a'.repeat(64),
+    },
+  }
+  await withServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify(manifest))
+  }, async (origin) => {
+    const parsed = await fetchManifest(`${origin}/latest.json`)
+    assert.equal(parsed.version, '0.4.0')
+    assert.equal(parsed.entry.url, 'https://example.invalid/setup.exe')
+    assert.equal(parsed.entry.signature, signature)
+    assert.equal(isNewer(parsed.version, '0.3.35'), true)
+  })
+})

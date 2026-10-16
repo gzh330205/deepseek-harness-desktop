@@ -122,6 +122,13 @@
       <label for="pocketPort">访问端口</label>
       <input id="pocketPort" type="number" min="1024" max="65535" step="1" data-testid="pocket-port" />
     </div>
+    <div class="pocket" id="pocketAppBox" hidden>
+      <img id="pocketAppQr" alt="手机扫码下载 App" />
+      <div>
+        <div class="line"><span class="k">手机 App</span><code id="pocketAppUrl" data-testid="pocket-app-url">—</code></div>
+        <p class="state">用手机扫码下载安装（Android 8.0 及以上）。装好后回到这里扫下面那个码连接。</p>
+      </div>
+    </div>
     <div class="pocket" id="pocketBox" hidden>
       <img id="pocketQr" alt="手机扫码打开" />
       <div>
@@ -303,6 +310,12 @@
     }
 
     function renderPocket(pocket) {
+      // The download link is shown whether or not a listener is up: the user needs the app before
+      // there is anything to connect to.
+      const appBox = document.getElementById('pocketAppBox')
+      appBox.hidden = !pocket.apkQr
+      document.getElementById('pocketAppQr').src = pocket.apkQr || ''
+      document.getElementById('pocketAppUrl').textContent = pocket.apkUrl || '—'
       pocketBoxEl.hidden = pocket.url === undefined
       pocketQrEl.src = pocket.qr || ''
       pocketUrlEl.textContent = pocket.url || '—'

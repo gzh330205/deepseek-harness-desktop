@@ -28,6 +28,9 @@ import type { SettingsInput } from './settings-shape.ts'
 export interface PocketSnapshot extends PocketStatus {
   /** PNG data URL of the QR code for {@link PocketStatus.url}, when a listener is up. */
   readonly qr?: string
+  /** Where the phone app comes from, and its QR code: scanning it installs the client. */
+  readonly apkUrl?: string
+  readonly apkQr?: string
 }
 
 /** What the settings page may ask phone access to do. */

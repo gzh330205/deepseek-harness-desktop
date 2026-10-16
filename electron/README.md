@@ -112,6 +112,23 @@ pnpm test                # 含 minisign 校验的 5 项测试
 pnpm minisign:check      # 真实产物往返：真钥签名 → 自校验通过 → 篡改被拒
 ```
 
+## 手机访问（发版时会一起交付）
+
+手机访问的设计与取舍见 `.agents/notes/implemented/` 下的三篇笔记（网关、公网门、移动布局）。发版相关的部分：
+
+- **Android 客户端随发行版交付**：`release-electron.mjs` 会构建 `gradlew :app:assembleRelease`、用 `aapt2`
+  读包名/版本/minSdk、用 `apksigner` 确认 v2 签名，然后以**固定资产名** `DSH.Pocket.apk` 上传。固定名字是为了
+  `https://github.com/<repo>/releases/latest/download/DSH.Pocket.apk` 永远指向最新版——设置页把它做成二维码，
+  手机扫码就能装。
+- **`latest.json` 多了一个 `apk` 段**（包名、版本、minSdk/targetSdk、固定 URL、sha256）。这是附加字段：
+  `fetchManifest` 只读它认识的键，老客户端不受影响。
+- **smoke 是发布闸门**：打包版 smoke（`scripts/smoke.mjs cookie --packaged`）与手机访问网关 smoke
+  （`scripts/smoke-pocket.mjs`）都在签名与上传**之前**跑，任一失败即拒绝发布（`--skip-smoke` 可绕过，但要先弄清楚原因）。
+- **APK 的签名密钥**：`android/keys/dsh-pocket.jks` + `keys/keystore.properties`（都在 `.gitignore` 里，另备份于
+  `%USERPROFILE%\.dsh-desktop-keys\`）。丢了就再也无法给已安装的旧版发更新，与桌面安装包密钥同等严重。
+- **公网隧道二进制**：`cloudflared` 按 `cloudflared-pin.json` 固定版本，构建期校验 SHA-256 与 Cloudflare 的
+  Authenticode 签名（`pnpm cloudflared:prepare`），由 `verify-package.mjs` 复验包内那份。
+
 ## 目录
 
 ```
@@ -136,7 +153,9 @@ electron/
     update/index.html   更新窗口页面
   scripts/
     smoke.mjs           端到端冒烟运行器（支持 --packaged）
-    release-electron.mjs 发布脚本
+    smoke-pocket.mjs    手机访问网关冒烟（真实 socket，含 Host 403 与 WebSocket 升级）
+    prepare-cloudflared.mjs 取回并校验随包隧道二进制（版本 + 哈希 + 签名）
+    release-electron.mjs 发布脚本（含 Android 客户端构建与 smoke 闸门）
     installer-bridge.nsh NSIS 桥接宏
     minisign-roundtrip.mjs 签名往返验证
   electron-builder.config.mjs 打包配置

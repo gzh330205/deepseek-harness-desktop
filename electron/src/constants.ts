@@ -231,6 +231,15 @@ export const SHARED_USER_DATA_DIR_NAME = 'ai.deepseek.dsh-desktop'
 export const DEFAULT_UPDATE_MANIFEST_URL =
   'https://github.com/gzh330205/deepseek-harness-desktop/releases/latest/download/latest.json'
 export const UPDATE_MANIFEST_URL_ENV = 'DSH_DESKTOP_UPDATE_MANIFEST_URL'
+/**
+ * Where the Android client is downloaded from.
+ *
+ * A stable asset name on purpose: `releases/latest/download/…` follows the newest release, so this
+ * link — and the QR code the settings page draws from it — never has to be regenerated, and never
+ * points at a version that has been superseded.
+ */
+export const POCKET_APK_URL =
+  'https://github.com/gzh330205/deepseek-harness-desktop/releases/latest/download/DSH.Pocket.apk'
 /** Delay before the automatic startup check, and the interval between later checks. */
 export const UPDATE_STARTUP_DELAY_MS = 8_000
 export const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000

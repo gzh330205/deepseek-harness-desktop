@@ -81,3 +81,14 @@ test('the public section can be closed and its password can be fixed', () => {
   // The token is entered as a secret and must not be echoed back into the page.
   assert.match(page, /id="pocketTunnelToken" type="password"/u)
 })
+
+test('the phone app download is offered before anything else', () => {
+  // The client has to be installed before the address means anything, so its QR is not hidden behind
+  // "a listener is running".
+  assert.match(page, /id="pocketAppQr"/u)
+  assert.match(page, /id="pocketAppUrl"/u)
+  const render = /function renderPocket\(pocket\)[\s\S]*?\n    \}/u.exec(page)?.[0] ?? ''
+  assert.notEqual(render, '')
+  assert.match(render, /pocketAppBox/u)
+  assert.equal(render.includes('pocketBoxEl.hidden = pocket.url === undefined'), true)
+})
