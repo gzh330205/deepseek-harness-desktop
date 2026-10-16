@@ -94,4 +94,8 @@ Status: implemented
      去抖，并只认 `IME_ACTION_DONE` 或 Enter 按下。
   3. **深链接注册缺失**——清单里那条 intent-filter 是补上的（之前 `dshpocket://connect` 无法解析），现在
      `am start -a android.intent.action.VIEW -d "dshpocket://connect?url=…"` 可用。
-- 仍然如实的边界：**没有在物理手机上装过**；空置保活只在模拟器网络下观察（真实移动网络的 NAT/省电策略更凶）。
+- **空置保活**：手机页面加载后空置约 8 分钟（06:02:34 登录 → 06:10:51 复查），`connection lost` 计数为 **0**，
+  页面上的诊断仍在正常上报，说明网关侧不会主动掐掉空闲连接（`server.timeout` 为 0、升级后的 socket 不参与
+  HTTP keep-alive 计时）。客户端自己的重连由 DSH 前端负责，App 端则在页面层 401 时用记住的密码重新登录。
+- 仍然如实的边界：**没有在物理手机上装过**；空置保活只在模拟器网络下观察，真实移动网络的 NAT/省电策略要凶得
+  多——真机上如果实测频繁掉线，下一步是给 App 加前台服务（代价是常驻通知）。
