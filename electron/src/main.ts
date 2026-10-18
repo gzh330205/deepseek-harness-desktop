@@ -1655,7 +1655,20 @@ async function driveSmokeMenu(): Promise<void> {
   // menu item until someone clicks it.
   try {
     openPocketWindow()
-    report.pocketWindow = await pocketWindowRef?.probe() ?? { loaded: false, selectors: {} }
+    report.pocketWindow = await pocketWindowRef?.probe() ?? { loaded: false, selectors: {}, bridge: false }
+    // 0.4.2 shipped two dead controls that the paint probe could not see: the bridge forwarded only
+    // the LAN-era actions (「开启公网访问」silently became `refresh`), and 关闭 closed the settings
+    // window instead of the phone-access one. Drive both through the page's own bridge here.
+    const forwarded = await pocketWindowRef?.evaluate<{ error: string | null }>(
+      `window.__DSH_SETTINGS__.pocket({ kind: 'setPublicPassword', value: 'x' })`
+      + `.then((snapshot) => ({ error: typeof snapshot?.error === 'string' ? snapshot.error : null }))`,
+    )
+    // An invalid password must be rejected by the service; that only happens when the action really
+    // reached `handlePocketAction` — a downgraded `refresh` answers without an error.
+    report.pocketBridge = { actionForwarded: typeof forwarded?.error === 'string' }
+    const acknowledged = await pocketWindowRef?.evaluate<boolean>('window.__DSH_SETTINGS__.close()')
+    await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
+    report.pocketClose = { acknowledged: acknowledged === true, windowClosed: pocketWindowRef?.isOpen() === false }
   } catch (error) {
     report.pocketWindow = { loaded: false, error: String(error) }
   }

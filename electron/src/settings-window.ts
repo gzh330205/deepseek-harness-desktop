@@ -22,44 +22,12 @@ import {
   SHELL_PAGE_DOCUMENTS,
   titleBarPalette,
 } from './constants.ts'
-import type { PocketFirewallStatus } from './pocket-firewall.ts'
-import type { PocketStatus } from './pocket-service.ts'
+import { parsePocketAction, type PocketAction, type PocketSnapshot } from './pocket-action.ts'
 import type { SettingsInput } from './settings-shape.ts'
 
-/** Phone access, as the settings page renders it: live status plus the code to scan. */
-export interface PocketSnapshot extends PocketStatus {
-  /** PNG data URL of the QR code for {@link PocketStatus.url}, when a listener is up. */
-  readonly qr?: string
-  /** Where the phone app comes from, and its QR code: scanning it installs the client. */
-  readonly apkUrl?: string
-  readonly apkQr?: string
-  /**
-   * Whether Windows Firewall lets other devices reach the LAN listener.
-   *
-   * The product does not create this rule on a fresh machine, and a blocked port looks exactly like a
-   * broken gateway from the phone's side — pings work, the app reports itself running, the page never
-   * opens. Cached rather than probed per render: the query costs a PowerShell start-up.
-   */
-  readonly firewall?: PocketFirewallStatus
-}
-
-/** What the settings page may ask phone access to do. */
-export type PocketAction =
-  | { readonly kind: 'refresh' }
-  | { readonly kind: 'rotate' }
-  | { readonly kind: 'setPassword'; readonly value: string }
-  | { readonly kind: 'select'; readonly address: string }
-  // Public access. `acceptedDisclaimer` travels from the page because the confirmation is shown
-  // there; the service refuses the start without it.
-  | { readonly kind: 'startTunnel'; readonly acceptedDisclaimer: boolean }
-  | { readonly kind: 'stopTunnel' }
-  | { readonly kind: 'rotatePublicPassword' }
-  | { readonly kind: 'setPublicPassword'; readonly value: string }
-  | { readonly kind: 'setTunnelToken'; readonly value: string }
-  // Windows Firewall: check whether the LAN listener is reachable from another device, and ask for
-  // elevation to add the rule. Never silent — the second one raises a UAC prompt.
-  | { readonly kind: 'firewallCheck' }
-  | { readonly kind: 'firewallAllow' }
+// The phone-access vocabulary lives in `pocket-action.ts` (no Electron import, so the bridge can be
+// unit-tested); it is re-exported here for the main process, which already imports from this module.
+export type { PocketAction, PocketSnapshot } from './pocket-action.ts'
 
 /** What the settings page renders. */
 export interface SettingsSnapshot {
@@ -209,6 +177,24 @@ export class SettingsWindow {
     }
   }
 
+  /**
+   * Run one expression in the window's page. Smoke-only: it exists so a rehearsal can drive the
+   * bridge the way a click does instead of only checking that the page painted.
+   *
+   * @param expression - Source evaluated in the page's main world.
+   * @returns The expression's value, or undefined when the window is gone.
+   */
+  async evaluate<T>(expression: string): Promise<T | undefined> {
+    const window = this.window
+    if (window === undefined || window.isDestroyed()) return undefined
+    return await window.webContents.executeJavaScript(expression) as T
+  }
+
+  /** Whether a window exists and has not been destroyed. Smoke-only. */
+  isOpen(): boolean {
+    return this.window !== undefined && !this.window.isDestroyed()
+  }
+
   install(): void {
     const owned = (url: string): boolean => {
       if (!this.options.isShellDocument(url)) return false
@@ -234,26 +220,30 @@ export class SettingsWindow {
       if (!owned(event.senderFrame?.url ?? '')) {
         throw new Error('dsh desktop: rejected settings IPC from an unowned renderer')
       }
-      this.close()
+      // Close the window that asked, not "the window this instance owns". The handlers are installed
+      // once and both shell pages (settings, phone access) share the bridge, so `this.close()` made
+      // the phone-access window's 关闭 button close the settings window instead — reported as
+      // "右下角的关闭按钮不能关闭弹窗".
+      //
+      // Deferred by one turn of the loop: closing the sender synchronously destroys the renderer
+      // before the invoke reply gets back, so the page's `await api.close()` never settles (the
+      // smoke rehearsal hung on exactly this). The user sees the same window close either way.
+      const requesting = BrowserWindow.fromWebContents(event.sender)
+      setImmediate(() => {
+        if (requesting !== null && !requesting.isDestroyed()) requesting.close()
+      })
       return true
     })
 
-    ipcMain.handle(IPC.pocketAction, async (event, action: unknown) => {
+    ipcMain.handle(IPC.pocketAction, (event, action: unknown) => {
       if (!owned(event.senderFrame?.url ?? '')) {
         throw new Error('dsh desktop: rejected settings IPC from an unowned renderer')
       }
-      if (typeof action !== 'object' || action === null) return this.options.pocket({ kind: 'refresh' })
-      const request = action as Record<string, unknown>
-      switch (request.kind) {
-        case 'rotate':
-          return this.options.pocket({ kind: 'rotate' })
-        case 'setPassword':
-          return this.options.pocket({ kind: 'setPassword', value: typeof request.value === 'string' ? request.value : '' })
-        case 'select':
-          return this.options.pocket({ kind: 'select', address: typeof request.address === 'string' ? request.address : '' })
-        default:
-          return this.options.pocket({ kind: 'refresh' })
-      }
+      // Pass the action through; `parsePocketAction` is the only validator. This used to be a
+      // hand-written whitelist from the LAN-only version, and every action added later (startTunnel,
+      // stopTunnel, the firewall pair, the public passwords) fell into a silent `refresh` — the form
+      // saved, so 「开启公网访问」 looked like a button that does nothing.
+      return this.options.pocket(parsePocketAction(action))
     })
 
     ipcMain.handle(IPC.settingsRestart, (event) => {
