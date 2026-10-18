@@ -69,6 +69,10 @@ export default {
   files: [
     'dist/**/*',
     'package.json',
+    // `yaml` is the one runtime dependency left external in `dist/main.js` (esbuild cannot bundle its
+    // CJS `require('process')` into ESM), so it ships as a real package inside the ASAR and Node's
+    // module resolution finds it at `app.asar/node_modules/yaml` from `app.asar/dist/main.js`.
+    { from: 'node_modules/yaml', to: 'node_modules/yaml', filter: ['**/*'] },
     // The DSH runtime, packed into the ASAR (`resources/app.asar/dsh/**`). The second entry is the
     // same workaround `extraResources` needed: electron-builder excludes a source directory's root
     // `node_modules`, and the exit code is still 0 when it does — `verify-package.mjs` catches it.

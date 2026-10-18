@@ -31,7 +31,11 @@ const shared = {
   bundle: true,
   platform: 'node',
   target: 'node22',
-  external: ['electron'],
+  // `yaml` is CommonJS and its generated code does `require('process')`, which esbuild cannot turn
+  // into an ESM import. Bundling it produced a main.js that threw "Dynamic require of process is not
+  // supported" before the app even started, so it stays external and ships as a real dependency
+  // inside the ASAR (`electron-builder.config.mjs` adds it to `files`).
+  external: ['electron', 'yaml'],
   sourcemap: true,
   logLevel: 'warning',
   define: { __DSH_UPDATE_PUBKEY__: JSON.stringify(publicKey) },
@@ -57,6 +61,7 @@ await cp(resolve(root, 'src/settings-ui'), resolve(out, 'settings'), { recursive
 await cp(resolve(root, 'src/market-ui'), resolve(out, 'market'), { recursive: true })
 await cp(resolve(root, 'src/pocket-ui'), resolve(out, 'pocket'), { recursive: true })
 await cp(resolve(root, 'src/usage-ui'), resolve(out, 'usage'), { recursive: true })
+await cp(resolve(root, 'src/mcp-ui'), resolve(out, 'mcp'), { recursive: true })
 // The strip shows the same logo the window and tray use.
 await copyFile(resolve(root, 'build', 'icons', '32x32.png'), resolve(out, 'titlebar', 'icon.png'))
 // The launcher page shows the product logo. Ship the real artwork (a Tauri-generated

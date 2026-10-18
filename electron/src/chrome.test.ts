@@ -68,9 +68,12 @@ test('the preload bridge and the IPC guard read one page list', () => {
   assert.doesNotMatch(preload, /endsWith\('\/settings\/index\.html'\)/u, '不能写死单个页面')
   assert.doesNotMatch(window_, /includes\('\/settings\/'\)/u, '不能写死单个页面')
   // Both pages the shell opens must be listed, or the next one repeats the bug.
-  assert.match(constantsSource, /SHELL_PAGE_DOCUMENTS = \['\/settings\/index\.html', '\/pocket\/index\.html', '\/usage\/index\.html'\]/u)
+  assert.match(constantsSource, /SHELL_PAGE_DOCUMENTS = \['\/settings\/index\.html', '\/pocket\/index\.html', '\/usage\/index\.html', '\/mcp\/index\.html'\]/u)
   // The usage window's bridge (token usage / ONE-WAY) reads the same list.
   const usageWindow = readFileSync(fileURLToPath(new URL('./usage-window.ts', import.meta.url)), 'utf8')
   assert.match(usageWindow, /SHELL_PAGE_DOCUMENTS/u)
   assert.doesNotMatch(usageWindow, /endsWith\('\/settings\/index\.html'\)/u, '不能写死别的页面')
+  // …and so does the MCP & Skills window.
+  const mcpWindow = readFileSync(fileURLToPath(new URL('./mcp-window.ts', import.meta.url)), 'utf8')
+  assert.match(mcpWindow, /SHELL_PAGE_DOCUMENTS/u)
 })

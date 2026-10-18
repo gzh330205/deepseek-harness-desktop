@@ -50,7 +50,7 @@ export function titleBarPalette(useDarkColors: boolean): { background: string; s
  * because the static guards only read the page's own markup. Hence one list, and a smoke check that
  * asserts the bridge exists.
  */
-export const SHELL_PAGE_DOCUMENTS = ['/settings/index.html', '/pocket/index.html', '/usage/index.html'] as const
+export const SHELL_PAGE_DOCUMENTS = ['/settings/index.html', '/pocket/index.html', '/usage/index.html', '/mcp/index.html'] as const
 
 export type ShellMenuName = 'app' | 'plugins' | 'pocket' | 'usage'
 /**
@@ -301,6 +301,16 @@ export const IPC = {
   usageLogout: 'shell:usage-logout',
   usageRequests: 'shell:usage-requests',
   usageClose: 'shell:usage-close',
+  /** MCP 与 Skills 窗口 → main: edit the DSH profile patch / skills links. */
+  mcpList: 'shell:mcp-list',
+  mcpSaveServer: 'shell:mcp-save-server',
+  mcpRemoveServer: 'shell:mcp-remove-server',
+  mcpSetEnabled: 'shell:mcp-set-enabled',
+  mcpSkills: 'shell:mcp-skills',
+  mcpAddSkill: 'shell:mcp-add-skill',
+  mcpRemoveSkill: 'shell:mcp-remove-skill',
+  mcpRestart: 'shell:mcp-restart',
+  mcpClose: 'shell:mcp-close',
   launcherStatus: 'dsh-desktop:launcher-status',
   launcherSubscribe: 'dsh-desktop:launcher-subscribe',
   /** Launcher page → main: leave the status page and open the DSH UI. */

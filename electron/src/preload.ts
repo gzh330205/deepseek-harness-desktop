@@ -103,6 +103,27 @@ if (isUsageDocument()) {
 }
 
 /**
+ * The MCP & Skills window: DSH configuration (profile patch + skills directory) from the shell.
+ */
+function isMcpDocument(): boolean {
+  return location.protocol === 'file:' && location.pathname.replace(/\\/gu, '/').endsWith('/mcp/index.html')
+}
+
+if (isMcpDocument()) {
+  contextBridge.exposeInMainWorld('__DSH_MCP__', Object.freeze({
+    list: () => ipcRenderer.invoke(IPC.mcpList) as Promise<unknown>,
+    saveServer: (input: unknown) => ipcRenderer.invoke(IPC.mcpSaveServer, input) as Promise<unknown>,
+    removeServer: (id: unknown) => ipcRenderer.invoke(IPC.mcpRemoveServer, id) as Promise<unknown>,
+    setEnabled: (id: unknown, enabled: unknown) => ipcRenderer.invoke(IPC.mcpSetEnabled, id, enabled) as Promise<unknown>,
+    skills: () => ipcRenderer.invoke(IPC.mcpSkills) as Promise<unknown>,
+    addSkill: () => ipcRenderer.invoke(IPC.mcpAddSkill) as Promise<unknown>,
+    removeSkill: (name: unknown) => ipcRenderer.invoke(IPC.mcpRemoveSkill, name) as Promise<unknown>,
+    restart: () => ipcRenderer.invoke(IPC.mcpRestart) as Promise<unknown>,
+    close: () => ipcRenderer.invoke(IPC.mcpClose) as Promise<boolean>,
+  }))
+}
+
+/**
  * The market window: search, install, update, remove, plus the two things a failing install needs —
  * the profile path and a way to hand us the raw pnpm output. The page itself has no network access
  * (`CSP default-src 'none'`), so every registry request goes through the main process.

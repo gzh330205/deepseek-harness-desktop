@@ -91,7 +91,24 @@ window.__DSH_USAGE__ = {
 - 顺带修了一个与本改动无关但会挡住发版的测试脆弱点：`pocket-service.test.ts` 用固定 41731 端口，产品自己
   开着公网访问时必挂；改为两条监听都用 0（系统分配），测试从端口占用里解耦。
 
-**待办**：阶段 2、3、4。
+**阶段 2 已落地（尚未发版）**：
+
+- `dsh-config.ts`：直接读写 DSH profile 补丁（用 `yaml` 的 Document API，保留注释与无关行；写前备份、最多留 5 份）；
+  MCP 服务本身就是 `@deepseek-ai/dsh-mcp-client` 原生 loader 行（schema 与运行时核对过），因此不需要任何插件；
+  Skills 走 `$DSH_HOME/skills`（目录 bundle / 单文件 / junction 链接，只删链接不动原目录）。
+- 旧插件迁移：`migrateLegacy()` 把 `mcp-skill-manager` 行里的 `mcpServers` 转成原生行并删除旧行（幂等、先备份）。
+  真实 profile 上演练：4 个服务（jenkins_dev/jenkins_prod/dbx/gwd-mcp）完整迁移，注释保留；同时把旧的 ONE-WAY
+  会话 Cookie 导入 `oneway.json`，用量窗口无需重新扫码。
+- `mcp-ui/index.html` + `mcp-window.ts`：标题栏「插件」菜单新增「MCP 与 Skills…」，窗口两个标签页
+  （服务增删改/启停；技能链接添加/移除），保存后提示「重启 DSH 生效」并给按钮；IPC 发送者校验、关闭用 setImmediate。
+- `yaml` 依赖：CommonJS 且内部 `require('process')`，esbuild 打进 ESM main 会在启动时抛
+  `Dynamic require of "process" is not supported`；改为 `external` + 作为 production 依赖放进 ASAR
+  （`files` 显式加 `node_modules/yaml`）。
+- 菜单冒烟加固：每个窗口步骤 15 s 上限 + 90 s 总看门狗，超时也写出 `menu-smoke.json`（这次就是靠它定位到
+  手机访问服务队列阻塞导致的冒烟挂起）；冒烟现在还会打开「插件」菜单验证新入口。
+- 证据：全量 521 条 / 0 失败；tsc 干净；dev 冒烟 `usageWindow`/`mcpWindow` 的 loaded/bridge/selectors/close 全绿。
+
+**待办**：阶段 3（四个插件随壳注入 + 移除 plugin-kit）、阶段 4（发版）。
 
 ## Alternatives considered
 

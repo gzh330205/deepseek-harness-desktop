@@ -22,7 +22,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import minisignSmokeFixture from './fixtures/minisign-smoke.json' with { type: 'json' }
 import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { release as osRelease } from 'node:os'
+import { release as osRelease, homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import {
@@ -116,6 +116,8 @@ import { WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, fitBounds, readWindowState, writeW
 import { createUsageStore, type UsageStore } from './usage-state.ts'
 import { createUsageService, type UsageService } from './oneway-service.ts'
 import { UsageWindow } from './usage-window.ts'
+import { createDshConfigStore, type DshConfigStore } from './dsh-config.ts'
+import { McpWindow } from './mcp-window.ts'
 
 // Scheme privileges must be granted before the app is ready; userData must be
 // redirected before anything reads it.
@@ -164,6 +166,9 @@ let pocketService: PocketService | undefined
 let usageWindowRef: UsageWindow | undefined
 let usageStore: UsageStore | undefined
 let usageService: UsageService | undefined
+/** MCP 与 Skills：直接编辑 DSH profile 补丁与 skills 目录，不经过注入插件。 */
+let mcpWindowRef: McpWindow | undefined
+let dshConfig: DshConfigStore | undefined
 let marketWindow: ReturnType<typeof createMarketWindow> | undefined
 let updateController: UpdateController | undefined
 let updateTimer: NodeJS.Timeout | undefined
@@ -1020,6 +1025,8 @@ function reloadProductDocument(): void {
  */
 function pluginsMenuTemplate(): Electron.MenuItemConstructorOptions[] {
   return [
+    { label: 'MCP 与 Skills…', click: () => { openMcpWindow() } },
+    { type: 'separator' },
     { label: '插件市场…', click: () => {
       marketWindow ??= createMarketWindow(app.getAppPath(), appendShellLog, { logDir: bridgeDir() })
       marketWindow.open('market')
@@ -1599,6 +1606,57 @@ function installUsageWindow(): void {
   usageWindowRef.install()
 }
 
+/** `$DSH_HOME`: the managed override, or the user's own `~/.dsh`. */
+function harnessHomeDirectory(): string {
+  return harnessHome() ?? join(homedir(), '.dsh')
+}
+
+function dshConfigStore(): DshConfigStore {
+  return (dshConfig ??= createDshConfigStore({ home: harnessHomeDirectory(), log: pushLog }))
+}
+
+function openMcpWindow(): void {
+  if (mcpWindowRef === undefined) return
+  mcpWindowRef.open()
+  pushLog('已打开 MCP 与 Skills 窗口')
+}
+
+/**
+ * Wire the MCP & Skills window, and migrate the legacy plugin's MCP records once.
+ *
+ * The old `dsh-mcp-skill-manager` plugin kept servers inside its own settings record and created the
+ * clients itself. The shell now writes native `@deepseek-ai/dsh-mcp-client` rows instead, so the
+ * plugin (and the aggregator that hosts its settings tabs) can be removed without stranding the
+ * user's servers. The migration is idempotent and backs the patch file up first.
+ */
+function installMcpWindow(): void {
+  const store = dshConfigStore()
+  // Before the legacy row is touched, take the ONE-WAY session it kept: the usage window should open
+  // signed in instead of asking for a new QR scan.
+  const legacyUsage = store.readLegacyUsageConfig()
+  if (legacyUsage !== undefined && usageStore !== undefined && usageStore.get().sessionCookie === '') {
+    usageStore.update({
+      ...(legacyUsage.baseUrl === undefined ? {} : { baseUrl: legacyUsage.baseUrl }),
+      ...(legacyUsage.refreshSeconds === undefined ? {} : { refreshSeconds: legacyUsage.refreshSeconds }),
+      ...(legacyUsage.sessionCookie === undefined ? {} : { sessionCookie: legacyUsage.sessionCookie }),
+    })
+    pushLog('用量：已从旧 ONE-WAY 插件导入会话，无需重新扫码')
+  }
+  const migration = store.migrateLegacy()
+  if (!migration.alreadyDone) {
+    pushLog(migration.ok
+      ? `MCP：已从旧插件导入 ${String(migration.servers)} 个服务并移除旧插件行（重启 DSH 后生效）`
+      : `MCP：旧插件迁移失败（${migration.reason ?? '未知原因'}）`)
+  }
+  mcpWindowRef = new McpWindow({
+    appRoot: app.getAppPath(),
+    store,
+    isShellDocument: isLauncherSender,
+    restart: () => { restartShell('MCP 配置变更后重启') },
+  })
+  mcpWindowRef.install()
+}
+
 function installUpdates(): void {
   const window = new UpdateWindow({
     appRoot: app.getAppPath(),
@@ -1727,7 +1785,46 @@ async function driveSmokeMinisign(): Promise<void> {
  */
 async function driveSmokeMenu(): Promise<void> {
   const report: Record<string, unknown> = {}
-  for (const name of ['app', 'pocket'] as const) {
+  /** Write what we have; the smoke must always leave a file behind, even when a step stalls. */
+  const writeReport = (): void => {
+    try {
+      writeFileSync(join(bridgeDir(), 'menu-smoke.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8')
+    } catch {
+      // Diagnostics only.
+    }
+  }
+  /**
+   * Bound every window step.
+   *
+   * A rehearsal that hangs is worse than one that records a failure: CI and the release checklist
+   * both wait on the report file, and the pocket window's service queue can legitimately block
+   * behind a tunnel operation. Each step gets its own budget so the rest still gets verified.
+   */
+  const step = async <T>(label: string, run: () => Promise<T>, timeoutMs = 15_000): Promise<T | undefined> => {
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        run(),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => {
+            pushLog(`menu-smoke: ${label} 超时（${String(timeoutMs)}ms），继续下一项`)
+            resolve(undefined)
+          }, timeoutMs)
+        }),
+      ])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+  // Absolute stop: 90 s from here the report is written and the process exits non-zero, so a stuck
+  // native surface cannot leave an invisible app behind.
+  const watchdog = setTimeout(() => {
+    pushLog('menu-smoke: 整体超时，写出当前结果')
+    report.timedOut = true
+    writeReport()
+    app.exit(2)
+  }, 90_000)
+  for (const name of ['app', 'plugins', 'pocket'] as const) {
     let labels: readonly string[] = []
     let menu: Electron.Menu | undefined
     const closed = new Promise<boolean>((resolve) => {
@@ -1738,25 +1835,25 @@ async function driveSmokeMenu(): Promise<void> {
     })
     await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
     menu?.closePopup()
-    report[name] = { opened: await closed, labels }
+    report[name] = { opened: await step(`menu-${name}`, () => closed, 10_000) ?? false, labels }
   }
   // The phone-access window is opened from its own menu item: prove the page really paints, because a
   // wrong path, a CSP that blocks the inline script or a preload that threw all look like a working
   // menu item until someone clicks it.
   try {
     openPocketWindow()
-    report.pocketWindow = await pocketWindowRef?.probe() ?? { loaded: false, selectors: {}, bridge: false }
+    report.pocketWindow = await step('pocket-probe', async () => await pocketWindowRef?.probe() ?? { loaded: false, selectors: {}, bridge: false }) ?? { loaded: false, selectors: {}, bridge: false }
     // 0.4.2 shipped two dead controls that the paint probe could not see: the bridge forwarded only
     // the LAN-era actions (「开启公网访问」silently became `refresh`), and 关闭 closed the settings
     // window instead of the phone-access one. Drive both through the page's own bridge here.
-    const forwarded = await pocketWindowRef?.evaluate<{ error: string | null }>(
+    const forwarded = await step('pocket-bridge', async () => await pocketWindowRef?.evaluate<{ error: string | null }>(
       `window.__DSH_SETTINGS__.pocket({ kind: 'setPublicPassword', value: 'x' })`
       + `.then((snapshot) => ({ error: typeof snapshot?.error === 'string' ? snapshot.error : null }))`,
-    )
+    ))
     // An invalid password must be rejected by the service; that only happens when the action really
     // reached `handlePocketAction` — a downgraded `refresh` answers without an error.
     report.pocketBridge = { actionForwarded: typeof forwarded?.error === 'string' }
-    const acknowledged = await pocketWindowRef?.evaluate<boolean>('window.__DSH_SETTINGS__.close()')
+    const acknowledged = await step('pocket-close', async () => await pocketWindowRef?.evaluate<boolean>('window.__DSH_SETTINGS__.close()'))
     await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
     report.pocketClose = { acknowledged: acknowledged === true, windowClosed: pocketWindowRef?.isOpen() === false }
   } catch (error) {
@@ -1767,14 +1864,28 @@ async function driveSmokeMenu(): Promise<void> {
   // `settings()` is used deliberately — it reads local state, so the rehearsal stays offline.
   try {
     openUsageWindow()
-    report.usageWindow = await usageWindowRef?.probe() ?? { loaded: false, bridge: false, selectors: {} }
-    const reachable = await usageWindowRef?.evaluate<boolean>('window.__DSH_USAGE__.settings().then((settings) => settings !== null)')
+    report.usageWindow = await step('usage-probe', async () => await usageWindowRef?.probe() ?? { loaded: false, bridge: false, selectors: {} }) ?? { loaded: false, bridge: false, selectors: {} }
+    const reachable = await step('usage-bridge', async () => await usageWindowRef?.evaluate<boolean>('window.__DSH_USAGE__.settings().then((settings) => settings !== null)'))
     report.usageBridge = { reachable: reachable === true }
-    await usageWindowRef?.evaluate('window.__DSH_USAGE__.close()')
+    await step('usage-close', async () => await usageWindowRef?.evaluate('window.__DSH_USAGE__.close()'))
     await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
     report.usageClose = { windowClosed: usageWindowRef?.isOpen() === false }
   } catch (error) {
     report.usageWindow = { loaded: false, error: String(error) }
+  }
+
+  // MCP & Skills window: painted, bridge reachable. `skills()` only reads the local skills
+  // directory, so the rehearsal makes no network request.
+  try {
+    openMcpWindow()
+    report.mcpWindow = await step('mcp-probe', async () => await mcpWindowRef?.probe() ?? { loaded: false, bridge: false, selectors: {} }) ?? { loaded: false, bridge: false, selectors: {} }
+    const reachable = await step('mcp-bridge', async () => await mcpWindowRef?.evaluate<boolean>('window.__DSH_MCP__.skills().then((state) => Array.isArray(state.items))'))
+    report.mcpBridge = { reachable: reachable === true }
+    await step('mcp-close', async () => await mcpWindowRef?.evaluate('window.__DSH_MCP__.close()'))
+    await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
+    report.mcpClose = { windowClosed: mcpWindowRef?.isOpen() === false }
+  } catch (error) {
+    report.mcpWindow = { loaded: false, error: String(error) }
   }
 
   // The logo is an image on a `file://` page, so a missing `img-src` in its CSP blocks it
@@ -1787,11 +1898,8 @@ async function driveSmokeMenu(): Promise<void> {
     })()`) as Record<string, unknown>
     report.titleBarLogo = logo
   }
-  try {
-    writeFileSync(join(bridgeDir(), 'menu-smoke.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8')
-  } catch {
-    // Diagnostics only.
-  }
+  clearTimeout(watchdog)
+  writeReport()
   app.exit(0)
 }
 
@@ -2099,6 +2207,7 @@ async function boot(): Promise<void> {
   installUpdates()
   installSettingsWindow()
   installUsageWindow()
+  installMcpWindow()
 
   // A bundled runtime is the executable half of the product: verify it is the tree that
   // was packaged before spawning anything. A system dsh is used only when the app has no

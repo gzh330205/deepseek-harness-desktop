@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:" />
+<title>MCP 与 Skills</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1e21; --muted: #6b7280; --line: #e5e7eb; --panel: #f7f8fa;
+    --brand: #2f6feb; --danger: #d9453d; --ok: #1a7f37;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; color: var(--fg); background: var(--bg); font-size: 13px; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 18px 0; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .tabs { display: flex; gap: 6px; margin-left: auto; }
+  .tabs button { border: 1px solid var(--line); background: var(--bg); color: var(--muted); padding: 5px 14px; border-radius: 7px; cursor: pointer; font: inherit; }
+  .tabs button.active { border-color: var(--brand); color: var(--brand); background: #eef3ff; }
+  main { padding: 14px 18px 8px; display: flex; flex-direction: column; gap: 10px; height: calc(100vh - 128px); }
+  .panel { display: none; flex-direction: column; gap: 10px; min-height: 0; flex: 1; }
+  .panel.active { display: flex; }
+  .toolbar { display: flex; gap: 8px; align-items: center; }
+  .toolbar .path { color: var(--muted); font-size: 11px; margin-left: auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { font: inherit; cursor: pointer; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); padding: 5px 12px; }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  button.danger { color: var(--danger); border-color: #f0c8c5; }
+  button.small { padding: 3px 9px; font-size: 12px; }
+  ::placeholder { color: #9aa1ab; }
+  .scroll { overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+  .card { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: var(--bg); display: flex; gap: 10px; align-items: flex-start; }
+  .card.disabled { opacity: .55; }
+  .card .grow { flex: 1; min-width: 0; }
+  .card .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .card .summary { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .desc { color: var(--muted); margin-top: 3px; }
+  .tag { display: inline-block; font-size: 10.5px; border-radius: 999px; padding: 1px 8px; background: var(--panel); color: var(--muted); border: 1px solid var(--line); }
+  .tag.ok { color: var(--ok); border-color: #bfe3c8; background: #effaf1; }
+  .tag.legacy { color: #9a6700; border-color: #ecd9a8; background: #fff8e6; }
+  .actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+  .empty { color: var(--muted); text-align: center; padding: 28px 0; }
+  .form { border: 1px solid var(--line); border-radius: 9px; padding: 12px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
+  .form[hidden] { display: none; }
+  .row { display: flex; gap: 8px; }
+  .row > label { flex: 1; display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; }
+  input[type="text"], select, textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--fg); }
+  textarea { min-height: 54px; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .form .buttons { display: flex; gap: 8px; justify-content: flex-end; }
+  footer { display: flex; align-items: center; gap: 10px; padding: 10px 18px 14px; border-top: 1px solid var(--line); }
+  #statusBar { color: var(--muted); flex: 1; min-height: 18px; }
+  #statusBar.error { color: var(--danger); }
+  #statusBar.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>MCP 与 Skills</h1>
+    <div class="tabs">
+      <button type="button" id="tabMcp" class="active">MCP 服务</button>
+      <button type="button" id="tabSkills">Skills</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel active" id="panelMcp">
+      <div class="toolbar">
+        <button type="button" class="primary" id="addServer">新增 MCP</button>
+        <button type="button" id="refreshMcp">刷新</button>
+        <span class="path" id="patchPath"></span>
+      </div>
+      <div class="form" id="serverForm" hidden>
+        <div class="row">
+          <label>服务名<input type="text" id="serverName" placeholder="jenkins_dev" /></label>
+          <label>传输
+            <select id="serverTransport">
+              <option value="stdio">stdio（本地进程）</option>
+              <option value="streamable-http">streamable-http（远程）</option>
+            </select>
+          </label>
+        </div>
+        <div class="row" id="stdioFields">
+          <label>启动命令<input type="text" id="serverCommand" placeholder="D:\node\node.exe" /></label>
+          <label>工作目录（可选）<input type="text" id="serverCwd" placeholder="留空用 DSH 的工作区" /></label>
+        </div>
+        <div class="row" id="stdioArgsRow">
+          <label>参数（每行一个）<textarea id="serverArgs" placeholder="G:\nodejs\node_global\node_modules\@raviraj87\jenkins-mcp\dist\index.js"></textarea></label>
+        </div>
+        <div class="row" id="stdioEnvRow">
+          <label>环境变量（KEY=VALUE，每行一个）<textarea id="serverEnv" placeholder="JENKINS_URL=http://10.0.0.5:8080"></textarea></label>
+        </div>
+        <div class="row" id="httpFields" hidden>
+          <label>URL<input type="text" id="serverUrl" placeholder="https://example.test/mcp" /></label>
+        </div>
+        <div class="row" id="httpHeadersRow" hidden>
+          <label>请求头（KEY: VALUE，每行一个）<textarea id="serverHeaders" placeholder="Authorization: Bearer ..."></textarea></label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="serverFailOnStartup" /> 启动失败时阻止 DSH 启动（默认不阻止）</label>
+          <label><input type="checkbox" id="serverEnabled" checked /> 启用</label>
+        </div>
+        <div class="buttons">
+          <button type="button" id="cancelServer">取消</button>
+          <button type="button" class="primary" id="saveServer">保存</button>
+        </div>
+      </div>
+      <div class="scroll" id="serverList"></div>
+    </section>
+
+    <section class="panel" id="panelSkills">
+      <div class="toolbar">
+        <button type="button" class="primary" id="addSkill">添加目录链接</button>
+        <button type="button" id="refreshSkills">刷新</button>
+        <span class="path" id="skillsRoot"></span>
+      </div>
+      <div class="scroll" id="skillList"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="statusBar">配置保存后需要重启 DSH 才能生效。</span>
+    <button type="button" id="restartButton">重启 DSH 服务</button>
+    <button type="button" id="closeButton">关闭</button>
+  </footer>
+
+  <script>
+    const api = window.__DSH_MCP__
+    const $ = (id) => document.getElementById(id)
+    let editingId = null
+    let servers = []
+
+    function setStatus(text, kind) {
+      const bar = $('statusBar')
+      bar.textContent = text || ''
+      bar.className = kind || ''
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag)
+      if (className) node.className = className
+      if (text !== undefined) node.textContent = text
+      return node
+    }
+
+    function tag(text, className) {
+      const node = el('span', 'tag' + (className ? ' ' + className : ''), text)
+      return node
+    }
+
+    function parseLines(text, separator) {
+      const out = []
+      for (const line of String(text || '').split(/\r?\n/)) {
+        const trimmed = line.trim()
+        if (trimmed === '') continue
+        const index = trimmed.indexOf(separator)
+        if (index <= 0) continue
+        out.push([trimmed.slice(0, index).trim(), trimmed.slice(index + separator.length).trim()])
+      }
+      return out
+    }
+
+    function pairsToObject(pairs) {
+      const out = {}
+      for (const [key, value] of pairs) out[key] = value
+      return out
+    }
+
+    function objectToLines(object, separator) {
+      if (!object) return ''
+      return Object.keys(object).map((key) => key + separator + object[key]).join('\n')
+    }
+
+    function describe(server) {
+      if (server.transport === 'streamable-http') return server.url || ''
+      const args = (server.args || []).join(' ')
+      return server.command + (args ? ' ' + args : '')
+    }
+
+    function renderServers() {
+      const list = $('serverList')
+      list.replaceChildren()
+      if (servers.length === 0) {
+        list.append(el('div', 'empty', '还没有 MCP 服务。点左上角「新增 MCP」添加。'))
+        return
+      }
+      for (const server of servers) {
+        const card = el('div', 'card' + (server.enabled ? '' : ' disabled'))
+        const grow = el('div', 'grow')
+        const name = el('div', 'name', server.serverName)
+        name.append(tag(server.transport))
+        if (server.legacy) name.append(tag('来自旧插件', 'legacy'))
+        if (!server.enabled) name.append(tag('已停用'))
+        grow.append(name)
+        grow.append(el('div', 'summary', describe(server)))
+        if (server.transport === 'stdio' && server.env) {
+          grow.append(el('div', 'desc', '环境变量：' + Object.keys(server.env).join('、')))
+        }
+        card.append(grow)
+        const actions = el('div', 'actions')
+        const toggle = el('button', 'small', server.enabled ? '停用' : '启用')
+        toggle.addEventListener('click', () => { void setEnabled(server.id, !server.enabled) })
+        const edit = el('button', 'small', '编辑')
+        edit.addEventListener('click', () => { showForm(server) })
+        const remove = el('button', 'small danger', '删除')
+        remove.addEventListener('click', () => { void removeServer(server) })
+        actions.append(toggle, edit, remove)
+        card.append(actions)
+        list.append(card)
+      }
+    }
+
+    function showForm(server) {
+      editingId = server ? server.id : null
+      $('serverName').value = server ? server.serverName : ''
+      $('serverTransport').value = server ? server.transport : 'stdio'
+      $('serverCommand').value = (server && server.command) || ''
+      $('serverCwd').value = (server && server.cwd) || ''
+      $('serverArgs').value = (server && server.args) ? server.args.join('\n') : ''
+      $('serverEnv').value = objectToLines(server && server.env, '=')
+      $('serverUrl').value = (server && server.url) || ''
+      $('serverHeaders').value = objectToLines(server && server.headers, ': ')
+      $('serverFailOnStartup').checked = Boolean(server && server.failOnStartupError)
+      $('serverEnabled').checked = server ? server.enabled !== false : true
+      syncTransportFields()
+      $('serverForm').hidden = false
+      $('serverForm').scrollIntoView({ block: 'nearest' })
+    }
+
+    function hideForm() {
+      editingId = null
+      $('serverForm').hidden = true
+    }
+
+    function syncTransportFields() {
+      const stdio = $('serverTransport').value === 'stdio'
+      $('stdioFields').hidden = !stdio
+      $('stdioArgsRow').hidden = !stdio
+      $('stdioEnvRow').hidden = !stdio
+      $('httpFields').hidden = stdio
+      $('httpHeadersRow').hidden = stdio
+    }
+
+    async function loadServers() {
+      try {
+        const state = await api.list()
+        servers = (state && state.servers) || []
+        $('patchPath').textContent = (state && state.patchPath) || ''
+        $('patchPath').title = (state && state.patchPath) || ''
+        renderServers()
+      } catch (error) {
+        setStatus('读取 MCP 配置失败：' + String(error), 'error')
+      }
+    }
+
+    async function saveServer() {
+      const transport = $('serverTransport').value
+      const input = {
+        serverName: $('serverName').value.trim(),
+        transport,
+        enabled: $('serverEnabled').checked,
+        failOnStartupError: $('serverFailOnStartup').checked,
+        ...(editingId ? { id: editingId } : {}),
+      }
+      if (transport === 'stdio') {
+        input.command = $('serverCommand').value.trim()
+        const cwd = $('serverCwd').value.trim()
+        if (cwd) input.cwd = cwd
+        const args = $('serverArgs').value.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '')
+        if (args.length > 0) input.args = args
+        const env = pairsToObject(parseLines($('serverEnv').value, '='))
+        if (Object.keys(env).length > 0) input.env = env
+      } else {
+        input.url = $('serverUrl').value.trim()
+        const headers = pairsToObject(parseLines($('serverHeaders').value, ':'))
+        if (Object.keys(headers).length > 0) input.headers = headers
+      }
+      try {
+        const result = await api.saveServer(input)
+        if (!result || result.ok !== true) {
+          setStatus((result && result.reason) || '保存失败。', 'error')
+          return
+        }
+        hideForm()
+        await loadServers()
+        setStatus('已保存。重启 DSH 服务后生效。', 'ok')
+      } catch (error) {
+        setStatus('保存失败：' + String(error), 'error')
+      }
+    }
+
+    async function setEnabled(id, enabled) {
+      try {
+        const result = await api.setEnabled(id, enabled)
+        if (!result || result.ok !== true) {
+          setStatus((result && result.reason) || '操作失败。', 'error')
+          return
+        }
+        await loadServers()
+        setStatus(enabled ? '已启用。重启 DSH 服务后生效。' : '已停用。重启 DSH 服务后生效。', 'ok')
+      } catch (error) {
+        setStatus('操作失败：' + String(error), 'error')
+      }
+    }
+
+    async function removeServer(server) {
+      if (!window.confirm('删除 MCP 服务「' + server.serverName + '」？此操作会写入 DSH 配置（有备份）。')) return
+      try {
+        const result = await api.removeServer(server.id)
+        if (!result || result.ok !== true) {
+          setStatus((result && result.reason) || '删除失败。', 'error')
+          return
+        }
+        await loadServers()
+        setStatus('已删除。重启 DSH 服务后生效。', 'ok')
+      } catch (error) {
+        setStatus('删除失败：' + String(error), 'error')
+      }
+    }
+
+    function renderSkills(items) {
+      const list = $('skillList')
+      list.replaceChildren()
+      if (!items || items.length === 0) {
+        list.append(el('div', 'empty', '没有发现 Skill。点「添加目录链接」选择一个含 SKILL.md 的目录。'))
+        return
+      }
+      for (const skill of items) {
+        const card = el('div', 'card')
+        const grow = el('div', 'grow')
+        const name = el('div', 'name', skill.name)
+        name.append(tag(skill.kind === 'bundle' ? 'SKILL.md 目录' : '单文件'))
+        if (skill.linked) name.append(tag('壳创建的链接', 'ok'))
+        grow.append(name)
+        if (skill.description) grow.append(el('div', 'desc', skill.description))
+        grow.append(el('div', 'summary', skill.path))
+        card.append(grow)
+        if (skill.linked) {
+          const actions = el('div', 'actions')
+          const remove = el('button', 'small danger', '移除链接')
+          remove.addEventListener('click', () => { void removeSkill(skill) })
+          actions.append(remove)
+          card.append(actions)
+        }
+        list.append(card)
+      }
+    }
+
+    async function loadSkills() {
+      try {
+        const state = await api.skills()
+        $('skillsRoot').textContent = (state && state.skillsRoot) || ''
+        $('skillsRoot').title = (state && state.skillsRoot) || ''
+        renderSkills((state && state.items) || [])
+      } catch (error) {
+        setStatus('读取 Skills 失败：' + String(error), 'error')
+      }
+    }
+
+    async function addSkill() {
+      try {
+        const result = await api.addSkill()
+        if (!result || result.ok !== true) {
+          if (result && result.reason === '已取消。') { setStatus(''); return }
+          setStatus((result && result.reason) || '添加失败。', 'error')
+          return
+        }
+        await loadSkills()
+        setStatus('已创建链接（不是复制）。DSH 会在下次启动时发现它。', 'ok')
+      } catch (error) {
+        setStatus('添加失败：' + String(error), 'error')
+      }
+    }
+
+    async function removeSkill(skill) {
+      if (!window.confirm('移除 Skill 链接「' + skill.name + '」？只删除链接，不动原目录。')) return
+      try {
+        const result = await api.removeSkill(skill.name)
+        if (!result || result.ok !== true) {
+          setStatus((result && result.reason) || '移除失败。', 'error')
+          return
+        }
+        await loadSkills()
+        setStatus('已移除链接。', 'ok')
+      } catch (error) {
+        setStatus('移除失败：' + String(error), 'error')
+      }
+    }
+
+    async function restart() {
+      if (!window.confirm('重启 DSH 服务会结束当前所有运行中的会话（历史已保存），继续？')) return
+      setStatus('正在重启…')
+      try {
+        await api.restart()
+      } catch (error) {
+        setStatus('重启失败：' + String(error), 'error')
+      }
+    }
+
+    function switchTab(name) {
+      $('tabMcp').classList.toggle('active', name === 'mcp')
+      $('tabSkills').classList.toggle('active', name === 'skills')
+      $('panelMcp').classList.toggle('active', name === 'mcp')
+      $('panelSkills').classList.toggle('active', name === 'skills')
+      if (name === 'skills') void loadSkills()
+    }
+
+    function wire() {
+      $('tabMcp').addEventListener('click', () => { switchTab('mcp') })
+      $('tabSkills').addEventListener('click', () => { switchTab('skills') })
+      $('addServer').addEventListener('click', () => { showForm(null) })
+      $('refreshMcp').addEventListener('click', () => { void loadServers() })
+      $('serverTransport').addEventListener('change', syncTransportFields)
+      $('cancelServer').addEventListener('click', hideForm)
+      $('saveServer').addEventListener('click', () => { void saveServer() })
+      $('addSkill').addEventListener('click', () => { void addSkill() })
+      $('refreshSkills').addEventListener('click', () => { void loadSkills() })
+      $('restartButton').addEventListener('click', () => { void restart() })
+      $('closeButton').addEventListener('click', () => { void api.close() })
+    }
+
+    if (!api) {
+      $('statusBar').textContent = '页面未获得桌面壳 API（preload 未加载）'
+      $('statusBar').className = 'error'
+    } else {
+      wire()
+      void loadServers()
+    }
+  </script>
+</body>
+</html>
