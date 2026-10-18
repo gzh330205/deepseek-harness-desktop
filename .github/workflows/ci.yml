@@ -2,6 +2,14 @@ name: CI
 
 # The Tauri shell is gone; this validates the Electron shell only. Releases are cut locally
 # (`electron/scripts/release-electron.mjs`), not from CI.
+#
+# The suite runs twice on purpose (see
+# .agents/notes/implemented/testing/2026-10-18-ci-test-runtime-and-byte-fixtures.md):
+# - on Node, the runtime `pnpm test` uses, which has OpenSSL's BLAKE2b — the oracle the
+#   JavaScript implementation is cross-checked against;
+# - on Electron's Node, the runtime the shipped app actually has (BoringSSL, no BLAKE2b), so
+#   the same suite has to pass without that oracle. Running only this one is what kept every
+#   push red after the Tauri shell was retired.
 
 on:
   push:
@@ -27,8 +35,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
       # The runtime under `electron/runtime` is a build artifact and is absent on a fresh clone, so
-      # only the tests that need it may be skipped here; `pnpm runtime:prepare` is a local step.
-      - name: Tests
+      # only the tests that need it are skipped here; `pnpm runtime:prepare` is a local step.
+      - name: Tests (Node, the runtime developers use)
+        run: pnpm test
+      - name: Tests (Electron runtime, the one the app ships)
         run: pnpm exec electron scripts/run-tests.mjs
         env:
           ELECTRON_RUN_AS_NODE: '1'

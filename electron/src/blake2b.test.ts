@@ -1,11 +1,13 @@
 /**
  * BLAKE2b-512 tests.
  *
- * The implementation exists because Electron's BoringSSL has no BLAKE2b, so it is always
- * compared against OpenSSL here rather than being trusted. Two bugs found while writing it
- * are kept as explicit regression cases: the high half of a 64-bit message word being
- * dropped, and compressing a full buffer early so an exact multiple of the block size ended
- * on a spurious zero block.
+ * The implementation exists because Electron's BoringSSL has no BLAKE2b. Where OpenSSL is
+ * available (Node, which `pnpm test` uses) it is compared against OpenSSL rather than
+ * trusted; the suite also runs under Electron's Node — the runtime the app ships — where
+ * `createHash('blake2b512')` throws, so those comparisons are skipped there instead of
+ * failing. Two bugs found while writing it are kept as explicit regression cases: the high
+ * half of a 64-bit message word being dropped, and compressing a full buffer early so an
+ * exact multiple of the block size ended on a spurious zero block.
  *
  * Run: node --test src/blake2b.test.ts
  */
@@ -18,6 +20,19 @@ import { Blake2b512, blake2b512, blake2b512Chunked } from '../src/blake2b.ts'
 
 /** The reference: OpenSSL, which Node has and Electron does not. */
 const reference = (content: Uint8Array): string => createHash('blake2b512').update(content).digest('hex')
+
+/** Whether this runtime has BLAKE2b through OpenSSL (Node) or only through BoringSSL (Electron). */
+const hasOpenSSLBlake2b = ((): boolean => {
+  try {
+    createHash('blake2b512')
+    return true
+  } catch {
+    return false
+  }
+})()
+
+/** Options for a test whose oracle is OpenSSL: Electron cannot run it, so it is skipped there. */
+const opensslOnly = hasOpenSSLBlake2b ? {} : { skip: 'runtime has no OpenSSL BLAKE2b (Electron/BoringSSL)' }
 
 const hashed = (content: Uint8Array, chunkSize?: number): string => {
   const hasher = new Blake2b512()
@@ -42,7 +57,7 @@ test('RFC 7693 and the published vectors', () => {
   )
 })
 
-test('every length around the block boundary matches OpenSSL', () => {
+test('every length around the block boundary matches OpenSSL', opensslOnly, () => {
   const lengths = [
     ...Array.from({ length: 300 }, (_unused, index) => index),
     383, 384, 385, 511, 512, 513, 1023, 1024, 1025, 4095, 4096, 4097, 100_000,
@@ -53,7 +68,7 @@ test('every length around the block boundary matches OpenSSL', () => {
   }
 })
 
-test('splitting the input across calls does not change the digest', () => {
+test('splitting the input across calls does not change the digest', opensslOnly, () => {
   // A digest that depends on how the caller chunked its input is not a hash function. This
   // is also the path the app uses: an installer is hashed in 4 MiB chunks.
   const data = randomBytes(4096 + 37)
@@ -65,13 +80,15 @@ test('splitting the input across calls does not change the digest', () => {
 
 test('a byte in the high half of the first word still counts', () => {
   // Regression: the high half of each 64-bit message word was never added, so a 5-byte
-  // input hashed as if its fifth byte were zero.
+  // input hashed as if its fifth byte were zero. This half is runtime-independent.
   assert.notEqual(hashed(Buffer.from('aaaaa')), hashed(Buffer.from('aaaa\x00')))
+  // The OpenSSL oracle needs a runtime that has the digest; Electron does not.
+  if (!hasOpenSSLBlake2b) return
   assert.equal(hashed(Buffer.from('aaaaa')), reference(Buffer.from('aaaaa')))
   assert.equal(hashed(Buffer.from('aaaaaa')), reference(Buffer.from('aaaaaa')))
 })
 
-test('an exact multiple of the block size does not end on an extra zero block', () => {
+test('an exact multiple of the block size does not end on an extra zero block', opensslOnly, () => {
   // Regression: compressing as soon as the buffer filled produced a trailing zero block for
   // a 128-byte input, which is a different digest.
   for (const length of [128, 256, 384, 512]) {
@@ -82,21 +99,25 @@ test('an exact multiple of the block size does not end on an extra zero block', 
   }
 })
 
-test('a 20 MiB message with non-zero words everywhere matches OpenSSL', () => {
+test('a 20 MiB message with non-zero words everywhere matches OpenSSL', opensslOnly, () => {
   const data = randomBytes(20 * 1024 * 1024)
   assert.equal(hashed(data, 4 * 1024 * 1024), reference(data))
 })
 
 test('the convenience helper uses a digest the runtime has, and agrees either way', () => {
   const data = randomBytes(1000)
-  assert.equal(Buffer.from(blake2b512(data)).toString('hex'), reference(data))
+  // Node: OpenSSL's digest. Electron: the JavaScript fallback. The helper must pick whichever
+  // this runtime has and still produce the same bytes as the other implementation.
+  const expected = hasOpenSSLBlake2b ? reference(data) : hashed(data)
+  assert.equal(Buffer.from(blake2b512(data)).toString('hex'), expected)
 })
 
 test('the chunked helper yields and reports progress', async () => {
   const data = randomBytes(9 * 1024 * 1024)
   const seen: number[] = []
   const digest = await blake2b512Chunked(data, (processed) => { seen.push(processed) })
-  assert.equal(Buffer.from(digest).toString('hex'), reference(data))
+  const expected = hasOpenSSLBlake2b ? reference(data) : hashed(data)
+  assert.equal(Buffer.from(digest).toString('hex'), expected)
   // On Node this takes the OpenSSL shortcut and reports once; the JavaScript path reports
   // per chunk. Either way the caller learns the total.
   assert.equal(seen.at(-1), data.length)

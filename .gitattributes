@@ -1,0 +1,5 @@
+# Byte-exact test fixtures. `artifact.txt.sig` signs the exact bytes of `artifact.txt`
+# (see electron/src/minisign.test.ts), so any line-ending conversion on checkout makes every
+# signature test fail. Git converts text files to CRLF when `core.autocrlf=true` — the default
+# on the development machine and on the Windows CI runners — so these files are opted out.
+electron/src/fixtures/** -text
