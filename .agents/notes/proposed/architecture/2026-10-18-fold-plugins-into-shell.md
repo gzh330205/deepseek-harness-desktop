@@ -108,7 +108,25 @@ window.__DSH_USAGE__ = {
   手机访问服务队列阻塞导致的冒烟挂起）；冒烟现在还会打开「插件」菜单验证新入口。
 - 证据：全量 521 条 / 0 失败；tsc 干净；dev 冒烟 `usageWindow`/`mcpWindow` 的 loaded/bridge/selectors/close 全绿。
 
-**待办**：阶段 3（四个插件随壳注入 + 移除 plugin-kit）、阶段 4（发版）。
+**阶段 3 已落地（尚未发版）**：
+
+- `scripts/prepare-plugins.mjs`：只复制四个插件（git 变更 / 运行配置 / 工作区分类 / 侧栏宽度）的运行时部分
+  （`index.js`、`lib/`、`locale/`、`assets/`、`cordis.patch.yml`）+ 从 `node_modules/.pnpm` 解出的依赖闭包
+  （`@deepseek-ai/schemastery`、`cosmokit`、`@standard-schema/spec`；run-env 另含 `dsh-tools`/`dsh-brand` 等）。
+  结果 225 个文件 / 1.75 MiB，而整目录复制是 109 MB——jsdom/esbuild/react/typescript 都是构建期依赖。
+- `plugin-provision.ts`：启动时把随壳插件 junction 进当前 profile 的 `node_modules`（行里的包名因此可解析）；
+  已有真实目录改名 `.bak-shell-*` 保留、不删除；首次使用的 profile 自动补 `{id,name}` 行；
+  从 profile `package.json` 移除 `dsh-plugin-kit` 的依赖与 bundle（备份）；移除 ONE-WAY/MCP-Skills 的旧插件行。
+- 打包/发版门禁：`electron-builder` 把 `resources/plugins` 放到 `resources/plugins`；`package:win/dir` 自动跑
+  `plugins:prepare`；`verify-package.mjs` 与 `release-electron.mjs` 都检查插件清单、入口与 schemastery 依赖；
+  同时补上「用量」「MCP 与 Skills」页面的入包检查。
+- 修了一个关键的路由错误：MCP 配置 store 最初用固定的 release profile 名，dev 通道实际跑 `dsh-desktop-dev`，
+  窗口会改错 profile；现在统一用 `desktopProfileName()`（env > 通道默认）。
+- 证据：dev 启动日志 `随壳插件：已链接…`、`已补 1 条首次使用的插件行`、`已移除 1 条旧插件行`；profile 清单
+  plugin-kit 已移除且有备份；DSH 启动后无 `failed to import`；冒烟「插件」菜单含「MCP 与 Skills…」，
+  usage/mcp 窗口 loaded/bridge/selectors/close 全绿。
+
+**待办**：阶段 4（发版）。
 
 ## Alternatives considered
 

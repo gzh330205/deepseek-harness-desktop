@@ -18,8 +18,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",
     "minisign:check": "node scripts/minisign-roundtrip.mjs 8",
-    "package:win": "node scripts/prepare-runtime.mjs && node scripts/prepare-cloudflared.mjs && node build.mjs && electron-builder --win nsis --publish never --config electron-builder.config.mjs && node scripts/verify-package.mjs",
-    "package:dir": "node scripts/prepare-runtime.mjs && node scripts/prepare-cloudflared.mjs && node build.mjs && electron-builder --win --dir --publish never --config electron-builder.config.mjs && node scripts/verify-package.mjs",
+    "package:win": "node scripts/prepare-runtime.mjs && node scripts/prepare-cloudflared.mjs && node scripts/prepare-plugins.mjs && node build.mjs && electron-builder --win nsis --publish never --config electron-builder.config.mjs && node scripts/verify-package.mjs",
+    "package:dir": "node scripts/prepare-runtime.mjs && node scripts/prepare-cloudflared.mjs && node scripts/prepare-plugins.mjs && node build.mjs && electron-builder --win --dir --publish never --config electron-builder.config.mjs && node scripts/verify-package.mjs",
     "release:dry": "node scripts/release-electron.mjs --dry-run",
     "release": "node scripts/release-electron.mjs",
     "smoke": "node build.mjs && node scripts/smoke.mjs cookie",
@@ -32,8 +32,9 @@
     "runtime:prepare": "node scripts/prepare-runtime.mjs",
     "cloudflared:prepare": "node scripts/prepare-cloudflared.mjs",
     "verify:package": "node scripts/verify-package.mjs",
-    "package:debug": "node scripts/package-debug.mjs",
-    "package:debug:dir": "node scripts/package-debug.mjs --dir"
+    "package:debug": "node scripts/prepare-plugins.mjs && node scripts/package-debug.mjs",
+    "package:debug:dir": "node scripts/prepare-plugins.mjs && node scripts/package-debug.mjs --dir",
+    "plugins:prepare": "node scripts/prepare-plugins.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",

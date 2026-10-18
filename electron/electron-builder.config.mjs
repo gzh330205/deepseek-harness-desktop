@@ -100,6 +100,10 @@ export default {
     // `prepare-cloudflared.mjs` pins the version and checks both the hash and Cloudflare's
     // Authenticode signature; `verify-package.mjs` re-checks what actually landed in the installer.
     { from: 'resources/cloudflared', to: 'cloudflared' },
+    // The plugins the shell injects: linked into the user's DSH profile on start (the loader rows
+    // already exist there, with the user's config). Outside the ASAR because they are separate
+    // packages resolved by Node, not shell code.
+    { from: 'resources/plugins', to: 'plugins' },
     // Tray and window icons (tray.ts reads these from process.resourcesPath).
     { from: 'build/icons/icon.png', to: 'icon.png' },
     { from: 'build/icons/icon.ico', to: 'tray.ico' },

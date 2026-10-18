@@ -118,6 +118,7 @@ import { createUsageService, type UsageService } from './oneway-service.ts'
 import { UsageWindow } from './usage-window.ts'
 import { createDshConfigStore, type DshConfigStore } from './dsh-config.ts'
 import { McpWindow } from './mcp-window.ts'
+import { provisionBundledPlugins } from './plugin-provision.ts'
 
 // Scheme privileges must be granted before the app is ready; userData must be
 // redirected before anything reads it.
@@ -1611,8 +1612,39 @@ function harnessHomeDirectory(): string {
   return harnessHome() ?? join(homedir(), '.dsh')
 }
 
+/** The profile this shell boots; `DSH_DESKTOP_PROFILE` overrides the channel default. */
+function desktopProfileName(): string {
+  const override = process.env[PROFILE_ENV]
+  return override === undefined || override === '' ? channelSettings.profileName : override
+}
+
+/**
+ * Install the plugins that ship inside the app into the user's DSH profile.
+ *
+ * They used to come from the market as `dsh-plugin-kit`; the rows in the user's patch already carry
+ * their configs, so the shell only has to make the package names resolvable (a link in the profile's
+ * `node_modules`) and retire the aggregator. Runs every start, is idempotent, and backs up whatever
+ * it edits.
+ */
+function installBundledPlugins(): void {
+  const pluginsRoot = app.isPackaged ? join(process.resourcesPath, 'plugins') : join(app.getAppPath(), 'resources', 'plugins')
+  if (!existsSync(pluginsRoot)) {
+    pushLog('随壳插件：安装包里没有 resources/plugins，跳过（开发环境先跑 node scripts/prepare-plugins.mjs）')
+    return
+  }
+  const result = provisionBundledPlugins({
+    pluginsRoot,
+    profileDir: join(harnessHomeDirectory(), 'profiles', desktopProfileName()),
+    patch: dshConfigStore(),
+    log: pushLog,
+  })
+  if (!result.ok) pushLog(`随壳插件：注入失败（${result.reason ?? '未知原因'}）`)
+}
+
 function dshConfigStore(): DshConfigStore {
-  return (dshConfig ??= createDshConfigStore({ home: harnessHomeDirectory(), log: pushLog }))
+  // The profile the shell boots, not the release default: on the dev channel those differ, and the
+  // MCP window must edit the profile the running DSH actually reads.
+  return (dshConfig ??= createDshConfigStore({ home: harnessHomeDirectory(), profileName: desktopProfileName(), log: pushLog }))
 }
 
 function openMcpWindow(): void {
@@ -2208,6 +2240,7 @@ async function boot(): Promise<void> {
   installSettingsWindow()
   installUsageWindow()
   installMcpWindow()
+  installBundledPlugins()
 
   // A bundled runtime is the executable half of the product: verify it is the tree that
   // was packaged before spawning anything. A system dsh is used only when the app has no

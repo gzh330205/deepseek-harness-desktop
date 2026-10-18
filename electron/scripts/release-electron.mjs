@@ -118,6 +118,24 @@ if (cloudflaredArtifact !== undefined) {
   process.stdout.write(`==> 随包 cloudflared ${String(cloudflaredPin.version)} 哈希与 pin 一致\n`)
 }
 
+// The plugins the shell injects are part of what the user gets: without them the git/run-config/
+// workspace/sidebar panels disappear after an update, and a fresh profile gets empty rows that
+// resolve to nothing. `prepare-plugins.mjs` regenerates the directory from the plugins workspace.
+const pluginsManifestPath = join(root, 'resources', 'plugins', 'plugins.json')
+if (!existsSync(pluginsManifestPath)) {
+  fail('缺少随壳插件：先运行 `pnpm plugins:prepare`')
+}
+const pluginsManifest = JSON.parse(readFileSync(pluginsManifestPath, 'utf8'))
+if (!Array.isArray(pluginsManifest.packages) || pluginsManifest.packages.length === 0) {
+  fail('resources/plugins/plugins.json 没有 packages 清单：重新运行 `pnpm plugins:prepare`')
+}
+for (const plugin of pluginsManifest.packages) {
+  if (!existsSync(join(root, 'resources', 'plugins', plugin, 'index.js'))) {
+    fail(`随壳插件 ${String(plugin)} 不完整（缺少 index.js）：重新运行 \`pnpm plugins:prepare\``)
+  }
+}
+process.stdout.write(`==> 随壳插件 ${pluginsManifest.packages.length} 个（${pluginsManifest.packages.join(', ')}）\n`)
+
 // 2. Build.
 if (skipBuild) {
   if (!existsSync(artifactPath)) fail(`--skip-build 但找不到产物：${artifactPath}`)

@@ -37,3 +37,7 @@ android/keys/
 
 # The pinned tunnel binary is fetched by scripts/prepare-cloudflared.mjs, not committed.
 electron/resources/cloudflared/
+
+# The plugins the shell injects are produced by scripts/prepare-plugins.mjs from the plugins
+# workspace; committing compiled copies would fork them from their source.
+electron/resources/plugins/

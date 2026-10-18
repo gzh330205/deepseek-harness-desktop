@@ -77,6 +77,40 @@ try {
   fail(`app.asar 里没有手机访问窗口页面 ${pocketPage}：${String(error)}`)
 }
 if (!pocketHtml.includes('__DSH_SETTINGS__')) fail('手机访问窗口页面没有引用 __DSH_SETTINGS__ 桥')
+
+// The 用量 (ONE-WAY) and MCP & Skills windows are shell surfaces as well. Their pages must be in the
+// archive *and* reference their preload bridges, or the menu items open an empty window.
+for (const [name, pagePath, bridge] of [
+  ['用量', join('dist', 'usage', 'index.html'), '__DSH_USAGE__'],
+  ['MCP 与 Skills', join('dist', 'mcp', 'index.html'), '__DSH_MCP__'],
+]) {
+  let html = ''
+  try {
+    html = (await archive.readFile(pagePath)).toString('utf8')
+  } catch (error) {
+    fail(`app.asar 里没有${name}窗口页面 ${pagePath}：${String(error)}`)
+  }
+  if (!html.includes(bridge)) fail(`${name}窗口页面没有引用 ${bridge} 桥`)
+}
+
+// The bundled plugins are separate packages the shell links into the profile, so they live in
+// `resources/plugins` — not the archive. Losing them silently would mean the panels the user has
+// always had simply stop existing after an update.
+const pluginsRoot = join(resources, 'plugins')
+const pluginsManifestPath = join(pluginsRoot, 'plugins.json')
+if (!existsSync(pluginsManifestPath)) fail('resources/plugins 缺失（先运行 scripts/prepare-plugins.mjs）')
+const pluginsManifest = JSON.parse(readFileSync(pluginsManifestPath, 'utf8'))
+if (!Array.isArray(pluginsManifest.packages) || pluginsManifest.packages.length === 0) {
+  fail('resources/plugins/plugins.json 没有 packages 清单')
+}
+for (const plugin of pluginsManifest.packages) {
+  for (const file of ['package.json', 'index.js']) {
+    if (!existsSync(join(pluginsRoot, plugin, file))) fail(`随壳插件 ${String(plugin)} 缺少 ${file}`)
+  }
+  const linkTarget = join(pluginsRoot, plugin, 'node_modules', '@deepseek-ai', 'schemastery', 'package.json')
+  if (!existsSync(linkTarget)) fail(`随壳插件 ${String(plugin)} 缺少运行时依赖 @deepseek-ai/schemastery`)
+}
+
 // `dist/main.js` is checked through the IPC channel names rather than the menu label: esbuild emits
 // ASCII by default, so the Chinese label is written as `\uXXXX` escapes and a literal match would
 // fail on a perfectly good build.

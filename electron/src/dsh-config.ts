@@ -116,6 +116,10 @@ export interface DshConfigStore {
   migrateLegacy(): MigrationResult
   /** The QR-login cookie/settings the ONE-WAY plugin stored in its row, for the usage window. */
   readLegacyUsageConfig(): LegacyUsageConfig | undefined
+  /** Remove patch rows whose `id` or `name` is in `names` (used when the shell owns the feature). */
+  removeRows(names: readonly string[]): ConfigResult & { readonly removed: number }
+  /** Add a minimal `{ id, name }` row for each entry that is not in the patch yet. */
+  ensureRows(rows: readonly { readonly id: string; readonly name: string }[]): ConfigResult & { readonly added: number }
 }
 
 /** Home directory plus the profile the desktop shell boots. */
@@ -491,6 +495,44 @@ export function createDshConfigStore(options: DshConfigOptions): DshConfigStore 
     }
   }
 
+  const removeRows = (names: readonly string[]): ConfigResult & { readonly removed: number } => {
+    const doc = load()
+    if (doc === undefined) return { ok: false, reason: 'DSH 配置文件不可解析，未做修改。', removed: 0 }
+    const items = (doc.contents as unknown as { items?: unknown[] } | null)?.items
+    if (items === undefined) return { ok: false, reason: 'DSH 配置的根节点不是补丁列表，未做修改。', removed: 0 }
+    const wanted = new Set(names)
+    let removed = 0
+    const plain = rows(doc)
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const record = asRecord(plain[index])
+      if (record === undefined) continue
+      if (!wanted.has(String(record.id)) && !wanted.has(String(record.name))) continue
+      items.splice(index, 1)
+      removed += 1
+    }
+    if (removed === 0) return { ok: true, removed: 0 }
+    const persisted = persist(doc)
+    return { ...persisted, removed: persisted.ok ? removed : 0 }
+  }
+
+  const ensureRows = (wanted: readonly { readonly id: string; readonly name: string }[]): ConfigResult & { readonly added: number } => {
+    const doc = load()
+    if (doc === undefined) return { ok: false, reason: 'DSH 配置文件不可解析，未做修改。', added: 0 }
+    const items = (doc.contents as unknown as { items?: unknown[] } | null)?.items
+    if (items === undefined) return { ok: false, reason: 'DSH 配置的根节点不是补丁列表，未做修改。', added: 0 }
+    const existing = new Set(rows(doc).map((row) => itemId(row)).filter((id): id is string => id !== undefined))
+    let added = 0
+    for (const row of wanted) {
+      if (existing.has(row.id)) continue
+      items.push(doc.createNode({ id: row.id, name: row.name }))
+      existing.add(row.id)
+      added += 1
+    }
+    if (added === 0) return { ok: true, added: 0 }
+    const persisted = persist(doc)
+    return { ...persisted, added: persisted.ok ? added : 0 }
+  }
+
   return {
     patchPath: paths.patchPath,
     skillsRoot: paths.skillsRoot,
@@ -503,6 +545,8 @@ export function createDshConfigStore(options: DshConfigOptions): DshConfigStore 
     removeSkillLink,
     migrateLegacy,
     readLegacyUsageConfig,
+    removeRows,
+    ensureRows,
   }
 }
 
