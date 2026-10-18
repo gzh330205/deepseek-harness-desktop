@@ -21,6 +21,8 @@ electron/keys/*.key
 
 # 上游 dshmarket 源码/目录的临时参考副本（只用于核对分类与筛选做法，不入库）
 .tmp-dshmarket/
+# 本机性能排查/发版过程的临时产物与日志（分析报告、探针脚本、构建日志）
+.tmp-perf/
 
 # Android client (android/): build output, machine-specific SDK path, and the signing key.
 android/local.properties

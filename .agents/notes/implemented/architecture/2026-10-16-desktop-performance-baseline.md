@@ -1,4 +1,4 @@
-# Agent Note: 桌面端卡顿的一次量化定位（结论：不是壳的基线开销）
+# Agent Note: 桌面端卡顿的量化定位（第三轮：根因是 dsh-genui 0.12.0 的 DOM 全量 sweep）
 
 Status: implemented
 
@@ -109,8 +109,56 @@ Status: implemented
 - 用户侧：把工作拆到更短的会话里（他最大的会话 22.9 MB，我这个 5.2 MB），超大会话不要长期开着。
 - 我这边：**减少自己的推流量**——回复更短、不要把大段日志/图片堆进会话，这直接降低那 100%+ 的渲染占用。
 
-## 下一步（若用户说「没有 agent 在跑也卡」）
+## 第三轮（2026-10-18）：根因是 genui 0.12.0 的 DOM 围栏发现，不是壳、也不是 DSH 核心
 
-那时才值得上重武器：给 DSH 子进程开 `--cpu-prof`（需要重启实例）、或者把 profile 的 bundle 列表二分，
-用空数据目录 + 用户 bundle 子集复现。判定标准很明确：**空会话 + 无 agent 运行时服务进程应接近 0%**；
-如果那时仍是两位数，问题在用户 profile 的某个 bundle，二分法能一击定位。
+用户再次报告「会话运行中或刚运行完时掉帧严重」。上一轮把成本归到「超长会话 + 流式输出」的 DSH
+渲染；这一轮用**去掉桌面壳的对照实例**把插件层单独量了出来，结论要改写。
+
+方法（完整数据与探针脚本留在本机 `.tmp-perf/`，按 `.gitignore` 不入库）：
+
+- 用 `electron/runtime/dsh` 独立启动同一版本的 DSH（`DSH_HOME` 指向用户 `~/.dsh` 的副本，独立端口），
+  在**普通 Electron 44 窗口**里打开（无 `--patch` overlay、无 `dsh-desktop-shell` 注入），CDP 量帧、
+  长任务、打字延迟和 CPU profile；
+- 会话选用户最大的 `坦克世界风格3D坦克对战游戏`（22.9 MB，DOM 18,707 节点，`<span>` 6,925）；
+- A/B：原样 / 移除 genui bundle / 升级 genui 0.13.0。
+
+| 配置 | 空闲 3 秒 | 长任务 | 打字 6 字符 | CPU profile |
+|---|---|---|---|---|
+| genui 0.12.0（用户当前） | max 帧 450.5 ms | 455/459/464 ms，每 1 s 一组 | 408 ms/字符 | 42.2% 在 genui `sweep`（`Tv`/`te`/`rv`），`hasAttribute` 9.5% |
+| 移除 genui | max 17.9 ms（60fps） | 0 | 正常（约 11 ms/字符） | 99.8% idle |
+| genui 0.13.0 | max 17.7 ms（60fps） | 0 | 正常 | 99.8% idle |
+
+机制（`@changfenhuang/dsh-genui@0.12.0` 的 `src/client/dom-fence.tsx`）：
+
+- `MutationObserver` 挂在 `document.body`（`childList` + `subtree` + `attributes(data-streaming)` +
+  `characterData`），另有 `setInterval(sweep, 1000)`（`:1142-1173`，`SWEEP_MS = 1000` 在 `:103`）；
+- 每次 `sweep()` 都跑 `findFenceCandidates()`（`:369-423`），对整个文档做三趟查询：代码块表面、
+  所有 `<pre>`、**所有 `<span>`**；每个 span 还要两次 `closest()` + `tagTextBodyOf()`；
+- 成本 ≈ O(已加载对话 DOM)：3,264 节点约 5 ms（无感），18,707 节点约 450 ms；
+- 流式时 `characterData` 的每条变更都会 `schedule()` → 每帧一次全文档 sweep；空闲时靠 1 s 定时器
+  兜底。于是「运行中」和「刚运行完」都在掉帧，而小会话完全看不出来。
+
+判定：**掉帧是第三方插件 `@changfenhuang/dsh-genui@0.12.0` 引起的**。
+
+- 桌面壳：本轮测量里壳代码根本没有参与（无 overlay、无 shell client），掉帧照旧；壳侧另有
+  「主进程 0% CPU、每回合只改一次状态与 setBounds、无每帧 IPC」的静态与日志证据（本轮壳侧排查记录
+  留在本机 `.tmp-perf/`，未入库）。
+- DSH 核心：同一 DSH、同一会话、同一窗口，只移除 genui 就回到 60fps；DSH 的流式发布本身是
+  rAF 合批（`dsh-client-ui-conversation` 三重 rAF），不是每 token setState。
+- 上一轮「壳无贡献、卡在超长会话 + 流式」的方向没错，但把「超长会话」记成了 DSH 渲染成本；
+  真正的放大项是插件对超长 DOM 的全量扫描——DSH 未虚拟化只是让这个 O(DOM) 插件变贵的背景条件。
+
+修复：
+
+1. 短期：壳内插件市场把 `@changfenhuang/dsh-genui` 升级到 **0.13.0**（同一大会话实测 60fps、0 长任务；
+   其 CHANGELOG 明写「DOM 围栏发现改为跟踪页面变更，减少对话内容的重复扫描」，代码改为 dirty target
+   + `SWEEP_BUDGET_MS` 时间预算 + 分片 `rotationSweep`）。
+2. 不能升级时：从 `dsh-desktop` profile 的 bundles 移除 genui（代价是正文里的 dsh-ui 围栏回退成代码块）。
+3. 插件侧长期：DOM 通道的观察范围应从 `document.body` 缩到对话滚动容器；`span` 通检要有证据门槛
+   （只有出现 tag-text 候选才跑）；sweep 必须有时间预算（0.13.0 已做前两项中的跟踪与预算）。
+
+## 下一步
+
+第三轮已经回答了「没有 agent 在跑也卡」：是 genui 的 1 s 全量 sweep。以后任何「掉帧」反馈，
+先用本机 `.tmp-perf/probe/` 里的探针脚本（未入库）在**去掉壳的独立实例**里量三件事：长任务节奏、CPU profile 的调用栈归属、
+以及插件 bundle 的 A/B；比按进程 CPU 猜快得多。
