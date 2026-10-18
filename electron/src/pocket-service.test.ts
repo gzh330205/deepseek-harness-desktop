@@ -12,6 +12,20 @@ import { DEFAULT_POCKET_SETTINGS } from './settings-shape.ts'
 const closers: (() => Promise<void> | void)[] = []
 after(async () => { for (const close of closers.reverse()) await close() })
 
+/**
+ * Phone access with **both** listeners on OS-assigned ports.
+ *
+ * The tunnel port defaults to 41731, which is the shipping app's public door: these tests failed on
+ * any machine where DSH Desktop itself was running public access, which is exactly the machine a
+ * release is prepared on. Port 0 binds an ephemeral port; the tests read the live one from status().
+ */
+const FREE_PORT_SETTINGS = {
+  ...DEFAULT_POCKET_SETTINGS,
+  enabled: true,
+  port: 0,
+  tunnel: { ...DEFAULT_POCKET_SETTINGS.tunnel, port: 0 },
+}
+
 /** An upstream that answers anything with a marker; the gateway's job is the interesting part. */
 async function startUpstream(): Promise<number> {
   const server: Server = createServer((_request, response) => { response.end('dsh') })
@@ -120,7 +134,7 @@ test('the feature is off until it is switched on, but a password already exists'
 
 test('switching it on serves the phone, still behind the password', async () => {
   const { service } = await startService()
-  const status = await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  const status = await service.apply(FREE_PORT_SETTINGS)
   assert.equal(status.running, true)
   assert.equal(status.address, '127.0.0.1')
   assert.match(String(status.url), /^http:\/\/127\.0\.0\.1:\d+\/$/u)
@@ -132,9 +146,9 @@ test('switching it on serves the phone, still behind the password', async () => 
 
 test('saving the settings again does not disturb the phone', async () => {
   const { service } = await startService()
-  const first = await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  const first = await service.apply(FREE_PORT_SETTINGS)
   const cookie = await signIn(service)
-  const second = await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  const second = await service.apply(FREE_PORT_SETTINGS)
   // Same port means no restart: the settings window saves the whole document on every change, and
   // a restart per save would drop a phone that is in the middle of a streamed answer.
   assert.equal(second.url, first.url)
@@ -143,7 +157,7 @@ test('saving the settings again does not disturb the phone', async () => {
 
 test('changing the port moves the listener', async () => {
   const { service } = await startService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   const port = await freePort()
   const moved = await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port })
   assert.equal(moved.port, port)
@@ -152,19 +166,19 @@ test('changing the port moves the listener', async () => {
 
 test('turning it off signs the phone out, so turning it back on needs the password again', async () => {
   const { service } = await startService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   const cookie = await signIn(service)
   assert.equal((await call(service, '/', { cookie })).status, 200)
 
   const off = await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: false, port: 0 })
   assert.equal(off.running, false)
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   assert.equal((await call(service, '/', { cookie })).status, 401, '关掉再打开不该恢复旧会话')
 })
 
 test('rotating the password invalidates both the old password and the old session', async () => {
   const { service } = await startService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   const cookie = await signIn(service)
   const before = service.status().password
 
@@ -179,7 +193,7 @@ test('rotating the password invalidates both the old password and the old sessio
 
 test('a custom password is validated before it replaces anything', async () => {
   const { service } = await startService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   const original = service.status().password
 
   const rejected = service.setPassword('short')
@@ -197,14 +211,14 @@ test('a custom password is validated before it replaces anything', async () => {
 test('without a LAN address it explains itself instead of pretending to run', async () => {
   const { service, setCandidates } = await startService()
   setCandidates([])
-  const status = await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  const status = await service.apply(FREE_PORT_SETTINGS)
   assert.equal(status.enabled, true)
   assert.equal(status.running, false)
   assert.match(String(status.error), /局域网地址/u)
 
   // Joining a network later is the common fix, and the next save must pick it up by itself.
   setCandidates(['127.0.0.2'])
-  const recovered = await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  const recovered = await service.apply(FREE_PORT_SETTINGS)
   assert.equal(recovered.running, true)
   assert.equal(recovered.address, '127.0.0.2')
   assert.equal(recovered.error, undefined)
@@ -213,7 +227,7 @@ test('without a LAN address it explains itself instead of pretending to run', as
 test('the address can be pinned, and unpinned again', async () => {
   const { service, setCandidates } = await startService()
   setCandidates(['127.0.0.1', '127.0.0.2'])
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   assert.equal(service.status().address, '127.0.0.1')
 
   const pinned = await service.select('127.0.0.2')
@@ -227,7 +241,7 @@ test('the address can be pinned, and unpinned again', async () => {
 
 test('a request aimed at another name is refused by the service too, not only by the proxy', async () => {
   const { service } = await startService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   const cookie = await signIn(service)
   const refused = await call(service, '/', { cookie, host: 'evil.example' })
   assert.equal(refused.status, 403)
@@ -235,7 +249,7 @@ test('a request aimed at another name is refused by the service too, not only by
 
 test('disposing stops the listener', async () => {
   const { service } = await startService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   const url = String(service.status().url)
   await service.dispose()
   assert.equal(service.status().running, false)
@@ -333,7 +347,7 @@ test('public access refuses to start without the disclaimer', async () => {
 
 test('the public listener is loopback only and asks for the public password', async () => {
   const { service } = await startPublicService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   const status = await service.startTunnel({ acceptedDisclaimer: true })
   assert.equal(status.publicAccess.running, true)
   assert.match(String(status.publicAccess.url), /trycloudflare\.com/u)
@@ -355,7 +369,7 @@ test('the public listener is loopback only and asks for the public password', as
 
 test('a LAN session does not open the public door', async () => {
   const { service } = await startPublicService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   await service.startTunnel({ acceptedDisclaimer: true })
   const lanCookie = await signIn(service)
   assert.equal((await call(service, '/', { cookie: lanCookie })).status, 200, '局域网门应该认这个会话')
@@ -364,7 +378,7 @@ test('a LAN session does not open the public door', async () => {
 
 test('each quick tunnel gets a fresh public password unless the user fixed one', async () => {
   const { service } = await startPublicService()
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   const first = (await service.startTunnel({ acceptedDisclaimer: true })).publicAccess.password
   const second = (await service.startTunnel({ acceptedDisclaimer: true })).publicAccess.password
   assert.notEqual(first, second, '快速隧道每次开都应该换密码')
@@ -378,7 +392,7 @@ test('each quick tunnel gets a fresh public password unless the user fixed one',
 test('the tunnel is stopped and forgotten when public access is turned off', async () => {
   const fixture = await startPublicService({ accepted: true })
   const { service } = fixture
-  await service.apply({ ...DEFAULT_POCKET_SETTINGS, enabled: true, port: 0 })
+  await service.apply(FREE_PORT_SETTINGS)
   await service.startTunnel({ acceptedDisclaimer: true })
   const stopped = await service.stopTunnel()
   assert.equal(stopped.publicAccess.running, false)
