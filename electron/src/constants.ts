@@ -50,9 +50,9 @@ export function titleBarPalette(useDarkColors: boolean): { background: string; s
  * because the static guards only read the page's own markup. Hence one list, and a smoke check that
  * asserts the bridge exists.
  */
-export const SHELL_PAGE_DOCUMENTS = ['/settings/index.html', '/pocket/index.html'] as const
+export const SHELL_PAGE_DOCUMENTS = ['/settings/index.html', '/pocket/index.html', '/usage/index.html'] as const
 
-export type ShellMenuName = 'app' | 'plugins' | 'pocket'
+export type ShellMenuName = 'app' | 'plugins' | 'pocket' | 'usage'
 /**
  * How long the port gate keeps waiting for the port to come free, and how often it retries.
  * Covers the one launch where the outgoing Tauri process is still dying: its `dsh` child
@@ -252,6 +252,19 @@ export const UPDATE_MANIFEST_URL_ENV = 'DSH_DESKTOP_UPDATE_MANIFEST_URL'
  */
 export const POCKET_APK_URL =
   'https://github.com/gzh330205/deepseek-harness-desktop/releases/latest/download/DSH.Pocket.apk'
+
+/*
+ * Token usage (ONE-WAY): a shell window instead of a DSH-page plugin.
+ *
+ * The gateway is an internal site with server-rendered pages only, so the shell keeps the session
+ * cookie itself (`oneway.json`, next to the other shell state) and the page never talks to the
+ * network — it only receives snapshots over IPC.
+ */
+export const USAGE_STATE_FILENAME = 'oneway.json'
+export const DEFAULT_ONEWAY_BASE_URL = 'https://oneway.eportyun.com'
+export const DEFAULT_USAGE_REFRESH_SECONDS = 120
+export const MIN_USAGE_REFRESH_SECONDS = 30
+export const MAX_USAGE_REFRESH_SECONDS = 3600
 /** Delay before the automatic startup check, and the interval between later checks. */
 export const UPDATE_STARTUP_DELAY_MS = 8_000
 export const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
@@ -278,6 +291,16 @@ export const IPC = {
   settingsRestart: 'shell:settings-restart',
   /** Settings window → main: act on phone access (rotate the password, pick an address). */
   pocketAction: 'shell:pocket-action',
+  /** 用量窗口 → main: ONE-WAY snapshot, refresh, settings, QR login, request log. */
+  usageGet: 'shell:usage-get',
+  usageRefresh: 'shell:usage-refresh',
+  usageSettings: 'shell:usage-settings',
+  usageSettingsSave: 'shell:usage-settings-save',
+  usageLoginStart: 'shell:usage-login-start',
+  usageLoginPoll: 'shell:usage-login-poll',
+  usageLogout: 'shell:usage-logout',
+  usageRequests: 'shell:usage-requests',
+  usageClose: 'shell:usage-close',
   launcherStatus: 'dsh-desktop:launcher-status',
   launcherSubscribe: 'dsh-desktop:launcher-subscribe',
   /** Launcher page → main: leave the status page and open the DSH UI. */

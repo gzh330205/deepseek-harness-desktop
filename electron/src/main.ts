@@ -47,6 +47,7 @@ import {
   SMOKE_NOTIFY_ENV,
   SMOKE_SUPPORT_ENV,
   POCKET_APK_URL,
+  USAGE_STATE_FILENAME,
   SMOKE_UPDATE_ENV,
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_STARTUP_DELAY_MS,
@@ -112,6 +113,9 @@ import { launchInstaller, updatePublicKey } from './update.ts'
 import { buildAbout } from './about.ts'
 import { buildSupportBundle, supportBundleFileName } from './support.ts'
 import { WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, fitBounds, readWindowState, writeWindowState } from './window-state.ts'
+import { createUsageStore, type UsageStore } from './usage-state.ts'
+import { createUsageService, type UsageService } from './oneway-service.ts'
+import { UsageWindow } from './usage-window.ts'
 
 // Scheme privileges must be granted before the app is ready; userData must be
 // redirected before anything reads it.
@@ -156,6 +160,10 @@ let updateWindow: UpdateWindow | undefined
 let settingsWindow: SettingsWindow | undefined
 let pocketWindowRef: SettingsWindow | undefined
 let pocketService: PocketService | undefined
+/** 用量窗口（ONE-WAY）：状态与抓取都在主进程，页面只拿快照。 */
+let usageWindowRef: UsageWindow | undefined
+let usageStore: UsageStore | undefined
+let usageService: UsageService | undefined
 let marketWindow: ReturnType<typeof createMarketWindow> | undefined
 let updateController: UpdateController | undefined
 let updateTimer: NodeJS.Timeout | undefined
@@ -1026,6 +1034,7 @@ const MENU_TEMPLATES: Record<ShellMenuName, () => Electron.MenuItemConstructorOp
   app: appMenuTemplate,
   plugins: pluginsMenuTemplate,
   pocket: pocketMenuTemplate,
+  usage: usageMenuTemplate,
 }
 
 /**
@@ -1509,6 +1518,87 @@ function openPocketWindow(): void {
   pushLog('已打开手机访问窗口')
 }
 
+/**
+ * The 用量 menu (ONE-WAY token usage).
+ *
+ * The window owns everything; the menu is the shortcut surface: open it, refresh it, log out. It is
+ * a shell feature now, so no DSH page or plugin is involved.
+ */
+function usageMenuTemplate(): Electron.MenuItemConstructorOptions[] {
+  return [
+    { label: '打开用量面板…', click: () => { openUsageWindow() } },
+    {
+      label: '立即刷新',
+      click: () => {
+        void usage().snapshot({ force: true })
+          .then((snapshot) => pushLog(`用量：刷新${snapshot.loggedIn ? '完成' : '未登录'}${snapshot.error === undefined ? '' : `（${snapshot.error}）`}`))
+          .catch((error: unknown) => pushLog(`用量：刷新失败 ${String(error)}`))
+      },
+    },
+    { type: 'separator' },
+    {
+      label: '退出登录',
+      click: () => {
+        void usage().logout().then(() => pushLog('用量：已退出登录')).catch((error: unknown) => pushLog(`用量：退出登录失败 ${String(error)}`))
+      },
+    },
+  ]
+}
+
+/** Lazy accessor: the service is created on first use so startup pays nothing when unused. */
+function usage(): UsageService {
+  if (usageService === undefined) {
+    usageStore ??= createUsageStore(join(bridgeDir(), USAGE_STATE_FILENAME), pushLog)
+    usageService = createUsageService({ scope: usageStore, log: pushLog })
+  }
+  return usageService
+}
+
+function openUsageWindow(): void {
+  if (usageWindowRef === undefined) return
+  usageWindowRef.open()
+  pushLog('已打开用量窗口')
+}
+
+/**
+ * Wire the 用量 window and its IPC bridge, once, after the bridge directory exists.
+ *
+ * The cookie stays in `oneway.json` (a host-only secret next to the other shell state); the page
+ * only ever sees normalized snapshots over IPC.
+ */
+function installUsageWindow(): void {
+  const store = (usageStore ??= createUsageStore(join(bridgeDir(), USAGE_STATE_FILENAME), pushLog))
+  const service = usage()
+  usageWindowRef = new UsageWindow({
+    appRoot: app.getAppPath(),
+    isShellDocument: isLauncherSender,
+    handlers: {
+      get: () => service.snapshot(),
+      refresh: () => service.snapshot({ force: true }),
+      settings: () => store.settings(),
+      saveSettings: (input) => {
+        const request = typeof input === 'object' && input !== null ? input as Record<string, unknown> : {}
+        return store.saveSettings({ baseUrl: request.baseUrl, refreshSeconds: request.refreshSeconds })
+      },
+      loginStart: () => service.startLogin(),
+      loginPoll: (key) => service.pollLogin(typeof key === 'string' ? key : ''),
+      logout: () => service.logout().then(() => service.snapshot()),
+      requests: (query) => {
+        const request = typeof query === 'object' && query !== null ? query as Record<string, unknown> : {}
+        const text = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined)
+        const number = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
+        return service.requests({
+          startDate: text(request.startDate),
+          endDate: text(request.endDate),
+          page: number(request.page),
+          pageSize: number(request.pageSize),
+        })
+      },
+    },
+  })
+  usageWindowRef.install()
+}
+
 function installUpdates(): void {
   const window = new UpdateWindow({
     appRoot: app.getAppPath(),
@@ -1671,6 +1761,20 @@ async function driveSmokeMenu(): Promise<void> {
     report.pocketClose = { acknowledged: acknowledged === true, windowClosed: pocketWindowRef?.isOpen() === false }
   } catch (error) {
     report.pocketWindow = { loaded: false, error: String(error) }
+  }
+
+  // 用量窗口: the page must load with its own bridge, and the bridge must reach the main process.
+  // `settings()` is used deliberately — it reads local state, so the rehearsal stays offline.
+  try {
+    openUsageWindow()
+    report.usageWindow = await usageWindowRef?.probe() ?? { loaded: false, bridge: false, selectors: {} }
+    const reachable = await usageWindowRef?.evaluate<boolean>('window.__DSH_USAGE__.settings().then((settings) => settings !== null)')
+    report.usageBridge = { reachable: reachable === true }
+    await usageWindowRef?.evaluate('window.__DSH_USAGE__.close()')
+    await new Promise<void>((resolve) => { setTimeout(resolve, 300) })
+    report.usageClose = { windowClosed: usageWindowRef?.isOpen() === false }
+  } catch (error) {
+    report.usageWindow = { loaded: false, error: String(error) }
   }
 
   // The logo is an image on a `file://` page, so a missing `img-src` in its CSP blocks it
@@ -1994,6 +2098,7 @@ async function boot(): Promise<void> {
   }
   installUpdates()
   installSettingsWindow()
+  installUsageWindow()
 
   // A bundled runtime is the executable half of the product: verify it is the tree that
   // was packaged before spawning anything. A system dsh is used only when the app has no

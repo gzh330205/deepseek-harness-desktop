@@ -1,0 +1,1085 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <!-- No network for this document: ONE-WAY data and the QR code all arrive through the preload bridge
+       (`window.__DSH_USAGE__`), so the page cannot be talked into fetching, framing or loading anything. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>DSH Desktop 用量</title>
+  <style>
+    /* Shell chrome tokens, same family as the settings and phone-access windows. */
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115; --panel: #161a22; --fg: #e8ebf2; --muted: #8d97ab;
+      --line: rgba(255,255,255,.10); --field: #0b0d12; --accent: #4c6ef5;
+      --danger: #f07a7a; --ok: #4ec9a0; --warn: #e0b341;
+      --h5: #10b981; --today: #3b82f6; --week: #8b5cf6;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f3f3f3; --panel: #ffffff; --fg: #1f1f1f; --muted: #666e7a;
+        --line: rgba(0,0,0,.12); --field: #ffffff; --accent: #3b5bdb;
+        --danger: #c0392b; --ok: #199a6f; --warn: #a8700c;
+        --h5: #0e9f6e; --today: #2563eb; --week: #7c3aed;
+      }
+    }
+    * { box-sizing: border-box; }
+    /* `hidden` must win over every author `display:` below, or a panel/toolbar stays visible. */
+    [hidden] { display: none !important; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; display: flex; flex-direction: column;
+      background: var(--bg); color: var(--fg);
+      font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      user-select: none;
+    }
+    h1 { margin: 0; font-size: 15px; font-weight: 600; }
+    h2 { margin: 0; font-size: 14px; font-weight: 600; }
+    h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+    code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; word-break: break-all; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .error { color: var(--danger); }
+    .grow { flex: 1 1 auto; }
+
+    /* ── chrome ─────────────────────────────────────────────────────────── */
+    .topbar {
+      flex: none; display: flex; align-items: center; gap: 14px;
+      padding: 12px 20px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+    }
+    .title { display: flex; align-items: center; gap: 8px; }
+    .tag {
+      display: inline-flex; align-items: center; font-size: 11px; padding: 1px 8px;
+      border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
+    }
+    .tag.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+    .ident { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; font-size: 12px; color: var(--muted); overflow: hidden; }
+    .ident .v, .ident code { color: var(--fg); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .actions { display: flex; align-items: center; gap: 8px; }
+
+    button {
+      font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 7px;
+      border: 1px solid var(--line); color: var(--fg); background: transparent; cursor: pointer;
+    }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button[disabled] { opacity: .5; cursor: default; }
+    button.icon { border: 0; font-size: 16px; line-height: 1; padding: 2px 8px; color: var(--muted); }
+    button.icon:hover { color: var(--fg); }
+    input[type="text"], input[type="number"], input[type="date"], select {
+      font: inherit; font-size: 12px; padding: 5px 8px; color: var(--fg);
+      background: var(--field); border: 1px solid var(--line); border-radius: 6px;
+    }
+    input[type="date"] { color-scheme: light dark; }
+    input[type="number"] { max-width: 130px; }
+    select { max-width: 100%; }
+
+    /* ── notices ────────────────────────────────────────────────────────── */
+    .banners { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 8px 20px 0; }
+    .banner {
+      display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
+      border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
+      font-size: 12px; line-height: 1.55;
+    }
+    .banner.error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+    .statusbar {
+      border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px;
+      font-size: 12px; color: var(--muted); background: var(--panel);
+    }
+    .statusbar.error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+
+    main { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 12px; }
+
+    /* ── three metric cards ─────────────────────────────────────────────── */
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .metric { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
+    .metric-head { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
+    .dot-h5 { background: var(--h5); }
+    .dot-today { background: var(--today); }
+    .dot-week { background: var(--week); }
+    .metric-value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+    .metric-sub { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .metric-sub > span:last-child { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+    .bar { flex: 1; height: 6px; min-width: 56px; border-radius: 999px; background: color-mix(in srgb, var(--fg) 12%, transparent); overflow: hidden; }
+    .bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+    .bar[data-warn="true"] > span { background: var(--warn); }
+    .bar[data-full="true"] > span { background: var(--danger); }
+    .metric[data-window="h5"] .bar > span { background: var(--h5); }
+    .metric[data-window="today"] .bar > span { background: var(--today); }
+    .metric[data-window="week"] .bar > span { background: var(--week); }
+    #weekRefHint { margin: -4px 0 0; min-height: 18px; }
+
+    .login-prompt {
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--panel);
+    }
+    .login-prompt p { margin: 0; flex: 1 1 380px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+    /* ── tabs ───────────────────────────────────────────────────────────── */
+    .tabs { flex: none; display: flex; gap: 2px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .tab {
+      border: 1px solid transparent; border-bottom: 2px solid transparent;
+      border-radius: 8px 8px 0 0; padding: 7px 15px; background: transparent;
+      color: var(--muted); font-size: 13px;
+    }
+    .tab:hover:not(:disabled) { color: var(--fg); border-color: transparent; border-bottom-color: var(--line); }
+    .tab[aria-selected="true"] { color: var(--fg); font-weight: 600; border-bottom-color: var(--accent); }
+    .panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    /* ── tables ─────────────────────────────────────────────────────────── */
+    .table-wrap { border: 1px solid var(--line); border-radius: 10px; overflow: auto; max-height: 340px; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    th {
+      position: sticky; top: 0; z-index: 1; text-align: left; font-weight: 600;
+      color: var(--muted); background: var(--panel); padding: 8px 10px;
+      border-bottom: 1px solid var(--line); white-space: nowrap;
+    }
+    td { padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+    .num { text-align: right !important; font-variant-numeric: tabular-nums; }
+    td.muted { color: var(--muted); }
+    .logs { table-layout: fixed; }
+    .logs th:nth-child(1), .logs td:nth-child(1) { width: 152px; }
+    .logs th:nth-child(2), .logs td:nth-child(2) { width: auto; }
+    .logs th:nth-child(3), .logs td:nth-child(3) { width: 100px; }
+    .logs th:nth-child(4), .logs td:nth-child(4) { width: 110px; }
+    .logs th:nth-child(5), .logs td:nth-child(5) { width: 92px; }
+    .logs th:nth-child(6), .logs td:nth-child(6) { width: 54px; }
+    .logs th:nth-child(7), .logs td:nth-child(7) { width: 78px; }
+    .logs th:nth-child(8), .logs td:nth-child(8) { width: 88px; }
+    .logs td { overflow: hidden; text-overflow: ellipsis; }
+    .logs .model { font-weight: 600; }
+    .status { display: inline-block; border-radius: 999px; font-size: 11px; padding: 1px 8px; background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--muted); }
+    .status.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+    .status.err { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+    .status.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+    .limit { display: flex; align-items: center; gap: 6px; min-width: 140px; }
+    .limit .bar { height: 5px; min-width: 52px; }
+    .channel-name { font-weight: 600; }
+    .pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+
+    /* ── trend bars (plain divs + width, no canvas) ─────────────────────── */
+    .trend { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .trend-block { min-width: 0; }
+    .bar-list {
+      display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow: auto;
+      border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px;
+    }
+    .bar-row { display: grid; grid-template-columns: 76px 62px 70px 1fr; gap: 8px; align-items: center; font-size: 11.5px; padding: 3px 2px; border-radius: 6px; }
+    .bar-row:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
+    .bar-time { color: var(--muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bar-reqs { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .bar-tokens { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+    .bar-track { height: 7px; border-radius: 999px; background: color-mix(in srgb, var(--fg) 12%, transparent); overflow: hidden; }
+    .bar-track > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); opacity: .85; }
+
+    /* ── channels & models ──────────────────────────────────────────────── */
+    .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+    .model-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel); min-width: 0; }
+    .model-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .model-channel { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chips { margin-top: 8px; display: flex; flex-wrap: wrap; }
+    .chip { display: inline-block; font-size: 11.5px; border-radius: 999px; padding: 3px 10px; margin: 3px 4px 0 0; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--muted); }
+    .empty { margin: 0; padding: 18px 0; text-align: center; color: var(--muted); font-size: 12px; }
+
+    /* ── settings (collapsible) ─────────────────────────────────────────── */
+    .settings { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--panel); }
+    .settings > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .3px; }
+    .settings[open] { padding-bottom: 12px; }
+    .settings .row { display: grid; grid-template-columns: 150px 1fr; gap: 10px; align-items: center; margin-top: 10px; }
+    .settings .row input[type="text"] { width: 100%; }
+    .settings-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+
+    /* ── footer ─────────────────────────────────────────────────────────── */
+    footer { flex: none; display: flex; align-items: center; gap: 10px; padding: 9px 20px; border-top: 1px solid var(--line); }
+
+    /* ── login modal ────────────────────────────────────────────────────── */
+    .modal-mask {
+      position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+      padding: 24px; background: rgba(0, 0, 0, .55);
+    }
+    .modal {
+      width: min(430px, 100%); display: flex; flex-direction: column; gap: 12px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, .35);
+    }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .qr-box { display: flex; align-items: center; justify-content: center; min-height: 196px; }
+    .qr-box img { width: 196px; height: 196px; padding: 8px; background: #fff; border-radius: 12px; image-rendering: pixelated; }
+    .login-state { text-align: center; font-size: 13px; font-weight: 600; }
+    .login-state.error { color: var(--danger); }
+    .login-state.ok { color: var(--ok); }
+    .modal .hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; text-align: center; }
+    .modal .error { margin: 0; font-size: 12px; line-height: 1.55; text-align: center; }
+    .modal-actions { display: flex; justify-content: center; gap: 10px; }
+
+    @media (max-width: 760px) {
+      .cards { grid-template-columns: 1fr; }
+      .trend { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">
+      <h1>ONE-WAY 用量</h1>
+      <span class="tag" id="sessionState">未登录</span>
+    </div>
+    <div class="ident">
+      <span>用户</span><span class="v" id="userName">—</span>
+      <span>Key</span><code id="apiKey">—</code>
+    </div>
+    <div class="actions">
+      <span class="muted" id="lastRefresh">尚未刷新</span>
+      <button class="primary" id="loginBtn" type="button">扫码登录</button>
+      <button id="refreshBtn" type="button">立即刷新</button>
+      <button id="logoutBtn" type="button" hidden>退出登录</button>
+    </div>
+  </header>
+
+  <div class="banners">
+    <div class="banner error" id="apiMissing" role="alert" hidden>
+      <strong>桌面壳 API 未加载。</strong>
+      <span>这个页面没有拿到 window.__DSH_USAGE__，读不到用量数据。请关闭本窗口，从桌面壳标题栏的「用量」菜单重新打开。</span>
+    </div>
+    <div class="statusbar" id="statusBar" role="status" hidden></div>
+  </div>
+
+  <main>
+    <section class="cards" aria-label="Token 指标（近 5 小时 / 今日 / 本周）">
+      <article class="metric" data-window="h5">
+        <div class="metric-head"><span class="dot dot-h5"></span>近 5 小时</div>
+        <div class="metric-value" id="metricH5">—</div>
+        <div class="metric-sub">
+          <div class="bar" aria-hidden="true"><span id="barH5"></span></div>
+          <span id="metricH5Pct">—</span>
+        </div>
+      </article>
+      <article class="metric" data-window="today">
+        <div class="metric-head"><span class="dot dot-today"></span>今日</div>
+        <div class="metric-value" id="metricToday">—</div>
+        <div class="metric-sub">
+          <div class="bar" aria-hidden="true"><span id="barToday"></span></div>
+          <span id="metricTodayPct">—</span>
+        </div>
+      </article>
+      <article class="metric" data-window="week">
+        <div class="metric-head"><span class="dot dot-week"></span>本周</div>
+        <div class="metric-value" id="metricWeek">—</div>
+        <div class="metric-sub">
+          <div class="bar" aria-hidden="true"><span id="barWeek"></span></div>
+          <span id="metricWeekPct">—</span>
+        </div>
+      </article>
+    </section>
+    <p class="muted" id="weekRefHint">占比以本周用量为参考；本周为 0 时改按本月用量计算。</p>
+
+    <section class="login-prompt" id="loginPrompt" hidden>
+      <p>还没有登录 ONE-WAY 中台。用企业微信扫码登录后，这里会显示 Token 用量、请求日志与渠道限额。会话只保存在本机，不会上传到别处。</p>
+      <button class="primary" id="loginPromptBtn" type="button">扫码登录</button>
+    </section>
+
+    <nav class="tabs" role="tablist" aria-label="用量详情">
+      <button class="tab" role="tab" id="tabLogs" aria-selected="true" aria-controls="panelLogs" type="button">请求日志</button>
+      <button class="tab" role="tab" id="tabTrend" aria-selected="false" aria-controls="panelTrend" type="button">用量趋势</button>
+      <button class="tab" role="tab" id="tabChannels" aria-selected="false" aria-controls="panelChannels" type="button">渠道用量 · 限额</button>
+      <button class="tab" role="tab" id="tabModels" aria-selected="false" aria-controls="panelModels" type="button">渠道与模型</button>
+    </nav>
+
+    <section class="panel" id="panelLogs" role="tabpanel" aria-labelledby="tabLogs">
+      <div class="toolbar">
+        <label class="muted" for="logStart">开始日期</label>
+        <input id="logStart" type="date" />
+        <span class="muted">至</span>
+        <input id="logEnd" type="date" aria-label="结束日期" />
+        <select id="logPageSize" aria-label="每页条数">
+          <option value="10">10 条/页</option>
+          <option value="20">20 条/页</option>
+          <option value="50">50 条/页</option>
+        </select>
+        <button class="primary" id="logQuery" type="button">查询</button>
+        <span class="muted grow">默认近 7 天</span>
+      </div>
+      <p class="error" id="logError" hidden></p>
+      <div class="table-wrap">
+        <table class="logs">
+          <thead>
+            <tr>
+              <th>时间</th><th>模型</th><th>所属 Key</th><th>渠道</th>
+              <th>状态</th><th>流式</th><th class="num">延迟</th><th class="num">Token</th>
+            </tr>
+          </thead>
+          <tbody id="logRows">
+            <tr><td colspan="8" class="muted">正在读取用量数据…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="logPrev" type="button" disabled>« 上一页</button>
+        <span class="muted" id="logPagerInfo">第 1 / 1 页 · 共 — 条</span>
+        <button id="logNext" type="button" disabled>下一页 »</button>
+      </div>
+    </section>
+
+    <section class="panel" id="panelTrend" role="tabpanel" aria-labelledby="tabTrend" hidden>
+      <div class="trend">
+        <div class="trend-block">
+          <h3>近 24 小时 · 每小时</h3>
+          <div class="bar-list" id="hourlyList"></div>
+        </div>
+        <div class="trend-block">
+          <h3>近 30 天 · 每日</h3>
+          <div class="bar-list" id="dailyList"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panelChannels" role="tabpanel" aria-labelledby="tabChannels" hidden>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>渠道</th><th class="num">近 5 小时</th><th>5h 限额</th><th class="num">今日</th>
+              <th class="num">本周</th><th>周限额</th><th class="num">本月</th><th class="num">本年</th>
+            </tr>
+          </thead>
+          <tbody id="channelRows">
+            <tr><td colspan="8" class="muted">正在读取用量数据…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="panelModels" role="tabpanel" aria-labelledby="tabModels" hidden>
+      <div class="model-grid" id="modelGrid"></div>
+    </section>
+
+    <details class="settings" id="settingsBox">
+      <summary>设置</summary>
+      <div class="row">
+        <label for="baseUrlInput">网关地址</label>
+        <input id="baseUrlInput" type="text" spellcheck="false" placeholder="https://oneway.eportyun.com" />
+      </div>
+      <div class="row">
+        <label for="refreshSecondsInput">刷新间隔（秒）</label>
+        <input id="refreshSecondsInput" type="number" min="30" max="3600" step="1" />
+      </div>
+      <div class="settings-actions">
+        <button class="primary" id="settingsSave" type="button">保存设置</button>
+        <span class="muted" id="settingsHint">刷新间隔 30–3600 秒；保存后立即刷新。</span>
+      </div>
+    </details>
+  </main>
+
+  <footer>
+    <span class="muted" id="footerHint">每 120 秒自动刷新</span>
+    <span class="grow"></span>
+    <button id="closeBtn" type="button">关闭</button>
+  </footer>
+
+  <div class="modal-mask" id="loginModal" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-label="扫码登录 ONE-WAY 中台">
+      <div class="modal-head">
+        <h2>登录 ONE-WAY 中台</h2>
+        <button class="icon" id="loginClose" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="hint">使用企业微信扫码，授权后即可读取 Token 用量；会话 Cookie 只保存在本机。</p>
+      <div class="qr-box"><img id="loginQr" alt="企业微信登录二维码" hidden /></div>
+      <div class="login-state" id="loginState">正在获取二维码…</div>
+      <p class="hint" id="loginHint">正在建立安全连接…</p>
+      <p class="error" id="loginMessage" hidden></p>
+      <div class="modal-actions">
+        <button id="loginRefresh" type="button">刷新二维码</button>
+        <button id="loginCancel" type="button">取消</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // Everything below talks to the desktop shell only. The bridge is injected by the preload script;
+    // without it the page still renders (banner + placeholders) instead of going blank.
+    const api = window.__DSH_USAGE__
+    const $ = (id) => document.getElementById(id)
+    const DEFAULT_REFRESH_SECONDS = 120
+    const LOGIN_POLL_MS = 1500
+    const METRICS = [
+      { key: 'h5', suffix: 'H5' },
+      { key: 'today', suffix: 'Today' },
+      { key: 'week', suffix: 'Week' },
+    ]
+    const TABS = [
+      { key: 'logs', button: 'tabLogs', panel: 'panelLogs' },
+      { key: 'trend', button: 'tabTrend', panel: 'panelTrend' },
+      { key: 'channels', button: 'tabChannels', panel: 'panelChannels' },
+      { key: 'models', button: 'tabModels', panel: 'panelModels' },
+    ]
+
+    const settingsCache = { baseUrl: '', refreshSeconds: DEFAULT_REFRESH_SECONDS }
+    const logs = { loaded: false, busy: false, page: 1, pages: 1, pageSize: 10 }
+    const login = { timer: null, key: null, generation: 0 }
+    let activeTab = 'logs'
+    let running = false
+    let refreshTimer = null
+
+    function messageOf(error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+
+    function clampRefresh(value) {
+      return Math.min(3600, Math.max(30, Math.round(Number(value) || DEFAULT_REFRESH_SECONDS)))
+    }
+
+    function display(value) {
+      if (value === null || value === undefined || value === '') return '—'
+      return String(value)
+    }
+
+    function fmtInt(value) {
+      if (value === null || value === undefined || value === '') return '—'
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      return number.toLocaleString('zh-CN')
+    }
+
+    function fmtTokens(value) {
+      if (value === null || value === undefined || value === '') return '—'
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      if (number >= 1e8) return (number / 1e8).toFixed(2) + '亿'
+      if (number >= 1e6) return (number / 1e6).toFixed(2) + 'M'
+      if (number >= 1e3) return (number / 1e3).toFixed(1) + 'K'
+      return String(Math.round(number))
+    }
+
+    function percentOf(value, reference) {
+      const total = Number(reference)
+      if (!Number.isFinite(total) || total <= 0) return null
+      const number = Number(value)
+      if (!Number.isFinite(number)) return null
+      return Math.round((number / total) * 1000) / 10
+    }
+
+    function fmtTime(value) {
+      if (value === null || value === undefined || value === '') return '—'
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return String(value)
+      return date.toLocaleString('zh-CN', { hour12: false })
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag)
+      if (className) node.className = className
+      if (text !== undefined) node.textContent = text
+      return node
+    }
+
+    function td(className, text) {
+      return el('td', className || undefined, text)
+    }
+
+    function rowWithText(colSpan, text) {
+      const row = el('tr')
+      const cell = td('muted', text)
+      cell.colSpan = colSpan
+      row.append(cell)
+      return row
+    }
+
+    function emptyNode(text) {
+      return el('p', 'empty', text)
+    }
+
+    function setStatus(text, bad) {
+      const bar = $('statusBar')
+      bar.textContent = text || ''
+      bar.hidden = !text
+      bar.classList.toggle('error', Boolean(bad))
+    }
+
+    function setSettingsHint(text, bad) {
+      const hint = $('settingsHint')
+      hint.textContent = text
+      hint.classList.toggle('error', Boolean(bad))
+    }
+
+    function showLoginMessage(text) {
+      const line = $('loginMessage')
+      line.textContent = text || ''
+      line.hidden = !text
+    }
+
+    function setLoginState(phase, text) {
+      const stateEl = $('loginState')
+      stateEl.textContent = text
+      stateEl.className = 'login-state'
+      if (phase === 'error' || phase === 'expired') stateEl.classList.add('error')
+      if (phase === 'scanned') stateEl.classList.add('ok')
+      const hints = {
+        starting: '正在建立安全连接…',
+        waiting: '打开企业微信「扫一扫」，扫描上面的二维码。',
+        scanned: '已扫码，请在手机上点击确认。',
+        expired: '二维码只有几分钟有效期，刷新后再扫。',
+        confirmed: '登录成功。',
+        error: '',
+      }
+      $('loginHint').textContent = hints[phase] || ''
+    }
+
+    /* ---------- metrics: percent is relative to this week (month when the week is 0) ---------- */
+
+    function referenceTokens(snapshot) {
+      const reference = snapshot.reference || {}
+      const week = Number(reference.weekTokens)
+      if (Number.isFinite(week) && week > 0) return week
+      const month = Number(reference.monthTokens)
+      if (Number.isFinite(month) && month > 0) return month
+      const tokens = snapshot.tokens || {}
+      for (const key of ['week', 'month']) {
+        const fallback = Number(tokens[key])
+        if (Number.isFinite(fallback) && fallback > 0) return fallback
+      }
+      return 0
+    }
+
+    function referenceHint(snapshot, reference) {
+      const raw = snapshot.reference || {}
+      const week = Number(raw.weekTokens)
+      const month = Number(raw.monthTokens)
+      if (Number.isFinite(week) && week > 0) return '占比以本周用量（' + fmtTokens(week) + ' Token）为参考，本周恒为 100%。'
+      if (Number.isFinite(month) && month > 0) return '本周用量为 0，占比改按本月用量（' + fmtTokens(month) + ' Token）计算。'
+      if (reference > 0) return '占比以 ' + fmtTokens(reference) + ' Token 为参考。'
+      return '本周暂无用量，占比暂时无法计算。'
+    }
+
+    function renderMetrics(snapshot) {
+      const tokens = snapshot.tokens || {}
+      const reference = referenceTokens(snapshot)
+      for (const metric of METRICS) {
+        const pct = percentOf(tokens[metric.key], reference)
+        $('metric' + metric.suffix).textContent = fmtTokens(tokens[metric.key])
+        $('metric' + metric.suffix + 'Pct').textContent = pct === null ? '—' : String(pct) + '%'
+        $('bar' + metric.suffix).style.width = (pct === null ? 0 : Math.max(0, Math.min(100, pct))) + '%'
+      }
+      $('weekRefHint').textContent = referenceHint(snapshot, reference)
+    }
+
+    /* ---------- trend: 24 hourly / 30 daily rows, width-only bars ---------- */
+
+    function renderBars(host, rows, timeKey, emptyText) {
+      host.replaceChildren()
+      if (!Array.isArray(rows) || rows.length === 0) {
+        host.append(emptyNode(emptyText))
+        return
+      }
+      let max = 1
+      for (const row of rows) {
+        const value = Number(row && row.tokens)
+        if (Number.isFinite(value) && value > max) max = value
+      }
+      for (const row of rows) {
+        const value = Number(row && row.tokens)
+        const tokens = Number.isFinite(value) ? value : 0
+        const track = el('div', 'bar-track')
+        const fill = el('span')
+        fill.style.width = Math.max(0, Math.min(100, (tokens / max) * 100)) + '%'
+        track.append(fill)
+        const line = el('div', 'bar-row')
+        line.append(
+          el('span', 'bar-time', display(row && row[timeKey])),
+          el('span', 'bar-reqs', fmtInt(row && row.requests) + ' 次'),
+          el('span', 'bar-tokens', fmtTokens(row && row.tokens)),
+          track,
+        )
+        host.append(line)
+      }
+    }
+
+    function renderTrend(snapshot) {
+      renderBars($('hourlyList'), snapshot.hourly, 'hour', '暂无按小时趋势数据。')
+      renderBars($('dailyList'), snapshot.daily, 'date', '暂无按日趋势数据。')
+    }
+
+    /* ---------- channels: five usage windows plus limit progress ---------- */
+
+    function limitCell(value, limit) {
+      const cell = el('td')
+      const cap = Number(limit)
+      if (!Number.isFinite(cap) || cap <= 0) {
+        cell.append(el('span', 'muted', '不限'))
+        return cell
+      }
+      const current = Number(value)
+      const fraction = Number.isFinite(current) ? current / cap : 0
+      const bar = el('div', 'bar')
+      const fill = el('span')
+      fill.style.width = Math.max(0, Math.min(100, fraction * 100)) + '%'
+      if (fraction >= 1) bar.dataset.full = 'true'
+      else if (fraction >= 0.8) bar.dataset.warn = 'true'
+      bar.append(fill)
+      const wrap = el('div', 'limit')
+      wrap.append(el('span', 'num', fmtTokens(value)), bar, el('span', 'muted', '/' + fmtTokens(limit)))
+      cell.append(wrap)
+      return cell
+    }
+
+    function renderChannels(snapshot) {
+      const body = $('channelRows')
+      body.replaceChildren()
+      const channels = Array.isArray(snapshot.channels) ? snapshot.channels : []
+      if (channels.length === 0) {
+        body.append(rowWithText(8, '暂无渠道用量数据。'))
+        return
+      }
+      for (const channel of channels) {
+        const row = el('tr')
+        row.append(
+          td('channel-name', display(channel.channel)),
+          td('num', fmtTokens(channel.h5)),
+          limitCell(channel.h5, channel.h5Limit),
+          td('num', fmtTokens(channel.today)),
+          td('num', fmtTokens(channel.week)),
+          limitCell(channel.week, channel.weekLimit),
+          td('num', fmtTokens(channel.month)),
+          td('num', fmtTokens(channel.year)),
+        )
+        body.append(row)
+      }
+    }
+
+    /* ---------- models: one card per channel, chips per model ---------- */
+
+    function renderModels(snapshot) {
+      const host = $('modelGrid')
+      host.replaceChildren()
+      const groups = Array.isArray(snapshot.models) ? snapshot.models : []
+      if (groups.length === 0) {
+        host.append(emptyNode('暂无渠道与模型数据。'))
+        return
+      }
+      for (const group of groups) {
+        const models = Array.isArray(group.models) ? group.models : []
+        const count = Number(group.count)
+        const card = el('div', 'model-card')
+        const head = el('div', 'model-head')
+        head.append(
+          el('span', 'model-channel', display(group.channel)),
+          el('span', 'tag', (Number.isFinite(count) ? count : models.length) + ' 个模型'),
+        )
+        const chips = el('div', 'chips')
+        for (const model of models) chips.append(el('span', 'chip', String(model)))
+        card.append(head, chips)
+        host.append(card)
+      }
+    }
+
+    /* ---------- request logs: date range + paging ---------- */
+
+    function isoDate(date) {
+      return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0')
+    }
+
+    function isoToday() {
+      return isoDate(new Date())
+    }
+
+    function isoDaysAgo(days) {
+      return isoDate(new Date(Date.now() - days * 86400000))
+    }
+
+    function statusBadge(status) {
+      const raw = display(status)
+      let kind = ''
+      if (raw === 'completed' || raw === 'success') kind = 'ok'
+      else if (raw === 'failed' || raw === 'error') kind = 'err'
+      else if (raw === 'pending' || raw === 'running' || raw === 'processing') kind = 'warn'
+      return el('span', 'status' + (kind ? ' ' + kind : ''), raw)
+    }
+
+    function streamText(value) {
+      if (value === true) return '是'
+      if (value === false) return '否'
+      return display(value)
+    }
+
+    function renderLogs(result) {
+      const rows = result && Array.isArray(result.rows) ? result.rows : []
+      const page = Number(result && result.page)
+      logs.page = Number.isFinite(page) && page > 0 ? page : 1
+      const pages = Number(result && result.pages)
+      logs.pages = Number.isFinite(pages) && pages > 0 ? pages : 1
+      const pageSize = Number(result && result.pageSize)
+      if (Number.isFinite(pageSize) && pageSize > 0) logs.pageSize = pageSize
+      const sizeSelect = $('logPageSize')
+      const wanted = String(logs.pageSize)
+      for (const option of Array.from(sizeSelect.options)) {
+        if (option.value === wanted) sizeSelect.value = wanted
+      }
+      const body = $('logRows')
+      body.replaceChildren()
+      // The shell returns a degraded page with `error` instead of throwing when the gateway page
+      // could not be read; show why the table is empty instead of claiming "no requests".
+      if (result && typeof result.error === 'string' && result.error !== '') {
+        $('logError').textContent = '读取请求日志失败：' + result.error
+        $('logError').hidden = false
+      }
+      if (rows.length === 0) {
+        body.append(rowWithText(8, '该时间段暂无请求。'))
+      } else {
+        for (const row of rows) {
+          const line = el('tr')
+          const statusCell = el('td')
+          statusCell.append(statusBadge(row.status))
+          line.append(
+            td('muted', display(row.time)),
+            td('model', display(row.model)),
+            td(undefined, display(row.key)),
+            td(undefined, display(row.channel)),
+            statusCell,
+            td(undefined, streamText(row.stream)),
+            td('num', display(row.latency)),
+            td('num', fmtTokens(row.tokens)),
+          )
+          body.append(line)
+        }
+      }
+      $('logPagerInfo').textContent = '第 ' + logs.page + ' / ' + logs.pages + ' 页 · 共 ' + fmtInt(result && result.total) + ' 条'
+      $('logPrev').disabled = logs.page <= 1
+      $('logNext').disabled = logs.page >= logs.pages
+    }
+
+    async function loadLogs(page) {
+      if (!api || logs.busy) return
+      const startDate = $('logStart').value
+      const endDate = $('logEnd').value
+      const pageSize = Number($('logPageSize').value) || logs.pageSize || 10
+      logs.busy = true
+      logs.page = Number(page) > 0 ? Number(page) : 1
+      logs.pageSize = pageSize
+      $('logError').hidden = true
+      $('logRows').replaceChildren(rowWithText(8, '加载中…'))
+      try {
+        const result = await api.requests({ startDate: startDate, endDate: endDate, page: logs.page, pageSize: pageSize })
+        renderLogs(result)
+        logs.loaded = true
+      } catch (error) {
+        $('logRows').replaceChildren(rowWithText(8, '读取失败'))
+        $('logError').textContent = '读取请求日志失败：' + messageOf(error)
+        $('logError').hidden = false
+      } finally {
+        logs.busy = false
+      }
+    }
+
+    function resetLogs() {
+      logs.loaded = false
+      logs.page = 1
+      logs.pages = 1
+      $('logRows').replaceChildren(rowWithText(8, '未登录，暂无请求数据。'))
+      $('logPagerInfo').textContent = '第 1 / 1 页 · 共 — 条'
+      $('logPrev').disabled = true
+      $('logNext').disabled = true
+      $('logError').hidden = true
+    }
+
+    /* ---------- render one snapshot ---------- */
+
+    function render(snapshot) {
+      const state = snapshot || {}
+      const loggedIn = state.loggedIn === true
+      $('userName').textContent = display(state.user)
+      $('apiKey').textContent = display(state.apiKey)
+      $('lastRefresh').textContent = state.fetchedAt ? '更新于 ' + fmtTime(state.fetchedAt) : '尚未刷新'
+      const badge = $('sessionState')
+      badge.textContent = loggedIn ? '已登录' : '未登录'
+      badge.className = 'tag' + (loggedIn ? ' ok' : '')
+      $('logoutBtn').hidden = !loggedIn
+      $('loginBtn').hidden = loggedIn
+      $('loginPrompt').hidden = loggedIn
+
+      renderMetrics(state)
+      renderTrend(state)
+      renderChannels(state)
+      renderModels(state)
+      if (state.error) setStatus('数据刷新失败：' + String(state.error) + '。可点「立即刷新」重试。', true)
+      if (!loggedIn) resetLogs()
+      else if (activeTab === 'logs' && !logs.loaded) void loadLogs(1)
+    }
+
+    async function refreshNow() {
+      if (!api || running) return
+      running = true
+      $('refreshBtn').disabled = true
+      setStatus('正在刷新用量…')
+      try {
+        const snapshot = await api.refresh()
+        render(snapshot)
+        if (!snapshot || !snapshot.error) setStatus('')
+      } catch (error) {
+        setStatus('刷新失败：' + messageOf(error), true)
+      } finally {
+        running = false
+        $('refreshBtn').disabled = false
+        restartPolling()
+      }
+    }
+
+    /* ---------- polling: settings are re-read before every automatic get ---------- */
+
+    function applySettings(value, fillInputs) {
+      if (!value) return
+      if (typeof value.baseUrl === 'string' && value.baseUrl !== '') settingsCache.baseUrl = value.baseUrl
+      const refreshSeconds = Number(value.refreshSeconds)
+      if (Number.isFinite(refreshSeconds) && refreshSeconds > 0) settingsCache.refreshSeconds = clampRefresh(refreshSeconds)
+      $('footerHint').textContent = '每 ' + settingsCache.refreshSeconds + ' 秒自动刷新'
+      if (fillInputs) {
+        $('baseUrlInput').value = settingsCache.baseUrl
+        $('refreshSecondsInput').value = String(settingsCache.refreshSeconds)
+      }
+    }
+
+    async function applySettingsFromShell(fillInputs) {
+      try {
+        const value = await api.settings()
+        applySettings(value, fillInputs)
+        return true
+      } catch (error) {
+        if (fillInputs) setStatus('读取设置失败：' + messageOf(error), true)
+        return false
+      }
+    }
+
+    function restartPolling() {
+      if (refreshTimer !== null) {
+        clearTimeout(refreshTimer)
+        refreshTimer = null
+      }
+      if (!api) return
+      const seconds = clampRefresh(settingsCache.refreshSeconds)
+      refreshTimer = setTimeout(() => { void tick() }, seconds * 1000)
+    }
+
+    async function tick() {
+      refreshTimer = null
+      if (!api) return
+      if (running) {
+        restartPolling()
+        return
+      }
+      running = true
+      try {
+        await applySettingsFromShell(false)
+        try {
+          const snapshot = await api.get()
+          render(snapshot)
+          if (!snapshot || !snapshot.error) setStatus('')
+        } catch (error) {
+          setStatus('读取用量失败：' + messageOf(error) + '，' + settingsCache.refreshSeconds + ' 秒后重试。', true)
+        }
+      } finally {
+        running = false
+        restartPolling()
+      }
+    }
+
+    async function boot() {
+      setStatus('正在读取用量数据…')
+      // Fill the settings form once on open; the polling loop only refreshes the cached interval
+      // (re-writing the inputs every cycle would fight a user typing in them).
+      await applySettingsFromShell(true)
+      await tick()
+    }
+
+    async function saveSettings() {
+      if (!api) return
+      const baseUrl = $('baseUrlInput').value.trim()
+      const refreshSeconds = Number($('refreshSecondsInput').value)
+      if (baseUrl === '') {
+        setSettingsHint('网关地址不能为空。', true)
+        return
+      }
+      if (!Number.isFinite(refreshSeconds) || refreshSeconds < 30 || refreshSeconds > 3600) {
+        setSettingsHint('刷新间隔要在 30–3600 秒之间。', true)
+        return
+      }
+      setSettingsHint('正在保存…', false)
+      try {
+        const result = await api.saveSettings({ baseUrl: baseUrl, refreshSeconds: Math.round(refreshSeconds) })
+        if (!result || result.ok !== true) {
+          setSettingsHint('保存失败：' + (result && result.reason ? result.reason : '未知原因'), true)
+          return
+        }
+        settingsCache.baseUrl = baseUrl
+        settingsCache.refreshSeconds = Math.round(refreshSeconds)
+        $('footerHint').textContent = '每 ' + settingsCache.refreshSeconds + ' 秒自动刷新'
+        setSettingsHint('已保存，正在刷新…', false)
+        await refreshNow()
+        setSettingsHint('已保存，刷新间隔 ' + settingsCache.refreshSeconds + ' 秒。', false)
+      } catch (error) {
+        setSettingsHint('保存失败：' + messageOf(error), true)
+      }
+    }
+
+    /* ---------- QR login: start once, then poll the same key every 1.5 s ---------- */
+
+    function openLogin() {
+      if (!api) return
+      $('loginModal').hidden = false
+      showLoginMessage('')
+      void startLogin()
+    }
+
+    function closeLogin() {
+      login.generation += 1
+      login.key = null
+      if (login.timer !== null) {
+        clearTimeout(login.timer)
+        login.timer = null
+      }
+      $('loginModal').hidden = true
+    }
+
+    async function startLogin() {
+      if (!api) return
+      if (login.timer !== null) {
+        clearTimeout(login.timer)
+        login.timer = null
+      }
+      login.generation += 1
+      const generation = login.generation
+      login.key = null
+      $('loginQr').hidden = true
+      $('loginQr').removeAttribute('src')
+      $('loginRefresh').disabled = true
+      showLoginMessage('')
+      setLoginState('starting', '正在获取二维码…')
+      try {
+        const result = await api.loginStart()
+        if (generation !== login.generation) return
+        if (!result || typeof result.qrDataUrl !== 'string' || result.qrDataUrl === '') {
+          throw new Error('没有拿到二维码数据')
+        }
+        login.key = result.key
+        $('loginQr').src = result.qrDataUrl
+        $('loginQr').hidden = false
+        $('loginRefresh').disabled = false
+        setLoginState('waiting', '请使用企业微信扫码登录')
+        login.timer = setTimeout(() => { void pollLogin(generation) }, LOGIN_POLL_MS)
+      } catch (error) {
+        if (generation !== login.generation) return
+        $('loginRefresh').disabled = false
+        setLoginState('error', '获取二维码失败')
+        showLoginMessage(messageOf(error) + ' 可点「刷新二维码」重试。')
+      }
+    }
+
+    async function pollLogin(generation) {
+      login.timer = null
+      if (generation !== login.generation || login.key === null) return
+      let result = null
+      try {
+        result = await api.loginPoll(login.key)
+      } catch (error) {
+        if (generation !== login.generation) return
+        setLoginState('error', '查询扫码状态失败')
+        showLoginMessage(messageOf(error) + ' 可点「刷新二维码」重试。')
+        $('loginRefresh').disabled = false
+        return
+      }
+      if (generation !== login.generation) return
+      const phase = result && typeof result.state === 'string' ? result.state : 'error'
+      if (phase === 'waiting') {
+        setLoginState('waiting', '请使用企业微信扫码登录')
+      } else if (phase === 'scanned') {
+        setLoginState('scanned', '已扫码，请在手机上确认')
+      } else if (phase === 'expired') {
+        setLoginState('expired', '二维码已过期')
+        showLoginMessage(result && result.message ? result.message : '二维码已过期，请点「刷新二维码」重新获取。')
+        $('loginQr').hidden = true
+        $('loginRefresh').disabled = false
+        return
+      } else if (phase === 'confirmed') {
+        closeLogin()
+        logs.loaded = false
+        setStatus('登录成功，正在刷新用量…')
+        void refreshNow()
+        return
+      } else {
+        setLoginState('error', '登录失败')
+        showLoginMessage(result && result.message ? result.message : '扫码登录失败，请刷新二维码重试。')
+        $('loginRefresh').disabled = false
+        return
+      }
+      if (result && result.message) showLoginMessage(result.message)
+      $('loginRefresh').disabled = false
+      login.timer = setTimeout(() => { void pollLogin(generation) }, LOGIN_POLL_MS)
+    }
+
+    async function logout() {
+      if (!api) return
+      const agreed = window.confirm('确定退出 ONE-WAY 登录吗？本机保存的会话 Cookie 将被清除。')
+      if (!agreed) return
+      try {
+        const snapshot = await api.logout()
+        render(snapshot)
+        if (!snapshot || !snapshot.error) setStatus('已退出登录。')
+      } catch (error) {
+        setStatus('退出登录失败：' + messageOf(error), true)
+      }
+    }
+
+    /* ---------- tabs & wiring ---------- */
+
+    function selectTab(key) {
+      activeTab = key
+      for (const tab of TABS) {
+        const selected = tab.key === key
+        $(tab.button).setAttribute('aria-selected', selected ? 'true' : 'false')
+        $(tab.panel).hidden = !selected
+      }
+      if (key === 'logs' && api && !logs.loaded) void loadLogs(1)
+    }
+
+    function wire() {
+      $('refreshBtn').addEventListener('click', () => { void refreshNow() })
+      $('logoutBtn').addEventListener('click', () => { void logout() })
+      $('loginBtn').addEventListener('click', openLogin)
+      $('loginPromptBtn').addEventListener('click', openLogin)
+      $('loginRefresh').addEventListener('click', () => { void startLogin() })
+      $('loginClose').addEventListener('click', closeLogin)
+      $('loginCancel').addEventListener('click', closeLogin)
+      $('loginModal').addEventListener('mousedown', (event) => {
+        if (event.target === $('loginModal')) closeLogin()
+      })
+      $('closeBtn').addEventListener('click', () => { void api.close() })
+      $('logQuery').addEventListener('click', () => { void loadLogs(1) })
+      $('logPageSize').addEventListener('change', () => {
+        logs.loaded = false
+        void loadLogs(1)
+      })
+      $('logPrev').addEventListener('click', () => { void loadLogs(Math.max(1, logs.page - 1)) })
+      $('logNext').addEventListener('click', () => { void loadLogs(Math.min(logs.pages, logs.page + 1)) })
+      $('settingsSave').addEventListener('click', () => { void saveSettings() })
+      for (const tab of TABS) {
+        $(tab.button).addEventListener('click', () => { selectTab(tab.key) })
+      }
+      $('logStart').value = isoDaysAgo(6)
+      $('logEnd').value = isoToday()
+    }
+
+    if (!api) {
+      // No bridge: say so plainly instead of leaving a blank window, and make the dead controls obvious.
+      $('apiMissing').hidden = false
+      setStatus('桌面壳 API 未加载：无法读取用量数据。', true)
+      for (const id of ['refreshBtn', 'loginBtn', 'logoutBtn', 'logQuery', 'settingsSave', 'closeBtn']) {
+        $(id).disabled = true
+      }
+      $('footerHint').textContent = '窗口没有拿到桌面壳 API'
+    } else {
+      wire()
+      void boot()
+    }
+  </script>
+</body>
+</html>

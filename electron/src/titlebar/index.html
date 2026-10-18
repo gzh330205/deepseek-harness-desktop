@@ -53,6 +53,8 @@
     <!-- Phone access lives here rather than in the settings window: it is a feature the shell owns,
          and this strip is where the shell's own entries go. -->
     <button type="button" data-menu="pocket" aria-haspopup="menu">手机访问</button>
+    <!-- Token usage (ONE-WAY): a shell window, not a DSH page — same rule as phone access. -->
+    <button type="button" data-menu="usage" aria-haspopup="menu">用量</button>
   </nav>
   <script>
     // The preload exposes exactly one object here: no ipcRenderer, no Node.

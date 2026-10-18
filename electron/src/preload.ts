@@ -79,6 +79,30 @@ if (isShellPageDocument()) {
 }
 
 /**
+ * The token-usage window (ONE-WAY).
+ *
+ * Same discipline as the other shell pages: one frozen object, no ipcRenderer, no Node. The page
+ * never talks to the gateway itself — the main process owns the cookie and returns snapshots.
+ */
+function isUsageDocument(): boolean {
+  return location.protocol === 'file:' && location.pathname.replace(/\\/gu, '/').endsWith('/usage/index.html')
+}
+
+if (isUsageDocument()) {
+  contextBridge.exposeInMainWorld('__DSH_USAGE__', Object.freeze({
+    get: () => ipcRenderer.invoke(IPC.usageGet) as Promise<unknown>,
+    refresh: () => ipcRenderer.invoke(IPC.usageRefresh) as Promise<unknown>,
+    settings: () => ipcRenderer.invoke(IPC.usageSettings) as Promise<unknown>,
+    saveSettings: (input: unknown) => ipcRenderer.invoke(IPC.usageSettingsSave, input) as Promise<unknown>,
+    loginStart: () => ipcRenderer.invoke(IPC.usageLoginStart) as Promise<unknown>,
+    loginPoll: (key: unknown) => ipcRenderer.invoke(IPC.usageLoginPoll, key) as Promise<unknown>,
+    logout: () => ipcRenderer.invoke(IPC.usageLogout) as Promise<unknown>,
+    requests: (query: unknown) => ipcRenderer.invoke(IPC.usageRequests, query) as Promise<unknown>,
+    close: () => ipcRenderer.invoke(IPC.usageClose) as Promise<boolean>,
+  }))
+}
+
+/**
  * The market window: search, install, update, remove, plus the two things a failing install needs —
  * the profile path and a way to hand us the raw pnpm output. The page itself has no network access
  * (`CSP default-src 'none'`), so every registry request goes through the main process.
