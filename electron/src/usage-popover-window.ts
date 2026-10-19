@@ -352,7 +352,7 @@ export class UsagePopoverWindow {
     if (!loaded) return { loaded: false, bridge: false, selectors: {} }
     try {
       const result = await contents.executeJavaScript(
-        `(() => { const ids = ${JSON.stringify(['metricH5', 'metricToday', 'metricWeek'])};`
+        `(() => { const ids = ${JSON.stringify(['metricH5', 'metricToday', 'metricWeek', 'pctH5', 'pctToday', 'pctWeek', 'barH5', 'barToday', 'barWeek'])};`
         + ' const out = { selectors: {}, bridge: typeof window.__DSH_USAGE_POPOVER__ === "object" && window.__DSH_USAGE_POPOVER__ !== null };'
         + ' for (const id of ids) out.selectors[id] = document.getElementById(id) !== null; return out })()',
       ) as { readonly selectors: Record<string, boolean>; readonly bridge: boolean }

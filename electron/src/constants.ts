@@ -63,10 +63,11 @@ export const USAGE_POPOVER_PAGE = '/usage-popover/index.html'
 /**
  * Hover card size.
  *
- * Small on purpose: it is a glance, not a panel. The layout is three rows and a footer, so the height
- * is what those rows need; anything larger becomes a window the user has to dismiss.
+ * Small on purpose: it is a glance, not a panel. Three label/value rows with a slim progress bar each
+ * plus the header fit in 240×150; a wider card only stretched the gap between label and number (the
+ * original 300px card looked like a panel with two columns of air).
  */
-export const USAGE_POPOVER_WIDTH = 300
+export const USAGE_POPOVER_WIDTH = 240
 export const USAGE_POPOVER_HEIGHT = 150
 
 export type ShellMenuName = 'app' | 'plugins' | 'pocket' | 'usage'

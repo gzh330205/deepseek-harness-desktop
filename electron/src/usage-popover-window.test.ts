@@ -185,18 +185,23 @@ test('the page never fetches, writes markup or loads an external resource', () =
   assert.doesNotMatch(page, /\bsrc="https?:/iu)
 })
 
-test('the card shows the three periods the user asked for', () => {
-  const periods: ReadonlyArray<readonly [string, string]> = [
-    ['metricH5', '近 5 小时'],
-    ['metricToday', '今日'],
-    ['metricWeek', '本周'],
+test('the card shows the three periods the user asked for, with a week-referenced bar each', () => {
+  const periods: ReadonlyArray<readonly [string, string, string, string]> = [
+    ['metricH5', '近 5 小时', 'pctH5', 'barH5'],
+    ['metricToday', '今日', 'pctToday', 'barToday'],
+    ['metricWeek', '本周', 'pctWeek', 'barWeek'],
   ]
-  for (const [id, label] of periods) {
+  for (const [id, label, pct, bar] of periods) {
     assert.match(markup, new RegExp(`id="${id}"`, 'u'))
+    assert.match(markup, new RegExp(`id="${pct}"`, 'u'))
+    assert.match(markup, new RegExp(`id="${bar}"`, 'u'))
     assert.match(markup, new RegExp(label.replace(/ /gu, '\\s*'), 'u'))
   }
   assert.match(script, /tokens\[metric\.key\]/u)
   assert.match(script, /fmtTokens\(/u)
+  // The bar and percentage share one reference (the week), the same as the usage window's cards.
+  assert.match(script, /tokens\.week/u)
+  assert.match(script, /style\.width/u)
   // The units the usage window uses must stay in step here.
   assert.match(script, /'亿'/u)
   assert.match(script, /'万'/u)

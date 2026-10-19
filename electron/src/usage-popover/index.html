@@ -12,49 +12,81 @@
   <style>
     :root {
       color-scheme: light dark;
-      --bg: #0f1115; --fg: #e8ebf2; --muted: #98a2b5;
-      --line: rgba(255, 255, 255, .09); --error: #ff9a90;
+      --card: #171b24; --fg: #e8ebf2; --muted: #8d97ab;
+      --line: rgba(255, 255, 255, .08); --track: rgba(255, 255, 255, .10);
+      --error: #ff9a90; --h5: #10b981; --today: #3b82f6; --week: #8b5cf6;
     }
-    /* Window chrome follows the OS theme, like the title bar and the usage window. */
+    /* The card follows the same light/dark palette as the usage window, so the same numbers never
+       switch colour families between the glance and the full window. */
     @media (prefers-color-scheme: light) {
       :root {
-        --bg: #f3f3f3; --fg: #1f1f1f; --muted: #5b6370;
-        --line: rgba(0, 0, 0, .12); --error: #b3261e;
+        --card: #ffffff; --fg: #1f1f1f; --muted: #666e7a;
+        --line: rgba(0, 0, 0, .10); --track: rgba(0, 0, 0, .10);
+        --error: #b3261e; --h5: #0e9f6e; --today: #2563eb; --week: #7c3aed;
       }
     }
     html, body { margin: 0; height: 100%; }
     body {
       box-sizing: border-box;
-      padding: 9px 12px;
-      background: var(--bg); color: var(--fg);
-      border: 1px solid var(--line); border-radius: 8px;
-      font: 12px/1.35 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      padding: 9px 13px 10px;
+      background: var(--card); color: var(--fg);
+      border: 1px solid var(--line); border-radius: 10px;
+      font: 12px/1.3 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
       user-select: none; overflow: hidden;
     }
-    header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
-    #title { font-size: 11px; font-weight: 600; letter-spacing: .2px; color: var(--muted); }
-    #updatedAt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-    #metrics { display: grid; gap: 1px; }
-    .metric {
-      display: flex; align-items: baseline; justify-content: space-between;
-      padding: 3px 0; border-bottom: 1px solid var(--line);
+    header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 7px; }
+    #title { font-size: 11px; font-weight: 600; letter-spacing: .3px; color: var(--muted); }
+    #updatedAt { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    #metrics { display: grid; gap: 6px; }
+    .metric { display: grid; gap: 3px; }
+    .line { display: flex; align-items: baseline; gap: 6px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; transform: translateY(-1px); }
+    .dot-h5 { background: var(--h5); }
+    .dot-today { background: var(--today); }
+    .dot-week { background: var(--week); }
+    .label { color: var(--muted); font-size: 11.5px; }
+    .value { margin-left: auto; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    /* Same reference as the usage window: share of the week, so the three bars are comparable. */
+    .pct {
+      min-width: 30px; text-align: right; color: var(--muted);
+      font-size: 10.5px; font-variant-numeric: tabular-nums;
     }
-    .metric:last-child { border-bottom: 0; }
-    .label { color: var(--muted); }
-    .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .hint { margin: 4px 0 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .track { height: 4px; border-radius: 999px; background: var(--track); overflow: hidden; }
+    .fill { display: block; height: 100%; width: 0; border-radius: 999px; transition: width .25s ease; }
+    .fill-h5 { background: var(--h5); }
+    .fill-today { background: var(--today); }
+    .fill-week { background: var(--week); }
+    .hint { margin: 5px 0 0; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .hint.error { color: var(--error); }
   </style>
 </head>
 <body>
   <header>
-    <span id="title">Token 用量</span>
+    <span id="title">ONE-WAY 用量</span>
     <span id="updatedAt">—</span>
   </header>
   <div id="metrics">
-    <div class="metric"><span class="label">近 5 小时</span><span id="metricH5" class="value">—</span></div>
-    <div class="metric"><span class="label">今日</span><span id="metricToday" class="value">—</span></div>
-    <div class="metric"><span class="label">本周</span><span id="metricWeek" class="value">—</span></div>
+    <div class="metric">
+      <div class="line">
+        <span class="dot dot-h5" aria-hidden="true"></span><span class="label">近 5 小时</span>
+        <span id="metricH5" class="value">—</span><span id="pctH5" class="pct"></span>
+      </div>
+      <div class="track" aria-hidden="true"><span id="barH5" class="fill fill-h5"></span></div>
+    </div>
+    <div class="metric">
+      <div class="line">
+        <span class="dot dot-today" aria-hidden="true"></span><span class="label">今日</span>
+        <span id="metricToday" class="value">—</span><span id="pctToday" class="pct"></span>
+      </div>
+      <div class="track" aria-hidden="true"><span id="barToday" class="fill fill-today"></span></div>
+    </div>
+    <div class="metric">
+      <div class="line">
+        <span class="dot dot-week" aria-hidden="true"></span><span class="label">本周</span>
+        <span id="metricWeek" class="value">—</span><span id="pctWeek" class="pct"></span>
+      </div>
+      <div class="track" aria-hidden="true"><span id="barWeek" class="fill fill-week"></span></div>
+    </div>
   </div>
   <p id="hint" class="hint" hidden></p>
   <p id="apiMissing" class="hint error" hidden>桌面壳 API 未加载</p>
@@ -63,9 +95,9 @@
     const api = window.__DSH_USAGE_POPOVER__
     const $ = (id) => document.getElementById(id)
     const METRICS = [
-      { key: 'h5', id: 'metricH5' },
-      { key: 'today', id: 'metricToday' },
-      { key: 'week', id: 'metricWeek' },
+      { key: 'h5', id: 'metricH5', pct: 'pctH5', bar: 'barH5' },
+      { key: 'today', id: 'metricToday', pct: 'pctToday', bar: 'barToday' },
+      { key: 'week', id: 'metricWeek', pct: 'pctWeek', bar: 'barWeek' },
     ]
     const LOGIN_HINT = '未登录 · 点击打开用量面板'
 
@@ -95,10 +127,29 @@
       hint.classList.toggle('error', Boolean(bad))
     }
 
+    /**
+     * Fill one metric row.
+     *
+     * The bar and the percentage both use the week as 100% — the same reference the usage window
+     * prints under the cards. No week number (not logged in, a plan without a weekly quota) means no
+     * invented ratio: the bar stays empty and the percentage is blank.
+     */
+    function setMetric(metric, tokens, week) {
+      const raw = tokens[metric.key]
+      const value = Number(raw)
+      $(metric.id).textContent = fmtTokens(raw)
+      const share = week > 0 && Number.isFinite(value) && value >= 0
+        ? Math.min(100, Math.max(0, (value / week) * 100))
+        : null
+      $(metric.pct).textContent = share === null ? '' : Math.round(share) + '%'
+      $(metric.bar).style.width = share === null ? '0%' : share.toFixed(1) + '%'
+    }
+
     function render(state) {
       if (!state) return
       const tokens = state.tokens || {}
-      for (const metric of METRICS) $(metric.id).textContent = fmtTokens(tokens[metric.key])
+      const week = Number(tokens.week)
+      for (const metric of METRICS) setMetric(metric, tokens, Number.isFinite(week) ? week : 0)
       $('updatedAt').textContent = state.fetchedAt === undefined || state.fetchedAt === null
         ? '—'
         : '更新于 ' + fmtTime(state.fetchedAt)

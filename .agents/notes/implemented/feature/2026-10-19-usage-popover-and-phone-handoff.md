@@ -38,8 +38,13 @@ topbar「立即刷新」旁新增「设置」按钮切换它并滚到可见（ar
 
 ### 3. 用量按钮的 hover 卡片 = 独立的小窗口，不是拉长标题栏
 
-新增 `UsagePopoverWindow`（300×150、frameless、`focusable:false`、`skipTaskbar`、
+新增 `UsagePopoverWindow`（240×150、frameless、`focusable:false`、`skipTaskbar`、
 `setAlwaysOnTop('pop-up-menu')`、`setIgnoreMouseEvents(true, {forward:true})`、`showInactive`）：
+
+- 卡片是三条「彩点 + 名称 + 数值 + 百分比 + 细进度条」：进度与百分比都以**本周**为 100%，和用量窗口
+  卡片下的占比说明同一参考；没有周用量（未登录/无周配额）时不编比例，条为空、百分比留白。
+- 宽度从最初的 300 收到 240：300 时名称与数值之间是一大片空白，看起来像面板而不是"一眼"；进度条
+  本身也补上了原来横向的空。颜色、单位（亿/M/万/K）与用量窗口保持一致。
 
 - 标题栏 hover 时把按钮的视口矩形通过 `titlebar → main` 的 IPC 发出去；mouseleave 延迟 180 ms 收起；
   点击按钮先收起卡片、再走原来的 `popupShellMenu('usage')`。
@@ -93,8 +98,9 @@ topbar「立即刷新」旁新增「设置」按钮切换它并滚到可见（ar
   PNG 魔数 `89504e470d0a1a0a`，key 16 字符（一次扫码即可登录）。
 - 布局/浮窗：页面布局 harness 14/14 PASS —— `main` 是唯一纵向滚动容器（854>567），`.table-wrap`
   computed overflowY 为 `hidden`（显式 `overflow-y: clip`，不再独立纵向滚动、maxHeight none），
-  `#settingsToggle` 在 topbar、`#settingsBox` 在 cards 之前；popover 三指标 + `default-src 'none'`
-  + `__DSH_USAGE_POPOVER__`；pocket 文案含「扫码打开 Pocket App 会自动填入地址和密码」。
+  `#settingsToggle` 在 topbar、`#settingsBox` 在 cards 之前；卡片 240×150，dev 壳冒烟里
+  `usagePopover.loaded/bridge=true`，`metricH5/Today/Week`、`pctH5/Today/Week`、`barH5/Today/Week`
+  九个元素全部存在且 `hidden=true`（0.4.8 改版后复测）。
 - dev 壳冒烟：11/11 PASS —— `usagePopover{loaded:true,bridge:true,selectors×3:true,hidden:true}`；
   app/plugins/pocket/usage 四菜单 opened；usageWindow/mcpWindow loaded+bridge；pocketWindow loaded；
   真实开启局域网网关（`http://10.1.6.35:47904/`）且设置持久化；无插件 import 失败。
@@ -110,6 +116,8 @@ topbar「立即刷新」旁新增「设置」按钮切换它并滚到可见（ar
 
 ## Consequences
 
+- 0.4.8 按用户反馈把卡片从 300 收到 240 并加上以本周为参考的进度条/百分比（只动页面与窗口尺寸常量，
+  桥与数据形状不变）；这版的小改动仍沿用本笔记，不另立新篇。
 - Tunnel Token 会在用户主动关闭公网访问后继续留在 `pocket.json`（0600）——这是"不要每次重填"的代价；
   目前没有显式清除 token 的 UI，`setTunnelToken('')` 表示"不修改"。
 - hover 卡片多了一个 BrowserWindow，但它不可聚焦、不接收鼠标、不进任务栏；主窗口拖动/最小化即收起。
