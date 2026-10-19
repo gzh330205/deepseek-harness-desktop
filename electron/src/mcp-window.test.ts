@@ -15,14 +15,22 @@ import { registerHooks } from 'node:module'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import type { McpServerInput } from './dsh-config.ts'
+import { IPC } from './constants.ts'
+import type { DshConfigStore, McpServer, McpServerInput } from './dsh-config.ts'
+import type { McpProbeResult } from './mcp-probe.ts'
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier !== 'electron') return nextResolve(specifier, context)
     return {
+      // A real-enough electron surface for `McpWindow.install()`: `ipcMain.handle` records the
+      // handlers so the tests can invoke them exactly as the renderer would.
       url: 'data:text/javascript,' + encodeURIComponent(
-        'export class BrowserWindow {}\nexport const dialog = {}\nexport const ipcMain = {}\n',
+        'const ipcMain = { handlers: new Map(), handle(channel, handler) { this.handlers.set(channel, handler) } }\n'
+        + 'globalThis.__mcpIpcMain = ipcMain\n'
+        + 'export class BrowserWindow { static fromWebContents() { return null } }\n'
+        + 'export const dialog = {}\n'
+        + 'export { ipcMain }\n',
       ),
       shortCircuit: true,
     }
@@ -30,7 +38,7 @@ registerHooks({
 })
 
 // Imported after the hook: resolving `electron` inside the module would fail under plain Node.
-const { resolveNodeExecutable, resolveStdioCommand } = await import('./mcp-window.ts')
+const { McpWindow, resolveNodeExecutable, resolveStdioCommand } = await import('./mcp-window.ts')
 
 const BUNDLED_BIN = join('C:', 'app', 'resources', 'runtime', 'dsh', 'bin')
 const BUNDLED_NODE = join(BUNDLED_BIN, 'node.exe')
@@ -125,4 +133,203 @@ test('resolveStdioCommand never rewrites a real command or a non-stdio transport
   const untouched = resolveStdioCommand(http, BUNDLED_NODE)
   assert.equal(untouched.command, undefined)
   assert.equal(untouched.url, 'https://example.test/mcp')
+})
+
+/* ------------------------------------------------------------------ */
+/* Window handlers: probe cache, dedupe and invalidation               */
+/* ------------------------------------------------------------------ */
+
+interface IpcMainStub {
+  readonly handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown>
+}
+
+const ipcMainStub = (globalThis as unknown as { readonly __mcpIpcMain: IpcMainStub }).__mcpIpcMain
+/** The URL the guard sees for a real MCP window. */
+const MCP_EVENT = { senderFrame: { url: 'file:///D:/app/dist/mcp/index.html' } }
+
+interface Harness {
+  readonly servers: McpServer[]
+  readonly saved: McpServerInput[]
+  call(channel: string, ...args: unknown[]): Promise<unknown>
+}
+
+function mcpServer(id: string, overrides: Partial<McpServer> = {}): McpServer {
+  return {
+    id,
+    serverName: `server-${id}`,
+    transport: 'stdio',
+    command: 'node',
+    enabled: true,
+    failOnStartupError: false,
+    ...overrides,
+  }
+}
+
+/** A stdio row with no command at all, which is what `exactOptionalPropertyTypes` forbids in overrides. */
+function mcpServerWithoutCommand(id: string): McpServer {
+  return { id, serverName: `server-${id}`, transport: 'stdio', enabled: true, failOnStartupError: false }
+}
+
+/**
+ * Install one window over an in-memory store. `servers` is the mutable state the fake store lists,
+ * so a test can re-add a row and prove its old verdict is gone.
+ */
+function createHarness(
+  servers: McpServer[],
+  probe?: (server: McpServer) => Promise<McpProbeResult>,
+  nodeExecutable?: string,
+): Harness {
+  const state = [...servers]
+  const saved: McpServerInput[] = []
+  const store = {
+    patchPath: 'C:/home/profiles/dsh-desktop/cordis.patch.yml',
+    skillsRoot: 'C:/home/skills',
+    listMcpServers: () => state,
+    saveMcpServer: (input: McpServerInput) => { saved.push(input); return { ok: true } },
+    removeMcpServer: (id: string) => {
+      const index = state.findIndex((server) => server.id === id)
+      if (index >= 0) state.splice(index, 1)
+      return { ok: true }
+    },
+    setMcpEnabled: (id: string, enabled: boolean) => {
+      const index = state.findIndex((server) => server.id === id)
+      if (index >= 0) state[index] = { ...(state[index] as McpServer), enabled }
+      return { ok: true }
+    },
+    listSkills: () => [],
+    addSkillLink: () => ({ ok: true }),
+    removeSkillLink: () => ({ ok: true }),
+    migrateLegacy: () => ({ ok: true, servers: 0, skills: 0, alreadyDone: true, repaired: 0 }),
+    readLegacyUsageConfig: () => undefined,
+    removeRows: () => ({ ok: true, removed: 0 }),
+  } as unknown as DshConfigStore
+  const window = new McpWindow({
+    appRoot: 'C:/app',
+    store,
+    isShellDocument: () => true,
+    restart: () => {},
+    ...(nodeExecutable === undefined ? {} : { nodeExecutable }),
+    ...(probe === undefined ? {} : { probe }),
+  })
+  window.install()
+  const call = async (channel: string, ...args: unknown[]): Promise<unknown> => {
+    const handler = ipcMainStub.handlers.get(channel)
+    assert.ok(handler !== undefined, `未注册的 IPC：${channel}`)
+    return await handler(MCP_EVENT, ...args)
+  }
+  return { servers: state, saved, call }
+}
+
+function probeOk(toolCount = 3): McpProbeResult {
+  return {
+    ok: true,
+    transport: 'stdio',
+    toolCount,
+    toolNames: ['echo', 'ping', 'third'].slice(0, toolCount),
+    durationMs: 12,
+    checkedAt: 1_700_000_000_000,
+  }
+}
+
+interface Listed {
+  readonly servers: Array<McpServer & { readonly probe?: McpProbeResult }>
+}
+
+test('mcpList attaches the cached verdict and leaves unchecked servers without a probe field', async () => {
+  const harness = createHarness(
+    [mcpServer('a'), mcpServer('b', { transport: 'streamable-http', url: 'https://b.test/mcp' })],
+    async () => probeOk(),
+  )
+  const checked = await harness.call(IPC.mcpCheck, 'a') as McpProbeResult
+  assert.equal(checked.ok, true)
+
+  const listed = await harness.call(IPC.mcpList) as Listed
+  assert.equal(listed.servers[0]?.probe?.toolCount, 3)
+  assert.equal(Object.hasOwn(listed.servers[0] ?? {}, 'probe'), true)
+  assert.equal(Object.hasOwn(listed.servers[1] ?? {}, 'probe'), false)
+})
+
+test('concurrent checks for one id share a single probe run', async () => {
+  let release: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  let calls = 0
+  const harness = createHarness([mcpServer('a')], async () => {
+    calls += 1
+    await gate
+    return probeOk(2)
+  })
+  const first = harness.call(IPC.mcpCheck, 'a')
+  const second = harness.call(IPC.mcpCheck, 'a')
+  release?.()
+  const [a, b] = await Promise.all([first, second])
+  assert.equal(calls, 1, '双击只能触发一次探活')
+  assert.deepEqual(a, b)
+})
+
+test('saving an existing server clears its cached verdict', async () => {
+  const harness = createHarness([mcpServer('a')], async () => probeOk(), BUNDLED_NODE)
+  await harness.call(IPC.mcpCheck, 'a')
+  const saved = await harness.call(IPC.mcpSaveServer, {
+    id: 'a',
+    serverName: 'renamed',
+    transport: 'stdio',
+    command: 'node',
+  }) as { ok: boolean }
+  assert.equal(saved.ok, true)
+  // The write path still normalizes a bare `node` to the detected executable.
+  assert.equal(harness.saved[0]?.command, BUNDLED_NODE)
+  const listed = await harness.call(IPC.mcpList) as Listed
+  assert.equal(Object.hasOwn(listed.servers[0] ?? {}, 'probe'), false)
+})
+
+test('removing a server clears its cached verdict', async () => {
+  const harness = createHarness([mcpServer('a'), mcpServer('b')], async () => probeOk())
+  await harness.call(IPC.mcpCheck, 'a')
+  await harness.call(IPC.mcpRemoveServer, 'a')
+  // A later row reusing the id must not inherit the deleted server's verdict.
+  harness.servers.push(mcpServer('a', { serverName: 'recreated' }))
+  const listed = await harness.call(IPC.mcpList) as Listed
+  const recreated = listed.servers.find((server) => server.id === 'a')
+  assert.notEqual(recreated, undefined)
+  assert.equal(Object.hasOwn(recreated ?? {}, 'probe'), false)
+})
+
+test('disabling a server keeps its cached verdict, and the row stays checkable', async () => {
+  const harness = createHarness([mcpServer('a')], async () => probeOk())
+  await harness.call(IPC.mcpCheck, 'a')
+  await harness.call(IPC.mcpSetEnabled, 'a', false)
+  const listed = await harness.call(IPC.mcpList) as Listed
+  assert.equal(listed.servers[0]?.enabled, false)
+  assert.equal(listed.servers[0]?.probe?.ok, true)
+})
+
+test('checking an unknown or malformed id reports a readable error', async () => {
+  const harness = createHarness([mcpServer('a')])
+  assert.deepEqual(await harness.call(IPC.mcpCheck, 'missing'), { ok: false, error: '找不到这个 MCP 服务' })
+  assert.deepEqual(await harness.call(IPC.mcpCheck, 42), { ok: false, error: '找不到这个 MCP 服务' })
+})
+
+test('a check probes the detected Node without rewriting the stored command', async () => {
+  const probed: McpServer[] = []
+  const harness = createHarness(
+    [mcpServer('bare', { command: 'node' }), mcpServerWithoutCommand('empty')],
+    async (server) => {
+      probed.push(server)
+      return probeOk(1)
+    },
+    BUNDLED_NODE,
+  )
+  await harness.call(IPC.mcpCheck, 'bare')
+  await harness.call(IPC.mcpCheck, 'empty')
+  assert.deepEqual(probed.map((server) => server.command), [BUNDLED_NODE, BUNDLED_NODE])
+  assert.equal(harness.servers[0]?.command, 'node', '探活不能改磁盘上的配置')
+  assert.equal(harness.servers[1]?.command, undefined)
+})
+
+test('a probe that throws becomes a failed result instead of a rejected IPC call', async () => {
+  const harness = createHarness([mcpServer('a')], async () => { throw new Error('boom') })
+  const result = await harness.call(IPC.mcpCheck, 'a') as McpProbeResult
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'boom')
+  assert.equal(result.transport, 'stdio')
 })

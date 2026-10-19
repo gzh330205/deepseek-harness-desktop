@@ -339,6 +339,8 @@ export const IPC = {
   mcpNode: 'shell:mcp-node',
   mcpRemoveServer: 'shell:mcp-remove-server',
   mcpSetEnabled: 'shell:mcp-set-enabled',
+  /** MCP 窗口 → main: connect to one configured server and list its tools (real availability check). */
+  mcpCheck: 'shell:mcp-check',
   mcpSkills: 'shell:mcp-skills',
   mcpAddSkill: 'shell:mcp-add-skill',
   mcpRemoveSkill: 'shell:mcp-remove-skill',

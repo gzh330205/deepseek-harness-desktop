@@ -147,6 +147,8 @@ if (isMcpDocument()) {
     node: () => ipcRenderer.invoke(IPC.mcpNode) as Promise<unknown>,
     removeServer: (id: unknown) => ipcRenderer.invoke(IPC.mcpRemoveServer, id) as Promise<unknown>,
     setEnabled: (id: unknown, enabled: unknown) => ipcRenderer.invoke(IPC.mcpSetEnabled, id, enabled) as Promise<unknown>,
+    /** Real availability check for one server: connect, list tools, return a plain result object. */
+    check: (id: unknown) => ipcRenderer.invoke(IPC.mcpCheck, id) as Promise<unknown>,
     skills: () => ipcRenderer.invoke(IPC.mcpSkills) as Promise<unknown>,
     addSkill: () => ipcRenderer.invoke(IPC.mcpAddSkill) as Promise<unknown>,
     removeSkill: (name: unknown) => ipcRenderer.invoke(IPC.mcpRemoveSkill, name) as Promise<unknown>,

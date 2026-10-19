@@ -33,7 +33,7 @@ test('every element the script looks up exists in the markup', () => {
 
 test('the bridge methods match the preload contract exactly', () => {
   const used = new Set([...script.matchAll(/api\.([A-Za-z]+)\(/gu)].map((match) => match[1]))
-  const expected = ['addSkill', 'close', 'list', 'node', 'removeServer', 'removeSkill', 'restart', 'saveServer', 'setEnabled', 'skills']
+  const expected = ['addSkill', 'check', 'close', 'list', 'node', 'removeServer', 'removeSkill', 'restart', 'saveServer', 'setEnabled', 'skills']
   assert.deepEqual([...used].sort(), expected)
   assert.match(script, /window\.__DSH_MCP__/u)
   assert.doesNotMatch(script, /__DSH_SETTINGS__|__DSH_USAGE__|__DSH_MARKET__/u)
@@ -94,6 +94,46 @@ test('stdio servers are prefilled from the Node the shell detected', () => {
   assert.match(script, /\$\('detectNode'\)\.addEventListener\('click', \(\) => \{ void detectNode\(\) \}\)/u)
   assert.match(script, /async function detectNode\(\)/u)
   assert.match(script, /\$\('serverCommand'\)\.value = nodePath/u)
+})
+
+test('each server card shows availability, a check button and the failure reason', () => {
+  assert.match(markup, /id="checkAll"/u)
+  // The four badge states the requirement names.
+  for (const text of ['未检查', '检查中…', '可用 · ', '个工具', '不可用']) {
+    assert.match(script, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'), `缺少状态文案 ${text}`)
+  }
+  assert.match(script, /function probeBadge\(server\)/u)
+  assert.match(script, /result\.ok === true/u)
+  // One line in the card, full error in the title; the displayed text has its own truncation constant.
+  assert.match(script, /const PROBE_ERROR_LINE_LIMIT = 240/u)
+  assert.match(script, /function truncateProbeError\(value\)/u)
+  assert.match(script, /errorLine\.title = String\(server\.probe\.error\)/u)
+  assert.match(script, /truncateProbeError\(server\.probe\.error\)/u)
+  // Last-check time, and a per-card 检查 button that disables while running.
+  assert.match(script, /function probeTimeText\(result\)/u)
+  assert.match(script, /' 检查'/u)
+  assert.match(script, /const check = el\('button', 'small', probeState\.checking\.has\(server\.id\) \? '检查中…' : '检查'\)/u)
+  // Disabled / legacy rows are checkable too: the button is never gated on `server.enabled`.
+  assert.doesNotMatch(script, /check\.disabled = [^\n]*server\.enabled/u)
+})
+
+test('the check bridge is real: one card check, all cards serial, no bridge means a clear message', () => {
+  assert.match(script, /api\.check\(id\)/u)
+  assert.match(script, /typeof api\.check !== 'function'/u)
+  assert.match(script, /async function checkOne\(id, options\)/u)
+  assert.match(script, /async function checkAll\(\)/u)
+  assert.match(script, /\$\('checkAll'\)\.addEventListener\('click', \(\) => \{ void checkAll\(\) \}\)/u)
+  // Serial: one awaited check per id in list order (not Promise.all).
+  assert.match(script, /for \(const id of targets\) \{\s*results\.push\(await checkOne\(id\)\)/u)
+  assert.match(script, /'检查中 ' \+ probeState\.batchDone \+ '\/' \+ probeState\.batchTotal \+ '…'/u)
+  assert.match(script, /检查完成：/u)
+  assert.match(script, /button\.disabled = true/u)
+  assert.match(script, /servers\.length === 0 \|\| !api \|\| typeof api\.check !== 'function'/u)
+  assert.match(script, /当前桌面壳不支持检查 MCP 服务/u)
+  // The list itself answers "is it usable": enabled servers are checked once on first render.
+  assert.match(script, /async function autoCheckEnabled\(\)/u)
+  assert.match(script, /void autoCheckEnabled\(\)/u)
+  assert.match(script, /server\.enabled !== false && !server\.probe/u)
 })
 
 test('the MCP form switches between stdio and HTTP fields', () => {

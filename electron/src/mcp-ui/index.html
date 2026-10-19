@@ -32,6 +32,8 @@
   button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
   button.danger { color: var(--danger); border-color: #f0c8c5; }
   button.small { padding: 3px 9px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  button:disabled:hover { border-color: var(--line); }
   ::placeholder { color: #9aa1ab; }
   /* No scrollbar of its own: cards and the form scroll once, together with `main`. */
   .scroll { display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
@@ -44,6 +46,15 @@
   .tag { display: inline-block; font-size: 10.5px; border-radius: 999px; padding: 1px 8px; background: var(--panel); color: var(--muted); border: 1px solid var(--line); }
   .tag.ok { color: var(--ok); border-color: #bfe3c8; background: #effaf1; }
   .tag.legacy { color: #9a6700; border-color: #ecd9a8; background: #fff8e6; }
+  /* Availability status: one badge line plus one error line; the full error lives in the title. */
+  .card .probe { margin-top: 7px; display: flex; flex-direction: column; gap: 3px; }
+  .probe-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge { display: inline-block; font-size: 10.5px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); }
+  .badge.ok { color: var(--ok); border-color: #bfe3c8; background: #effaf1; }
+  .badge.error { color: var(--danger); border-color: #f0c8c5; background: #fff3f2; }
+  .badge.busy { color: var(--brand); border-color: #c9d8ff; background: #eef3ff; }
+  .probe-time { color: var(--muted); font-size: 11px; }
+  .probe-error { color: var(--danger); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
   .empty { color: var(--muted); text-align: center; padding: 28px 0; }
   .form { border: 1px solid var(--line); border-radius: 9px; padding: 12px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
@@ -82,6 +93,7 @@
       <div class="toolbar">
         <button type="button" class="primary" id="addServer">新增 MCP</button>
         <button type="button" id="refreshMcp">刷新</button>
+        <button type="button" id="checkAll" disabled>检查全部</button>
         <span class="path" id="patchPath"></span>
       </div>
       <div class="form" id="serverForm" hidden>
@@ -154,6 +166,13 @@
     let nodePath = ''
     let nodeSource = 'missing'
     let nodeLoaded = false
+    // Availability checks live on the server rows (`server.probe`); the sets here are transient UI
+    // state — which ids are running right now, and the "check all" batch progress. `autoCheckStarted`
+    // makes the first render check enabled servers once in the background: the requirement is that
+    // the list *shows* whether each server is usable, not that the user has to find the button.
+    const PROBE_ERROR_LINE_LIMIT = 240
+    const probeState = { checking: new Set(), batchRunning: false, batchDone: 0, batchTotal: 0 }
+    let autoCheckStarted = false
 
     function setStatus(text, kind) {
       const bar = $('statusBar')
@@ -270,11 +289,53 @@
       return server.command + (args ? ' ' + args : '')
     }
 
+    /** One line in the card; the parent node keeps the full text in `title`. */
+    function truncateProbeError(value) {
+      const text = String(value || '')
+      return text.length <= PROBE_ERROR_LINE_LIMIT ? text : text.slice(0, PROBE_ERROR_LINE_LIMIT) + '…'
+    }
+
+    function probeTimeText(result) {
+      const at = result ? Number(result.checkedAt) : Number.NaN
+      if (!Number.isFinite(at) || at <= 0) return ''
+      const date = new Date(at)
+      return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0') + ' 检查'
+    }
+
+    function probeBadge(server) {
+      if (probeState.checking.has(server.id)) return el('span', 'badge busy', '检查中…')
+      const result = server.probe
+      if (!result) return el('span', 'badge', '未检查')
+      if (result.ok === true) {
+        const count = Number(result.toolCount)
+        return el('span', 'badge ok', '可用 · ' + (Number.isFinite(count) ? count : 0) + ' 个工具')
+      }
+      return el('span', 'badge error', '不可用')
+    }
+
+    function syncCheckAllButton() {
+      const button = $('checkAll')
+      if (probeState.batchRunning) {
+        button.textContent = '检查中 ' + probeState.batchDone + '/' + probeState.batchTotal + '…'
+        button.disabled = true
+        return
+      }
+      button.textContent = '检查全部'
+      button.disabled = servers.length === 0 || !api || typeof api.check !== 'function'
+    }
+
+    function applyProbeResult(id, result) {
+      const index = servers.findIndex((server) => server.id === id)
+      if (index < 0) return
+      servers[index] = { ...servers[index], probe: result }
+    }
+
     function renderServers() {
       const list = $('serverList')
       list.replaceChildren()
       if (servers.length === 0) {
         list.append(el('div', 'empty', '还没有 MCP 服务。点左上角「新增 MCP」添加。'))
+        syncCheckAllButton()
         return
       }
       for (const server of servers) {
@@ -289,18 +350,37 @@
         if (server.transport === 'stdio' && server.env) {
           grow.append(el('div', 'desc', '环境变量：' + Object.keys(server.env).join('、')))
         }
+        // Availability: badge + last-check time, and the failure reason on its own line. The title
+        // carries the full (shell-truncated) error because the line is ellipsized.
+        const probe = el('div', 'probe')
+        const probeLine = el('div', 'probe-line')
+        probeLine.append(probeBadge(server))
+        const checkedText = probeTimeText(server.probe)
+        if (checkedText !== '') probeLine.append(el('span', 'probe-time', checkedText))
+        probe.append(probeLine)
+        if (server.probe && server.probe.ok !== true && server.probe.error) {
+          const errorLine = el('div', 'probe-error', truncateProbeError(server.probe.error))
+          errorLine.title = String(server.probe.error)
+          probe.append(errorLine)
+        }
+        grow.append(probe)
         card.append(grow)
         const actions = el('div', 'actions')
+        // Disabled/legacy rows stay checkable: their configuration may still connect.
+        const check = el('button', 'small', probeState.checking.has(server.id) ? '检查中…' : '检查')
+        check.disabled = probeState.checking.has(server.id) || probeState.batchRunning || !api || typeof api.check !== 'function'
+        check.addEventListener('click', () => { void checkOne(server.id) })
         const toggle = el('button', 'small', server.enabled ? '停用' : '启用')
         toggle.addEventListener('click', () => { void setEnabled(server.id, !server.enabled) })
         const edit = el('button', 'small', '编辑')
         edit.addEventListener('click', () => { showForm(server) })
         const remove = el('button', 'small danger', '删除')
         remove.addEventListener('click', () => { void removeServer(server) })
-        actions.append(toggle, edit, remove)
+        actions.append(check, toggle, edit, remove)
         card.append(actions)
         list.append(card)
       }
+      syncCheckAllButton()
     }
 
     function showForm(server) {
@@ -344,6 +424,9 @@
         $('patchPath').textContent = (state && state.patchPath) || ''
         $('patchPath').title = (state && state.patchPath) || ''
         renderServers()
+        // The list is the answer to "is this MCP usable?", not a blank until someone clicks. Enabled
+        // servers are checked once in the background; a cached result makes reopening instant.
+        void autoCheckEnabled()
       } catch (error) {
         setStatus('读取 MCP 配置失败：' + String(error), 'error')
       }
@@ -414,6 +497,104 @@
         setStatus('已删除。重启 DSH 服务后生效。', 'ok')
       } catch (error) {
         setStatus('删除失败：' + String(error), 'error')
+      }
+    }
+
+    /* ---------- availability: one check, or every server in list order ---------- */
+
+    async function checkOne(id, options) {
+      const silent = Boolean(options && options.silent)
+      if (probeState.checking.has(id)) return null
+      if (!api || typeof api.check !== 'function') {
+        if (!silent) setStatus('当前桌面壳不支持检查 MCP 服务，请升级后重试。', 'error')
+        return null
+      }
+      const server = servers.find((item) => item.id === id)
+      if (!server) return null
+      probeState.checking.add(id)
+      renderServers()
+      let result = null
+      try {
+        result = await api.check(id)
+        if (!result || typeof result !== 'object') {
+          result = { ok: false, transport: server.transport, error: '检查结果无效。', durationMs: 0, checkedAt: Date.now() }
+        }
+        applyProbeResult(id, result)
+        const label = server.serverName || id
+        if (!silent) {
+          if (result.ok === true) {
+            const count = Number(result.toolCount)
+            setStatus('「' + label + '」可用：' + (Number.isFinite(count) ? count : 0) + ' 个工具。', 'ok')
+          } else {
+            setStatus('「' + label + '」不可用：' + (result.error || '未知原因'), 'error')
+          }
+        }
+      } catch (error) {
+        result = { ok: false, transport: server.transport, error: String(error), durationMs: 0, checkedAt: Date.now() }
+        applyProbeResult(id, result)
+        if (!silent) setStatus('检查「' + (server.serverName || id) + '」失败：' + String(error), 'error')
+      } finally {
+        probeState.checking.delete(id)
+        renderServers()
+      }
+      return result
+    }
+
+    /**
+     * First render: check every *enabled* server that has no result yet, one at a time.
+     *
+     * Disabled servers are left for the explicit button: a user who turned one off does not expect the
+     * shell to keep spawning it just to colour a badge. Runs once per window session; results live in
+     * the main process, so closing/reopening the window does not spawn everything again.
+     */
+    async function autoCheckEnabled() {
+      if (autoCheckStarted) return
+      autoCheckStarted = true
+      if (!api || typeof api.check !== 'function') return
+      const targets = servers
+        .filter((server) => server.enabled !== false && !server.probe)
+        .map((server) => server.id)
+      if (targets.length === 0) return
+      const results = []
+      for (const id of targets) {
+        if (!servers.some((server) => server.id === id)) continue
+        results.push(await checkOne(id, { silent: true }))
+      }
+      const failed = results.filter((result) => !result || result.ok !== true).length
+      setStatus(
+        '已自动检查 ' + targets.length + ' 个 MCP 服务' + (failed === 0 ? '，全部可用。' : '，' + failed + ' 个不可用。'),
+        failed === 0 ? 'ok' : 'error',
+      )
+    }
+
+    /** Run one check at a time so five stdio servers do not spawn five processes at once. */
+    async function checkAll() {
+      if (probeState.batchRunning) return
+      if (!api || typeof api.check !== 'function') {
+        setStatus('当前桌面壳不支持检查 MCP 服务，请升级后重试。', 'error')
+        return
+      }
+      if (servers.length === 0) return
+      const targets = servers.map((server) => server.id)
+      probeState.batchRunning = true
+      probeState.batchDone = 0
+      probeState.batchTotal = targets.length
+      renderServers()
+      const results = []
+      try {
+        for (const id of targets) {
+          results.push(await checkOne(id))
+          probeState.batchDone += 1
+          syncCheckAllButton()
+        }
+        const failed = results.filter((result) => !result || result.ok !== true).length
+        setStatus(
+          '检查完成：' + targets.length + ' 个服务' + (failed === 0 ? '，全部可用。' : '，' + failed + ' 个不可用。'),
+          failed === 0 ? 'ok' : 'error',
+        )
+      } finally {
+        probeState.batchRunning = false
+        renderServers()
       }
     }
 
@@ -509,6 +690,7 @@
       $('tabSkills').addEventListener('click', () => { switchTab('skills') })
       $('addServer').addEventListener('click', () => { showForm(null) })
       $('refreshMcp').addEventListener('click', () => { void loadServers() })
+      $('checkAll').addEventListener('click', () => { void checkAll() })
       $('serverTransport').addEventListener('change', syncTransportFields)
       $('detectNode').addEventListener('click', () => { void detectNode() })
       $('cancelServer').addEventListener('click', hideForm)

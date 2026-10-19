@@ -12,7 +12,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { IPC, SHELL_PAGE_DOCUMENTS } from './constants.ts'
-import type { DshConfigStore, McpServerInput, McpTransport } from './dsh-config.ts'
+import type { DshConfigStore, McpServer, McpServerInput, McpTransport } from './dsh-config.ts'
+import { probeMcpServer, type McpProbeResult } from './mcp-probe.ts'
 
 /** Where the Node executable offered to MCP stdio servers came from. */
 export type McpNodeSource = 'bundled' | 'environment' | 'missing'
@@ -38,6 +39,11 @@ export interface McpWindowOptions {
   readonly nodeExecutable?: string
   /** Provenance of {@link nodeExecutable}, used only by the page's hint. */
   readonly nodeSource?: McpNodeSource
+  /**
+   * Real availability check. Defaults to {@link probeMcpServer}; tests inject a fake so the window's
+   * cache/dedupe rules can be exercised without spawning anything.
+   */
+  readonly probe?: (server: McpServer) => Promise<McpProbeResult>
 }
 
 const MCP_PAGE = '/mcp/index.html'
@@ -134,9 +140,58 @@ export class McpWindow {
    * module (the electron import is stubbed by the test's module hook).
    */
   private readonly options: McpWindowOptions
+  /** Last check per server id, and the check currently in flight (a double click shares one run). */
+  private readonly probeResults = new Map<string, McpProbeResult>()
+  private readonly probeInFlight = new Map<string, Promise<McpProbeResult>>()
+  /** Bumped when a save/remove invalidates an id, so a check that resolves later cannot repopulate. */
+  private readonly probeEpoch = new Map<string, number>()
 
   constructor(options: McpWindowOptions) {
     this.options = options
+  }
+
+  private async runProbe(server: McpServer): Promise<McpProbeResult> {
+    const running = this.probeInFlight.get(server.id)
+    if (running !== undefined) return running
+    const epoch = this.probeEpoch.get(server.id) ?? 0
+    const started = (async (): Promise<McpProbeResult> => {
+      let result: McpProbeResult
+      try {
+        result = await (this.options.probe ?? probeMcpServer)(server)
+      } catch (error) {
+        // The probe contract is "never throw"; an injected probe that does still must not break IPC.
+        result = {
+          ok: false,
+          transport: server.transport,
+          error: error instanceof Error ? error.message : String(error),
+          durationMs: 0,
+          checkedAt: Date.now(),
+        }
+      }
+      if ((this.probeEpoch.get(server.id) ?? 0) === epoch) this.probeResults.set(server.id, result)
+      return result
+    })()
+    this.probeInFlight.set(server.id, started)
+    try {
+      return await started
+    } finally {
+      if (this.probeInFlight.get(server.id) === started) this.probeInFlight.delete(server.id)
+    }
+  }
+
+  /** A changed or removed server's old verdict no longer describes it; an in-flight check is orphaned. */
+  private clearProbe(id: string): void {
+    this.probeResults.delete(id)
+    this.probeInFlight.delete(id)
+    this.probeEpoch.set(id, (this.probeEpoch.get(id) ?? 0) + 1)
+  }
+
+  /** The list the page renders: each configured server plus its last check, when there is one. */
+  private serversWithProbe(): Array<McpServer & { readonly probe?: McpProbeResult }> {
+    return this.options.store.listMcpServers().map((server) => {
+      const probe = this.probeResults.get(server.id)
+      return probe === undefined ? server : { ...server, probe }
+    })
   }
 
   private create(): BrowserWindow {
@@ -233,7 +288,7 @@ export class McpWindow {
 
     ipcMain.handle(IPC.mcpList, (event) => {
       guard(event)
-      return { patchPath: store.patchPath, skillsRoot: store.skillsRoot, servers: store.listMcpServers() }
+      return { patchPath: store.patchPath, skillsRoot: store.skillsRoot, servers: this.serversWithProbe() }
     })
     ipcMain.handle(IPC.mcpSaveServer, (event, input: unknown) => {
       guard(event)
@@ -241,15 +296,33 @@ export class McpWindow {
       if ('reason' in parsed) return { ok: false, reason: parsed.reason }
       // Backend fallback for the page's prefill: another caller (or an older page) may still hand us
       // an empty / bare `node` command, and DSH would then spawn whatever PATH resolves.
-      return store.saveMcpServer(resolveStdioCommand(parsed, this.options.nodeExecutable))
+      const saved = store.saveMcpServer(resolveStdioCommand(parsed, this.options.nodeExecutable))
+      // The old verdict described the old configuration. A newly created row has no cached verdict
+      // (the store does not return its generated id), so only updates need clearing.
+      if (saved.ok && parsed.id !== undefined) this.clearProbe(parsed.id)
+      return saved
     })
     ipcMain.handle(IPC.mcpRemoveServer, (event, id: unknown) => {
       guard(event)
-      return typeof id === 'string' ? store.removeMcpServer(id) : { ok: false, reason: '记录 id 无效。' }
+      if (typeof id !== 'string') return { ok: false, reason: '记录 id 无效。' }
+      const removed = store.removeMcpServer(id)
+      if (removed.ok) this.clearProbe(id)
+      return removed
     })
     ipcMain.handle(IPC.mcpSetEnabled, (event, id: unknown, enabled: unknown) => {
       guard(event)
+      // Deliberately does not clear the probe cache: pausing a row does not change whether the server
+      // would connect, and the user can still check a disabled server.
       return typeof id === 'string' ? store.setMcpEnabled(id, enabled === true) : { ok: false, reason: '记录 id 无效。' }
+    })
+    ipcMain.handle(IPC.mcpCheck, async (event, id: unknown) => {
+      guard(event)
+      const server = typeof id === 'string' ? store.listMcpServers().find((entry) => entry.id === id) : undefined
+      if (server === undefined) return { ok: false, error: '找不到这个 MCP 服务' }
+      // Probe-only normalization: an empty / bare `node` command means "the shell's Node", exactly
+      // like the save path, but a check must never rewrite the stored configuration.
+      const target: McpServer = { ...server, ...resolveStdioCommand(server, this.options.nodeExecutable) }
+      return this.runProbe(target)
     })
     ipcMain.handle(IPC.mcpNode, (event) => {
       guard(event)
