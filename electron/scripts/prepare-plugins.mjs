@@ -4,13 +4,18 @@
  * The shell injects these instead of having the user install them from the market, so every start
  * can rely on them being present. Only the **runtime** half is copied:
  *
- * - the plugin's own compiled files (`index.js`, `lib/`, `locale/`), not sources/tests/docs;
+ * - the plugin's own runtime files (`index.js`, `lib/`, `locale/`), plus `src/` because two host
+ *   halves import it at runtime, and not tests/docs/build tooling;
  * - the transitive runtime dependency closure resolved from the plugin's `node_modules/.pnpm`,
  *   flattened into `node_modules/<name>`.
  *
  * The dev dependencies are why copying the source directories as-is would be ~110 MB: jsdom,
  * esbuild, react, typescript are build-time only. The actual closure is schemastery + cosmokit +
  * @standard-schema/spec — a fraction of a megabyte per plugin.
+ *
+ * The copy is validated against the entry point's relative imports before the build continues: a
+ * packaged plugin that cannot be imported mounts, warns `entries did not activate`, and leaves the
+ * user without the panel just as if it had never been injected.
  */
 
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -25,9 +30,15 @@ const source = resolve(process.env.DSH_PLUGINS_SOURCE ?? 'D:\\workspace\\researc
 /** Plugins the shell owns. The ONE-WAY usage window and MCP/Skills are shell windows now. */
 const PACKAGES = ['dsh-git-panel', 'dsh-run-env-manager', 'dsh-workspace-category-manager', 'dsh-sidebar-width']
 
-/** Files that are part of a plugin's runtime surface. Everything else is source/build material. */
+/** Files that are part of a plugin's runtime surface. Everything else is source/build material.
+ *
+ * `src/` is on this list because two shipped plugins import it from their host half at runtime
+ * (`index.js` → `./src/host/routes.js` …): dropping it packaged a plugin whose entry point cannot
+ * even be imported (`ERR_MODULE_NOT_FOUND`), which stayed invisible while the rows were not
+ * mounted at all. It is small (~0.5 MiB for the two). The client half is still bundled by esbuild
+ * into `lib/client.js`, so nothing else under `src/` needs a build step here. */
 const KEEP_FILES = ['package.json', 'index.js', 'cordis.patch.yml']
-const KEEP_DIRECTORIES = ['lib', 'locale', 'skills', 'assets']
+const KEEP_DIRECTORIES = ['lib', 'locale', 'skills', 'assets', 'src']
 
 if (!existsSync(source)) {
   console.error(`[plugins] 找不到插件源码目录：${source}（可用 DSH_PLUGINS_SOURCE 覆盖）`)
@@ -110,6 +121,19 @@ for (const name of PACKAGES) {
   if (!existsSync(join(target, 'index.js'))) {
     console.error(`[plugins] ${name}: 没有 index.js，源码目录不完整`)
     process.exit(1)
+  }
+
+  // Fail the build when the copied runtime surface cannot satisfy the entry point's relative
+  // imports. A missing top-level directory (`src/` is exactly what happened) packaged a plugin that
+  // could not be imported at all — `ERR_MODULE_NOT_FOUND` only appeared in DSH's startup log long
+  // after the installer had shipped, and was masked while the loader rows were not mounted anyway.
+  const entrySource = await readFile(join(target, 'index.js'), 'utf8')
+  for (const match of entrySource.matchAll(/\bfrom\s+['"](\.[^'"]+)['"]/gu)) {
+    const specifier = match[1]
+    if (!existsSync(resolve(target, specifier))) {
+      console.error(`[plugins] ${name}: index.js 引入了 ${specifier}，但复制后的目录里没有它（检查 KEEP_FILES/KEEP_DIRECTORIES）`)
+      process.exit(1)
+    }
   }
 
   // Runtime dependency closure, flattened into the plugin's own node_modules.

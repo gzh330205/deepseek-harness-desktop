@@ -1046,6 +1046,17 @@ const MENU_TEMPLATES: Record<ShellMenuName, () => Electron.MenuItemConstructorOp
 }
 
 /**
+ * Guard for the one IPC channel the title strip uses to ask for a menu.
+ *
+ * Derived from the template table instead of a hand-written union: the old `'app' | 'plugins' |
+ * 'pocket'` check silently ignored `'usage'`, so the 用量 button did nothing at all, and every new
+ * menu would repeat that bug.
+ */
+function isShellMenuName(value: unknown): value is ShellMenuName {
+  return typeof value === 'string' && Object.hasOwn(MENU_TEMPLATES, value)
+}
+
+/**
  * The 手机访问 menu.
  *
  * Status and the two switches live here so the common case needs no window at all: "is the phone door
@@ -1621,10 +1632,11 @@ function desktopProfileName(): string {
 /**
  * Install the plugins that ship inside the app into the user's DSH profile.
  *
- * They used to come from the market as `dsh-plugin-kit`; the rows in the user's patch already carry
- * their configs, so the shell only has to make the package names resolvable (a link in the profile's
- * `node_modules`) and retire the aggregator. Runs every start, is idempotent, and backs up whatever
- * it edits.
+ * They used to come from the market as `dsh-plugin-kit`; the shell now links each package into the
+ * profile's `node_modules` and registers it in `dsh.profile.bundles`, which is what the harness
+ * actually loads (each package brings its own `dsh.bundle.patch`). Runs every start, is idempotent,
+ * and backs up whatever it edits. The module logs each change itself, including a "ready, nothing
+ * changed" line, so a swallowed failure cannot look like a quiet no-op again.
  */
 function installBundledPlugins(): void {
   const pluginsRoot = app.isPackaged ? join(process.resourcesPath, 'plugins') : join(app.getAppPath(), 'resources', 'plugins')
@@ -1639,6 +1651,7 @@ function installBundledPlugins(): void {
     log: pushLog,
   })
   if (!result.ok) pushLog(`随壳插件：注入失败（${result.reason ?? '未知原因'}）`)
+  else if (result.reason !== undefined) pushLog(`随壳插件：${result.reason}`)
 }
 
 function dshConfigStore(): DshConfigStore {
@@ -1663,22 +1676,33 @@ function openMcpWindow(): void {
  */
 function installMcpWindow(): void {
   const store = dshConfigStore()
-  // Before the legacy row is touched, take the ONE-WAY session it kept: the usage window should open
-  // signed in instead of asking for a new QR scan.
-  const legacyUsage = store.readLegacyUsageConfig()
-  if (legacyUsage !== undefined && usageStore !== undefined && usageStore.get().sessionCookie === '') {
-    usageStore.update({
-      ...(legacyUsage.baseUrl === undefined ? {} : { baseUrl: legacyUsage.baseUrl }),
-      ...(legacyUsage.refreshSeconds === undefined ? {} : { refreshSeconds: legacyUsage.refreshSeconds }),
-      ...(legacyUsage.sessionCookie === undefined ? {} : { sessionCookie: legacyUsage.sessionCookie }),
-    })
-    pushLog('用量：已从旧 ONE-WAY 插件导入会话，无需重新扫码')
-  }
-  const migration = store.migrateLegacy()
-  if (!migration.alreadyDone) {
-    pushLog(migration.ok
-      ? `MCP：已从旧插件导入 ${String(migration.servers)} 个服务并移除旧插件行（重启 DSH 后生效）`
-      : `MCP：旧插件迁移失败（${migration.reason ?? '未知原因'}）`)
+  // This runs before `ensureDesktopProfile` seeds the profile on a first run, so the patch may not
+  // exist yet. Reading one that is not there only logged "读取失败", and there is nothing to migrate
+  // anyway: the seeded profile starts clean.
+  if (existsSync(store.patchPath)) {
+    // Before the legacy row is touched, take the ONE-WAY session it kept: the usage window should
+    // open signed in instead of asking for a new QR scan.
+    const legacyUsage = store.readLegacyUsageConfig()
+    if (legacyUsage !== undefined && usageStore !== undefined && usageStore.get().sessionCookie === '') {
+      usageStore.update({
+        ...(legacyUsage.baseUrl === undefined ? {} : { baseUrl: legacyUsage.baseUrl }),
+        ...(legacyUsage.refreshSeconds === undefined ? {} : { refreshSeconds: legacyUsage.refreshSeconds }),
+        ...(legacyUsage.sessionCookie === undefined ? {} : { sessionCookie: legacyUsage.sessionCookie }),
+      })
+      pushLog('用量：已从旧 ONE-WAY 插件导入会话，无需重新扫码')
+    }
+    const migration = store.migrateLegacy()
+    if (!migration.alreadyDone) {
+      pushLog(migration.ok
+        ? `MCP：已从旧插件导入 ${String(migration.servers)} 个服务并移除旧插件行（重启 DSH 后生效）`
+        : `MCP：旧插件迁移失败（${migration.reason ?? '未知原因'}）`)
+    } else if (migration.repaired > 0) {
+      // Nothing to migrate, but the profile still had MCP rows in the old top-level spelling, which
+      // the loader only asserts and never mounts. `migrateLegacy` already fixed them (and logs it
+      // when it ran as part of a migration); say so here too, because a repair on an otherwise clean
+      // profile was previously invisible.
+      pushLog(`MCP：修复了 ${String(migration.repaired)} 条不会挂载的 MCP 行（旧写法，已移入 insert 补丁）`)
+    }
   }
   mcpWindowRef = new McpWindow({
     appRoot: app.getAppPath(),
@@ -1856,7 +1880,9 @@ async function driveSmokeMenu(): Promise<void> {
     writeReport()
     app.exit(2)
   }, 90_000)
-  for (const name of ['app', 'plugins', 'pocket'] as const) {
+  // Every menu in the table, not a hand-written subset: the 用量 menu was missing from the old
+  // `['app', 'plugins', 'pocket']` list, so its dead button could not fail the smoke run.
+  for (const name of Object.keys(MENU_TEMPLATES) as ShellMenuName[]) {
     let labels: readonly string[] = []
     let menu: Electron.Menu | undefined
     const closed = new Promise<boolean>((resolve) => {
@@ -2240,7 +2266,6 @@ async function boot(): Promise<void> {
   installSettingsWindow()
   installUsageWindow()
   installMcpWindow()
-  installBundledPlugins()
 
   // A bundled runtime is the executable half of the product: verify it is the tree that
   // was packaged before spawning anything. A system dsh is used only when the app has no
@@ -2297,6 +2322,13 @@ async function boot(): Promise<void> {
     ? `已创建桌面端 profile：${profileSeed.path}（bundle 列表来自 ${profileSeed.seededFrom}，${String(profileSeed.bundles.length)} 项）`
     : `复用已有桌面端 profile：${profileSeed.path}`)
 
+  // Decide this now, before anything can create `profile/node_modules` for us. `profileNeedsInstall`
+  // answers "are the seeded dependencies installed?" by that directory's absence, and
+  // `installBundledPlugins` (moved below the seed) makes it while linking the shipped plugins. Read
+  // later, a fresh profile would look installed and the one run that installs its bundles would be
+  // skipped, leaving dsh at `skipping profile bundle` forever.
+  const needsProfileInstall = profileSeed !== undefined && (profileNeedsInstall(profileSeed) || repair.missingLinks.length > 0)
+
   // pnpm versions its content store by its own major and rejects a `node_modules` linked from a
   // different one (`ERR_PNPM_UNEXPECTED_STORE`). A bundled-pnpm upgrade across a major therefore
   // leaves every existing profile broken for `dsh plugin …` until it is relinked — reported here and
@@ -2342,6 +2374,14 @@ async function boot(): Promise<void> {
     }
   }
 
+  // The shipped plugins are linked and registered only now, never earlier in the install batch:
+  // `linkPackage` creates `profile/node_modules`, so calling it before `ensureDesktopProfile` would
+  // (a) occupy the path its clone branch renames into (the seed silently degraded to the skeleton),
+  // (b) make `profileNeedsInstall` see node_modules and skip the first-run install entirely, and
+  // (c) lets a pnpm store purge wipe links that had already been made. Still far before the DSH
+  // child process starts, and the seeded `package.json` is what `ensureProfileBundles` edits.
+  installBundledPlugins()
+
   ipcMain.handle(IPC.titlebarState, (event) => {
     if (event.sender !== titleBarView?.webContents) {
       throw new Error('dsh desktop: rejected title bar IPC from an unowned renderer')
@@ -2355,9 +2395,9 @@ async function boot(): Promise<void> {
       throw new Error('dsh desktop: rejected title bar IPC from an unowned renderer')
     }
     // Every menu the strip may open is one the templates table knows. This check used to be a
-    // hardcoded 'app', so adding a menu silently produced a button that did nothing — add new
-    // names here too (and the Record<ShellMenuName, …> type insists the template exists).
-    if (name !== 'app' && name !== 'plugins' && name !== 'pocket') return false
+    // hardcoded list, so adding a menu silently produced a button that did nothing — the 用量 button
+    // shipped dead exactly that way. Derive it from the table instead.
+    if (!isShellMenuName(name)) return false
     const rect = typeof anchor === 'object' && anchor !== null ? anchor as Record<string, unknown> : undefined
     const valid = rect !== undefined
       && typeof rect.x === 'number' && typeof rect.y === 'number' && typeof rect.height === 'number'
@@ -2531,7 +2571,7 @@ async function boot(): Promise<void> {
   // the background so the window opens immediately; a restart applies them.
   // Retried on every start while the dependencies are declared but not installed, so a
   // first attempt that failed (no network, a bad package-manager call) heals itself.
-  if (profileSeed !== undefined && (profileNeedsInstall(profileSeed) || repair.missingLinks.length > 0) && pnpmEntry !== undefined) {
+  if (needsProfileInstall && pnpmEntry !== undefined) {
     const seed = profileSeed
     const additions = repair.missingLinks
     void (async () => {

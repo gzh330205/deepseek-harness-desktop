@@ -7,9 +7,14 @@
  *
  * - the compiled plugins are packed next to the app (`resources/plugins`, see
  *   `scripts/prepare-plugins.mjs`);
- * - this module links each one into the profile's `node_modules`, which is where the loader rows in
- *   the user's patch (`name: dsh-git-panel`, …) resolve package names from. Links, not copies: the
- *   app updates in place and the profile must not keep a stale duplicate;
+ * - this module links each one into the profile's `node_modules`, which is where the loader entries
+ *   resolve package names from, and registers each package in the profile's
+ *   `dsh.profile.bundles` — the list the harness actually loads. Each shipped package carries its
+ *   own `dsh.bundle.patch` (a `- insert:` row), so *registering the package* is the whole injection:
+ *   writing `{ id, name }` rows into the user's patch does not work, because a top-level patch entry
+ *   that carries a `name` is only an assertion that the row already exists (see the vendor loader's
+ *   `applyEntryPatches`) and never inserts one. Links, not copies: the app updates in place and the
+ *   profile must not keep a stale duplicate;
  * - `dsh-plugin-kit` is removed from the profile: its only remaining job was hosting settings tabs,
  *   and the MCP/Skills and ONE-WAY windows now own those features.
  *
@@ -17,7 +22,7 @@
  * runs on every start against a file the user may have hand-edited.
  */
 
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 import type { DshConfigStore } from './dsh-config.ts'
@@ -36,8 +41,8 @@ export interface ProvisionResult {
   readonly unchanged: number
   readonly removedBundles: number
   readonly removedRows: number
-  /** Rows added for a profile that never installed these plugins from the market. */
-  readonly addedRows: number
+  /** Package names appended to the profile's `dsh.profile.bundles` (what actually mounts them). */
+  readonly addedBundles: readonly string[]
 }
 
 export interface ProvisionOptions {
@@ -114,6 +119,36 @@ export interface LinkOutcome {
 }
 
 /**
+ * Remove the link itself, never the directory it points at.
+ *
+ * This is the Electron trap of the day: inside the Electron main process
+ * `rmSync(<junction>, { force: true })` throws `ERR_FS_EISDIR: Path is a directory` instead of
+ * removing the junction (plain Node removes it). The old code caught that error and moved on, so
+ * the following `symlinkSync` failed with `EEXIST`, the outcome said "unchanged", and every shipped
+ * plugin stayed frozen at its stale target with not one log line. `rmSync` with
+ * `{ recursive: true }` is even worse: it follows the junction and deletes the *target's* contents
+ * (verified — it must never touch a link). `unlinkSync` removes the link entry itself (works in
+ * Electron), and `rmdirSync` is the fallback for the same call; if both fail the old link is left
+ * alone and the caller learns about it.
+ *
+ * @returns true when the destination is now free, false when the stale link survives.
+ */
+function unlinkJunction(destination: string, log?: (line: string) => void): boolean {
+  try {
+    unlinkSync(destination)
+    return true
+  } catch {
+    try {
+      rmdirSync(destination)
+      return true
+    } catch (error) {
+      log?.(`随壳插件：无法移除旧链接 ${destination}（${error instanceof Error ? error.message : String(error)}），保留原状`)
+      return false
+    }
+  }
+}
+
+/**
  * Link one shipped package into the profile's node_modules.
  *
  * A real directory is moved aside (kept as `.bak-shell-<stamp>`), never deleted: it is either a
@@ -121,7 +156,7 @@ export interface LinkOutcome {
  * must be the copy that actually loads once it ships the plugin. The backup keeps the old version
  * recoverable and makes the replacement visible.
  */
-function linkPackage(profileDir: string, name: string, target: string): LinkOutcome {
+function linkPackage(profileDir: string, name: string, target: string, log?: (line: string) => void): LinkOutcome {
   const nodeModules = join(profileDir, 'node_modules')
   mkdirSync(nodeModules, { recursive: true })
   const destination = join(nodeModules, name)
@@ -130,7 +165,7 @@ function linkPackage(profileDir: string, name: string, target: string): LinkOutc
     const info = lstatSync(destination)
     if (info.isSymbolicLink()) {
       if (junctionTarget(destination) === target.toLowerCase()) return { changed: false }
-      rmSync(destination, { force: true })
+      if (!unlinkJunction(destination, log)) return { changed: false }
     } else {
       const stamp = new Date().toISOString().replace(/[:.]/gu, '-')
       displaced = `${destination}.bak-shell-${stamp}`
@@ -142,8 +177,9 @@ function linkPackage(profileDir: string, name: string, target: string): LinkOutc
   try {
     symlinkSync(target, destination, 'junction')
     return { changed: true, ...(displaced === undefined ? {} : { displaced }) }
-  } catch {
+  } catch (error) {
     // Could not link (e.g. a file with that name): report unchanged rather than crash the start.
+    log?.(`随壳插件：创建链接失败 ${destination}（${error instanceof Error ? error.message : String(error)}）`)
     return { changed: false }
   }
 }
@@ -187,52 +223,89 @@ export function pruneProfileManifest(profileDir: string): { readonly dependencie
   return { dependencies: removedDependencies, bundles: removedBundles, ...(backup === undefined ? {} : { backup }) }
 }
 
+/** Result of registering shipped packages in the profile's bundle list. */
+export interface BundleRegistration {
+  /** Package names appended to `dsh.profile.bundles`, in the order they were passed in. */
+  readonly added: readonly string[]
+  readonly backup?: string
+}
+
 /**
- * Loader row id for a bundled plugin: the package name without its scope and `dsh-` prefix.
+ * Register shipped plugin packages in the profile's `dsh.profile.bundles`.
  *
- * The market-installed rows were named this way (`dsh-git-panel` → `git-panel`), and the config the
- * plugins already have lives keyed by those ids, so a fresh profile has to use the same spelling.
+ * This is the same list the market writes after `pnpm add` (see `market-install.ts`), and it is the
+ * only thing that makes the harness mount a package: the package itself declares its rows in
+ * `dsh.bundle.patch`. Missing names are **appended** so the seeded list's order (and the user's own
+ * entries) survive; existing names are never moved or duplicated. A missing or unparseable
+ * `package.json` is not an error for the start path — the profile is seeded later on first run — so
+ * it returns nothing instead of throwing. The file is backed up and replaced atomically, like every
+ * other manifest edit in this module.
  */
-export function pluginRowId(packageName: string): string {
-  const bare = packageName.includes('/') ? packageName.slice(packageName.lastIndexOf('/') + 1) : packageName
-  return bare.startsWith('dsh-') ? bare.slice(4) : bare
+export function ensureProfileBundles(profileDir: string, names: readonly string[]): BundleRegistration {
+  const path = join(profileDir, 'package.json')
+  if (!existsSync(path)) return { added: [] }
+  let document: Record<string, unknown>
+  try {
+    document = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+  } catch {
+    return { added: [] }
+  }
+  const dsh = typeof document.dsh === 'object' && document.dsh !== null ? { ...document.dsh as Record<string, unknown> } : {}
+  const profile = typeof dsh.profile === 'object' && dsh.profile !== null ? { ...dsh.profile as Record<string, unknown> } : {}
+  const bundles = Array.isArray(profile.bundles) ? [...profile.bundles as unknown[]] : []
+  const existing = new Set(bundles.map((bundle) => String(bundle)))
+  const added = names.filter((name) => !existing.has(name))
+  if (added.length === 0) return { added: [] }
+  const backup = backupFile(path)
+  profile.bundles = [...bundles, ...added]
+  dsh.profile = profile
+  document.dsh = dsh
+  const temporary = `${path}.tmp-${String(process.pid)}`
+  writeFileSync(temporary, `${JSON.stringify(document, null, 2)}\n`, 'utf8')
+  renameSync(temporary, path)
+  return { added, ...(backup === undefined ? {} : { backup }) }
 }
 
 /**
  * Make the shipped plugins available to the profile and retire the market-installed aggregator.
  *
- * Safe to call on every start: links are refreshed only when needed, rows are added only when
- * missing (a profile that installed them from the market already has rows *with config*), the
+ * Safe to call on every start: links are refreshed only when needed, bundle names are registered
+ * only when missing (a profile that installed them from the market already lists them), the
  * manifest is rewritten only when it still names plugin-kit, and retired rows are removed only while
  * they exist.
  */
 export function provisionBundledPlugins(options: ProvisionOptions): ProvisionResult {
   const log = options.log ?? (() => {})
   const shipped = readShippedPlugins(options.pluginsRoot)
-  if (shipped.size === 0) return { ok: true, linked: [], unchanged: 0, removedBundles: 0, removedRows: 0, addedRows: 0, reason: '安装包里没有随壳插件' }
+  if (shipped.size === 0) return { ok: true, linked: [], unchanged: 0, removedBundles: 0, removedRows: 0, addedBundles: [], reason: '安装包里没有随壳插件' }
 
   const linked: string[] = []
   const displaced: string[] = []
   let unchanged = 0
   for (const [name, directory] of shipped) {
-    const outcome = linkPackage(options.profileDir, name, directory)
+    const outcome = linkPackage(options.profileDir, name, directory, log)
     if (outcome.changed) linked.push(name)
     else unchanged += 1
     if (outcome.displaced !== undefined) displaced.push(name)
   }
 
-  const addedRows = options.patch.ensureRows(
-    [...shipped.keys()].map((name) => ({ id: pluginRowId(name), name })),
-  ).added
+  const registration = ensureProfileBundles(options.profileDir, [...shipped.keys()])
   const manifest = pruneProfileManifest(options.profileDir)
   const removedRows = options.patch.removeRows(RETIRED_ROWS).removed
 
   if (linked.length > 0) log(`随壳插件：已链接 ${String(linked.length)} 个（${linked.join(', ')}）到 profile`)
   if (displaced.length > 0) log(`随壳插件：${String(displaced.length)} 个旧目录已改名为 .bak-shell-*（${displaced.join(', ')}），现在加载随壳版本`)
-  if (addedRows > 0) log(`随壳插件：已补 ${String(addedRows)} 条首次使用的插件行`)
+  if (registration.added.length > 0) {
+    log(`随壳插件：已把 ${String(registration.added.length)} 个插件登记进 profile 的 bundle 列表（${registration.added.join(', ')}）`)
+  }
   if (manifest.dependencies > 0 || manifest.bundles > 0) {
     log(`随壳插件：已从 profile 移除 dsh-plugin-kit（依赖 ${String(manifest.dependencies)}、bundle ${String(manifest.bundles)}）`)
   }
   if (removedRows > 0) log(`随壳插件：已移除 ${String(removedRows)} 条旧插件行（ONE-WAY / MCP-Skills 由壳接管）`)
-  return { ok: true, linked, unchanged, removedBundles: manifest.bundles, removedRows, addedRows }
+  if (linked.length === 0 && displaced.length === 0 && registration.added.length === 0
+    && manifest.dependencies === 0 && manifest.bundles === 0 && removedRows === 0) {
+    // A start that changed nothing must still say so: silence here used to mean a swallowed failure.
+    log(`随壳插件：${String(shipped.size)} 个已就绪（无变更）`)
+  }
+  return { ok: true, linked, unchanged, removedBundles: manifest.bundles, removedRows, addedBundles: registration.added }
 }

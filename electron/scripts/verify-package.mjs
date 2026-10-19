@@ -15,10 +15,12 @@
  * Usage: node scripts/verify-package.mjs [--dir <unpackedDir>]
  */
 
-import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { createServer } from 'node:net'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -253,6 +255,142 @@ const shimVersion = execFileSync(`"${join(unpackedRoot, 'dsh', 'bin', 'pnpm.cmd'
   encoding: 'utf8',
 }).trim()
 if (!/^\d+\.\d+\.\d+/u.test(shimVersion)) fail(`打包后的 pnpm shim 不可用（PATH 解析场景），输出：${shimVersion}`)
+
+/** Bind an ephemeral loopback port and release it, so the smoke boot does not fight a running app. */
+function freePort() {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const server = createServer()
+    server.once('error', rejectPromise)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address !== null ? address.port : 0
+      server.close(() => { resolvePromise(port) })
+    })
+  })
+}
+
+/**
+ * The composition gate: what the shell injects must actually mount in a profile.
+ *
+ * 0.4.5 shipped with the four panels and every MCP server written in ways the DSH loader only
+ * *warns* about (`patch: entry "…" not found`): the four plugin rows were plain top-level patch
+ * entries (the loader treats a `name` there as an assertion, never an insert) and the MCP rows had
+ * the same spelling, so nothing mounted. Every check above this one passed — the installer had the
+ * plugin files, the runtime was intact — and the user still lost the features. This gate boots the
+ * packaged shell on a throwaway home (the first-install path) that already contains one MCP row in
+ * the old broken spelling, then asks the same packaged dsh to compose the result:
+ *
+ *  - the shell must link the four shipped packages into the profile and register them in
+ *    `dsh.profile.bundles` (what actually mounts them);
+ *  - the old MCP row must be repaired into an `insert` container and compose without warnings;
+ *  - the user's existing plugin config (`sidebarWidth`) must still apply to the mounted row.
+ *
+ * A profile is the one place a packaged build can still lose this silently, so it is checked on the
+ * artifact that is about to be signed, not in a unit test.
+ */
+async function verifyProfileComposition() {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'dsh-composition-'))
+  try {
+    const home = join(tempRoot, 'home')
+    const userData = join(tempRoot, 'user-data')
+    const profileDir = join(home, 'profiles', 'dsh-desktop')
+    mkdirSync(profileDir, { recursive: true })
+    writeFileSync(join(profileDir, 'package.json'), `${JSON.stringify({
+      name: 'dsh-profile-dsh-desktop',
+      private: true,
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'], patchReload: 'live' } },
+    }, null, 2)}\n`, 'utf8')
+    // The two shapes 0.4.5 left behind: a top-level MCP row (never mounts) and a plugin config
+    // override that only works once the package is registered as a bundle.
+    writeFileSync(join(profileDir, 'cordis.patch.yml'), [
+      '# 用户自己的补丁：组合校验',
+      '- id: mcp-composition_check',
+      '  name: "@deepseek-ai/dsh-mcp-client"',
+      '  config:',
+      '    serverName: composition_check',
+      '    transport: streamable-http',
+      '    url: http://127.0.0.1:9/mcp',
+      '',
+      '- id: sidebar-width',
+      '  name: dsh-sidebar-width',
+      '  config:',
+      '    sidebarWidth: 301',
+      '    rightbarWidth: 300',
+      '',
+    ].join('\n'), 'utf8')
+
+    const port = await freePort()
+    const smokeEnvironment = {
+      ...process.env,
+      DSH_DESKTOP_SMOKE: '1',
+      DSH_DESKTOP_DSH_HOME: home,
+      DSH_DESKTOP_USER_DATA_DIR: userData,
+      DSH_DESKTOP_PORT: String(port),
+      DSH_DESKTOP_SKIP_LEGACY_CLEANUP: '1',
+    }
+    // The GUI app must start as Electron, not as Node: this script itself may be run from a
+    // DSH-hosted terminal, which exports ELECTRON_RUN_AS_NODE=1.
+    delete smokeEnvironment.ELECTRON_RUN_AS_NODE
+    try {
+      execFileSync(appExecutable, [], { env: smokeEnvironment, cwd: unpacked, windowsHide: true, timeout: 240_000, stdio: 'pipe' })
+    } catch {
+      // The report below is the source of truth: a failed smoke still writes it (and exits 1).
+    }
+
+    const resultPath = join(userData, 'smoke-result.json')
+    if (!existsSync(resultPath)) throw new Error('打包壳冒烟没有写出 smoke-result.json')
+    const smoke = JSON.parse(readFileSync(resultPath, 'utf8'))
+    if (smoke.ok !== true) throw new Error(`打包壳冒烟失败（${String(smoke.stage ?? 'unknown')}：${String(smoke.message ?? '')}）`)
+    const shellLog = readFileSync(join(userData, 'shell.log'), 'utf8')
+    if (!shellLog.includes('已把 4 个插件登记进 profile 的 bundle 列表')) {
+      throw new Error('随壳插件没有登记进 profile 的 dsh.profile.bundles（shell.log 里没有登记日志）')
+    }
+    // Mounting is not enough: the packaged copy has to be importable by its own entry point. A
+    // plugin missing a directory it imports (`src/host/*` was dropped from the copy) mounts, warns
+    // `entries did not activate`, and its panels stay absent with the same user-visible result.
+    const activationFailures = shellLog.split(/\r?\n/u)
+      .filter(line => line.includes('did not activate') || line.includes('failed to import'))
+    if (activationFailures.length > 0) {
+      throw new Error(`随壳插件在打包 dsh 里没有激活：${activationFailures.slice(0, 3).join('；')}`)
+    }
+
+    const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
+    const bundles = manifest.dsh?.profile?.bundles ?? []
+    for (const plugin of pluginsManifest.packages) {
+      if (!bundles.includes(plugin)) throw new Error(`profile 的 bundle 列表缺少 ${String(plugin)}`)
+      if (!existsSync(join(profileDir, 'node_modules', plugin, 'package.json'))) {
+        throw new Error(`随壳插件没有链接进 profile：${String(plugin)}`)
+      }
+    }
+
+    const dshEntry = join(resources, 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+    const dump = spawnSync(appExecutable, [dshEntry, '--profile', 'dsh-desktop', '--dump-config'], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_HOME: home },
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 120_000,
+    })
+    if (dump.status !== 0) throw new Error(`打包 dsh --dump-config 退出码 ${String(dump.status)}：${String(dump.stderr).trim().slice(-500)}`)
+    const composed = String(dump.stdout)
+    const warnings = String(dump.stderr)
+    const notFound = warnings.split(/\r?\n/u).filter(line => line.includes('not found'))
+    if (notFound.length > 0) throw new Error(`profile 仍有未挂载的 patch 行：${notFound.slice(0, 3).join('；')}`)
+    for (const id of ['git-panel', 'run-env-manager', 'sidebar-width', 'workspace-category-manager', 'mcp-composition_check']) {
+      if (!new RegExp(`id: ${id}\\b`, 'u').test(composed)) throw new Error(`组合结果里没有挂载的 ${id} 行`)
+    }
+    if (!/name: '?@deepseek-ai\/dsh-mcp-client'?/u.test(composed)) throw new Error('组合结果里没有 MCP 客户端行')
+    if (!/sidebarWidth: 301/u.test(composed)) throw new Error('用户补丁里的插件配置没有作用到挂载行（sidebarWidth: 301）')
+    process.stdout.write('==> 组合校验：4 个随壳插件与 MCP 行在打包 dsh 里真实挂载，用户配置生效\n')
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
+try {
+  await verifyProfileComposition()
+} catch (error) {
+  fail(`组合校验失败：${error instanceof Error ? error.message : String(error)}`)
+}
 
 process.stdout.write(
   `打包校验通过：dsh ${packaged.dsh}（Electron ${packaged.electron}）、asar 内 ${String(archived.length)} 个文件、`
