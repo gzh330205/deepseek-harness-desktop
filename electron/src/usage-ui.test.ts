@@ -62,15 +62,17 @@ test('the page only speaks through __DSH_USAGE__, and every id it looks up exist
 
 test('exactly the bridge methods from the ONE-WAY window contract are used', () => {
   const used = new Set([...script.matchAll(/api\.([A-Za-z]+)\(/gu)].map(match => match[1]))
-  const expected = ['close', 'get', 'loginPoll', 'loginStart', 'logout', 'refresh', 'requests', 'saveSettings', 'settings']
+  const expected = ['close', 'get', 'loginPoll', 'loginStart', 'logout', 'refresh', 'requestDetail', 'requests', 'saveSettings', 'settings']
   assert.deepEqual([...used].sort(), expected, '方法名必须与 preload 契约一致')
 })
 
 test('one page-level scrollbar: inner tables and trend lists no longer scroll on their own', () => {
   // The window used to have `main { overflow-y: auto }` plus a capped-height `.table-wrap` and
   // `.bar-list` with their own `overflow`, so scrolling the page inside a panel produced a second,
-  // inner scrollbar. Exactly one rule may scroll vertically now.
-  assert.equal((page.match(/overflow-y:\s*auto/gu) ?? []).length, 1, 'main 是唯一的纵向滚动容器')
+  // inner scrollbar. Only two vertical scrollers are allowed: `main` for the page and the request
+  // detail modal, whose JSON body can be a megabyte tall.
+  assert.equal((page.match(/overflow-y:\s*auto/gu) ?? []).length, 2, 'main 与请求明细弹窗是仅有的两个纵向滚动容器')
+  assert.match(page, /\.detail-modal \{[^}]*max-height: calc\(100vh - 48px\)[^}]*overflow-y: auto/u)
   assert.match(page, /\.table-wrap \{[^}]*overflow-x: auto/u, '窄窗口仍要能横向滚动表格')
   // Vertical overflow is left to the page: the table-wrap must not cap or scroll its height.
   assert.doesNotMatch(page, /\.table-wrap \{[^}]*max-height/u)
@@ -128,6 +130,56 @@ test('request logs: date range, the plugin eight columns, and paging', () => {
   // A degraded page arrives as `{ rows: [], error }` rather than a rejection; it must be shown.
   assert.match(script, /result\.error/u)
   assert.match(script, /读取请求日志失败/u)
+})
+
+test('the top bar shows the masked API key the shell parsed from the page', () => {
+  assert.match(markup, /id="apiKey"/u)
+  assert.match(script, /\$\('apiKey'\)\.textContent = display\(state\.apiKey\)/u)
+})
+
+test('request log rows open the detail modal by click, Enter and Space', () => {
+  // Rows carry the request id and are keyboard reachable; the CSS gives them a pointer cursor and a
+  // focus ring. The 9th gateway column is not rendered, so the row itself is the affordance.
+  assert.match(page, /\.logs tbody tr\[data-id\] \{ cursor: pointer; \}/u)
+  assert.match(script, /line\.dataset\.id = rowId/u)
+  assert.match(script, /line\.tabIndex = 0/u)
+  assert.match(script, /\$\(tab\.button\)\.addEventListener\('click', \(\) => \{ paintDetailBody\(tab\.key\) \}\)/u)
+  assert.match(script, /\$\('logRows'\)\.addEventListener\('click', \(event\) => \{[\s\S]{0,220}openDetail\(id\)/u)
+  // Enter and Space both trigger the row, not only the mouse.
+  assert.match(script, /event\.key !== 'Enter' && event\.key !== ' '/u)
+  assert.match(script, /void openDetail\(id\)/u)
+  assert.match(script, /api\.requestDetail\(text\)/u)
+})
+
+test('request detail modal: title, info grid, body tabs, truncation constant and copy', () => {
+  for (const id of [
+    'detailModal', 'detailTitle', 'detailMeta', 'detailLoading', 'detailError', 'detailInfo', 'detailBodies',
+    'detailTabRequest', 'detailTabResponse', 'detailRequestBody', 'detailResponseBody',
+    'detailRequestPre', 'detailResponsePre', 'detailRequestHint', 'detailResponseHint',
+    'detailRequestCopy', 'detailResponseCopy', 'detailClose', 'detailFooterClose',
+  ]) {
+    assert.match(markup, new RegExp(`id="${id}"`, 'u'))
+  }
+  assert.match(markup, /id="detailModal"[^>]*hidden/u)
+  assert.match(markup, /id="detailModal"[\s\S]{0,200}role="dialog"[^>]*aria-modal="true"/u)
+  assert.match(markup, /id="detailTitle">请求明细/u)
+  // Two body tabs, request first; only one panel is visible at a time.
+  assert.match(markup, /id="detailTabRequest"[^>]*aria-selected="true"/u)
+  assert.match(markup, /id="detailResponseBody" role="tabpanel"[^>]*hidden/u)
+  for (const label of ['请求体', '响应体', '复制完整 JSON']) assert.match(markup, new RegExp(label, 'u'))
+  // The truncation threshold is a named constant, and the copy button always copies the full text.
+  assert.match(script, /DETAIL_BODY_LIMIT = 120000/u)
+  assert.match(script, /text\.length > DETAIL_BODY_LIMIT/u)
+  assert.match(script, /text\.slice\(0, DETAIL_BODY_LIMIT\)/u)
+  assert.match(script, /已截断，共 /u)
+  assert.match(script, /pre\.textContent = /u, 'JSON 只能写 textContent，不能用 innerHTML')
+  assert.match(script, /navigator\.clipboard\.writeText/u)
+  assert.match(script, /复制失败/u)
+  // Loading and error are separate states, and Esc closes the modal.
+  assert.match(script, /detailLoading'\)\.hidden = false/u)
+  assert.match(script, /读取请求明细失败：/u)
+  assert.match(script, /event\.key === 'Escape'/u)
+  assert.match(script, /if \(!api \|\| typeof api\.requestDetail !== 'function'\)/u, '旧壳没有该方法时不能崩')
 })
 
 test('trend tab: 24 hourly and 30 daily bars made of divs and widths, never canvas', () => {

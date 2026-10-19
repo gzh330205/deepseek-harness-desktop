@@ -58,6 +58,18 @@ const LOGIN_TTL_MS = 10 * 60 * 1000
 const MAX_REDIRECTS = 10
 /** Log pages cost a full dashboard parse, and a page of logs is requested on every tab switch. */
 const LOGS_CACHE_TTL_MS = 15_000
+/** A finished request's detail never changes, so a short cache only saves repeat clicks. */
+const DETAIL_CACHE_TTL_MS = 5 * 60 * 1000
+/**
+ * Each cached detail holds a whole prompt and completion (a few MB once parsed), so the cache is
+ * capped as well as time-limited: browsing a page of logs must not accumulate the whole day.
+ */
+const DETAIL_CACHE_MAX_ENTRIES = 20
+/**
+ * A detail payload carries the whole prompt and the whole completion; the real one is ~1.3 MB.
+ * 16 MB is far past any legitimate pair, and stops a misbehaving gateway from ballooning the shell.
+ */
+const DETAIL_MAX_BYTES = 16 * 1024 * 1024
 /** The gateway's log table never shows more than this many rows, and ignores larger requests. */
 const MAX_PAGE_SIZE = 50
 /**
@@ -156,6 +168,35 @@ export interface UsageLogPage {
    * range has no requests. Returned instead of thrown: the window renders a table either way.
    */
   readonly error?: string
+}
+
+/**
+ * One request's detail, normalized from the gateway's `GET /my-requests/<id>/download` JSON.
+ *
+ * The bodies stay as parsed JSON (`unknown`) rather than pretty strings: the window is the only place
+ * that knows how much text it can render, and `JSON.stringify` belongs next to that decision.
+ */
+export interface UsageRequestDetail {
+  readonly id: string
+  /** `created_at` rendered in local time, the way the log table shows times. */
+  readonly time: string
+  readonly model: string
+  readonly key: string
+  readonly channel: string
+  readonly status: string
+  /** 是 / 否, normalized here so the window renders one shape for the list and the detail. */
+  readonly stream: string
+  readonly source: string
+  readonly format: string
+  readonly clientIp: string
+  readonly latencyMs: number | null
+  readonly firstTokenMs: number | null
+  readonly reasoningMs: number | null
+  readonly totalTokens: number | null
+  readonly requestBody: unknown
+  readonly responseBody: unknown
+  /** Size of the JSON document that was downloaded, for the window's size hint. */
+  readonly bodyBytes: number
 }
 
 /** How much of a quota the current week/month represents; the window turns these into ratios. */
@@ -283,6 +324,14 @@ export interface UsageService {
   logout(): Promise<UsageSnapshot>
   /** One page of request logs. Failures come back as an empty page carrying `error`. */
   requests(query?: UsageLogQuery): Promise<UsageLogPage>
+  /**
+   * One request's full detail (bodies included), from the gateway's JSON download endpoint.
+   *
+   * Unlike {@link snapshot} and {@link requests} this **rejects** with a displayable message: the
+   * detail opens in a modal that has an error state of its own, and a degraded "empty detail" would
+   * be indistinguishable from a request whose bodies were empty.
+   */
+  requestDetail(id: string | number): Promise<UsageRequestDetail>
   /** Release the in-flight login; requests already in flight are left to time out on their own. */
   dispose(): void
 }
@@ -386,6 +435,88 @@ function normalisePage(value: number | undefined): number {
 function normalisePageSize(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return 10
   return Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(value)))
+}
+
+/** "1.3 MB"-style size for the too-large error and the window's size hint. */
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${String(bytes)} 字节`
+}
+
+/**
+ * Render the gateway's `created_at` as local time.
+ *
+ * The JSON endpoint serializes it as a JavaScript `Date#toString` ("Mon Oct 19 2026 03:16:49
+ * GMT+0000 (Coordinated Universal Time)"), which `Date` parses — but it is UTC, while the log table
+ * shows the same instant in local time. Formatting here keeps the detail and the row consistent.
+ */
+function formatGatewayTime(value: unknown): string {
+  const raw = typeof value === 'string' ? value : typeof value === 'number' ? value : ''
+  if (raw === '') return ''
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return typeof raw === 'string' ? raw.trim() : ''
+  const pad = (part: number): string => String(part).padStart(2, '0')
+  return `${String(date.getFullYear())}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+    + ` ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/** A detail field may be a number, a numeric string or absent; the window renders text. */
+function displayTextOf(value: unknown): string {
+  if (typeof value === 'string') return unescapeHtml(value).trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return ''
+}
+
+function displayNumber(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function displayStream(value: unknown): string {
+  if (value === true) return '是'
+  if (value === false) return '否'
+  return displayTextOf(value)
+}
+
+/**
+ * The numeric id a request detail may be looked up by.
+ *
+ * Validated before it goes into the URL: the id is the only caller-controlled path segment in this
+ * service, and a rejected one is an error the modal can show rather than a request to the gateway.
+ */
+function normaliseRequestId(value: unknown): string | null {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : null
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return /^\d+$/u.test(trimmed) ? trimmed : null
+}
+
+/** Normalize the JSON download document into {@link UsageRequestDetail}. */
+function parseRequestDetail(payload: Record<string, unknown>, requestedId: string, bodyBytes: number): UsageRequestDetail {
+  return {
+    id: displayTextOf(payload['id']) || requestedId,
+    time: formatGatewayTime(payload['created_at']),
+    model: displayTextOf(payload['model_id']),
+    key: displayTextOf(payload['api_key_name']),
+    channel: displayTextOf(payload['channel_name']),
+    status: displayTextOf(payload['status']),
+    stream: displayStream(payload['stream']),
+    source: displayTextOf(payload['source']),
+    format: displayTextOf(payload['format']),
+    clientIp: displayTextOf(payload['client_ip']),
+    latencyMs: displayNumber(payload['metrics_latency_ms']),
+    firstTokenMs: displayNumber(payload['metrics_first_token_latency_ms']),
+    reasoningMs: displayNumber(payload['metrics_reasoning_duration_ms']),
+    totalTokens: displayNumber(payload['total_tokens']),
+    requestBody: payload['request_body'] ?? null,
+    responseBody: payload['response_body'] ?? null,
+    bodyBytes,
+  }
 }
 
 /** An auth failure as opposed to a network or parse failure: the fix is a new login, not a retry. */
@@ -673,10 +804,20 @@ export function parseUsage(html: string, baseUrl: string): UsageDocument {
   const nameMatch = /姓名：([^<]+)</u.exec(html)
   if (nameMatch !== null) document.user = unescapeHtml(nameMatch[1] ?? '').trim() || null
 
-  // The API key sits in the only <code> element styled as a chip; `break-all` is part of the class
-  // list because the key is too long to fit and the template wraps it.
-  const keyMatch = /<code class="px-2 py-1 rounded bg-slate-100 text-slate-700 font-mono break-all">([^<]+)<\/code>/u.exec(html)
-  if (keyMatch !== null) document.apiKey = unescapeHtml(keyMatch[1] ?? '').trim() || null
+  // The API key sits in the only <code> element styled as a chip. The tag used to end right after
+  // its class list; the gateway now also adds `data-key-value` / `data-key-masked` / `data-key-full`,
+  // which broke a regex that required `">` immediately after the class attribute. Match the whole
+  // attribute list, and prefer `data-key-masked`: it is the value meant for display, and the rendered
+  // text could be wrapped independently of it. `break-all` is what identifies the chip when the
+  // data attributes are not there (older gateway builds).
+  for (const keyMatch of html.matchAll(/<code\b([^>]*)>([^<]*)<\/code>/gu)) {
+    const attributes = keyMatch[1] ?? ''
+    if (!/data-key-|\bbreak-all\b/u.test(attributes)) continue
+    const masked = /data-key-masked="([^"]*)"/u.exec(attributes)?.[1]
+    const text = masked !== undefined && masked !== '' ? masked : keyMatch[2] ?? ''
+    document.apiKey = unescapeHtml(text).trim() || null
+    break
+  }
 
   for (const section of html.matchAll(STAT_SECTION_RE)) {
     const label = unescapeHtml(section[1] ?? '').trim()
@@ -817,6 +958,12 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
   let refreshing: Promise<UsageSnapshot> | null = null
   let logCache: LogsCacheEntry | null = null
   let flow: LoginFlow | null = null
+  /** Details by request id; a finished request's payload is immutable, so the cache never refetches. */
+  const detailCache = new Map<string, { readonly at: number; readonly detail: UsageRequestDetail }>()
+  /** One download per id at a time: a double click must not fetch 1.3 MB twice. */
+  const detailInFlight = new Map<string, Promise<UsageRequestDetail>>()
+  /** Bumped on logout so a detail that resolves afterwards cannot be cached under the new session. */
+  let cacheEpoch = 0
 
   // The jar is rebuilt only when the persisted value changes: that keeps the in-memory jar the
   // login flow just filled without parsing it back on every request, while still picking up a
@@ -1226,6 +1373,11 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
     jarSource = ''
     cache = null
     logCache = null
+    // Details embed prompts and completions from the session that is being dropped, and a download
+    // that is still in flight must not repopulate the cache once it resolves.
+    cacheEpoch += 1
+    detailCache.clear()
+    detailInFlight.clear()
     lastError = null
     lastErrorNeedsLogin = false
     flow = null
@@ -1237,6 +1389,107 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
       log(`oneway: 清除登录状态失败：${messageOf(error)}`)
     }
     return snapshot()
+  }
+
+  /**
+   * GET and normalize one request's detail.
+   *
+   * The gateway's HTML detail page renders the bodies inside `<pre>` blocks; its own JSON download
+   * endpoint (`/my-requests/<id>/download`) serves the same document without another fragile parser.
+   *
+   * @param epoch - Cache generation captured before the download started; a logout bumps it.
+   */
+  const loadDetail = async (requestId: string, epoch: number): Promise<UsageRequestDetail> => {
+    const config = configOf()
+    if (config.sessionCookie.trim() === '') {
+      cache = null
+      lastError = '尚未登录。'
+      lastErrorNeedsLogin = true
+      throw new Error('尚未登录，无法查看请求明细。')
+    }
+    const url = `${config.baseUrl}/my-requests/${requestId}/download`
+    let response: Response
+    try {
+      response = await fetchImpl(url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: {
+          'user-agent': USER_AGENT,
+          accept: 'application/json',
+          ...cookieHeader(jarFor(config).headerFor(url)),
+        },
+      })
+    } catch (error) {
+      throw new Error(`读取请求明细失败：${messageOf(error)}`)
+    }
+    const finalUrl = response.url === '' ? url : response.url
+    if (response.status === 401 || response.status === 403 || /\/login(?:\?|$)/u.test(finalUrl)) {
+      const message = '未登录或会话已过期，请重新扫码登录。'
+      cache = null
+      logCache = null
+      lastError = message
+      lastErrorNeedsLogin = true
+      throw new AuthError(message)
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`读取请求明细失败（HTTP ${String(response.status)}）。`)
+    }
+    const contentType = (response.headers.get('content-type') ?? '').toLowerCase()
+    if (!contentType.includes('application/json')) {
+      throw new Error(`读取请求明细失败（返回类型不是 JSON：${contentType === '' ? '未知' : contentType}）。`)
+    }
+    // Refuse before reading when the gateway declares an impossible size, and verify again after
+    // reading because a chunked response declares none.
+    const declared = Number(response.headers.get('content-length') ?? '')
+    if (Number.isFinite(declared) && declared > DETAIL_MAX_BYTES) {
+      throw new Error(`请求明细过大（${formatSize(declared)}），已拒绝加载。`)
+    }
+    let text: string
+    try {
+      text = await response.text()
+    } catch (error) {
+      throw new Error(`读取请求明细失败：${messageOf(error)}`)
+    }
+    const bodyBytes = Buffer.byteLength(text, 'utf8')
+    if (bodyBytes > DETAIL_MAX_BYTES) {
+      throw new Error(`请求明细过大（${formatSize(bodyBytes)}），已拒绝加载。`)
+    }
+    let payload: unknown
+    try {
+      payload = JSON.parse(text)
+    } catch {
+      throw new Error('请求明细不是有效的 JSON。')
+    }
+    if (!isRecord(payload)) throw new Error('请求明细格式不正确。')
+    const detail = parseRequestDetail(payload, requestId, bodyBytes)
+    // A logout while this was downloading must not repopulate the cache.
+    if (epoch === cacheEpoch) {
+      detailCache.set(requestId, { at: now(), detail })
+      // Map iteration order is insertion order, so this drops the oldest entry first.
+      while (detailCache.size > DETAIL_CACHE_MAX_ENTRIES) {
+        const oldest = detailCache.keys().next()
+        if (oldest.done === true) break
+        detailCache.delete(oldest.value)
+      }
+    }
+    return detail
+  }
+
+  const requestDetail = async (id: string | number): Promise<UsageRequestDetail> => {
+    const requestId = normaliseRequestId(id)
+    if (requestId === null) throw new Error('请求编号不合法，无法查看明细。')
+    const cached = detailCache.get(requestId)
+    if (cached !== undefined && now() - cached.at < DETAIL_CACHE_TTL_MS) return cached.detail
+    const running = detailInFlight.get(requestId)
+    if (running !== undefined) return running
+    const epoch = cacheEpoch
+    const started = loadDetail(requestId, epoch)
+    detailInFlight.set(requestId, started)
+    try {
+      return await started
+    } finally {
+      if (detailInFlight.get(requestId) === started) detailInFlight.delete(requestId)
+    }
   }
 
   const requests = async (query: UsageLogQuery = {}): Promise<UsageLogPage> => {
@@ -1282,6 +1535,7 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
     },
     logout,
     requests,
+    requestDetail,
     dispose() {
       // Nothing to cancel: every request carries its own AbortSignal timeout. Dropping the flow is
       // enough to make a later poll from a closing window report `expired`.

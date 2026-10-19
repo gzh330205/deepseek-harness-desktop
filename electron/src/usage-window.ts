@@ -25,6 +25,11 @@ export interface UsageWindowHandlers {
   readonly loginPoll: (key: unknown) => Promise<unknown>
   readonly logout: () => Promise<unknown>
   readonly requests: (query: unknown) => Promise<unknown>
+  /**
+   * One request's detail. Rejects with a displayable message, which the page catches into the
+   * modal's error state — unlike `requests`, there is no degraded "empty" version to return.
+   */
+  readonly requestDetail: (id: unknown) => Promise<unknown>
 }
 
 export interface UsageWindowOptions {
@@ -151,6 +156,7 @@ export class UsageWindow {
     ipcMain.handle(IPC.usageLoginPoll, (event, key: unknown) => { guard(event); return handlers.loginPoll(key) })
     ipcMain.handle(IPC.usageLogout, (event) => { guard(event); return handlers.logout() })
     ipcMain.handle(IPC.usageRequests, (event, query: unknown) => { guard(event); return handlers.requests(query) })
+    ipcMain.handle(IPC.usageRequestDetail, (event, id: unknown) => { guard(event); return handlers.requestDetail(id) })
     ipcMain.handle(IPC.usageClose, (event) => {
       guard(event)
       // Same deferral as the settings/pocket close: closing the sender inline destroys the renderer

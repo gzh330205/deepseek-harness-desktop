@@ -104,6 +104,8 @@ pnpm release:dry        # 发布演习：签名 + 自校验 + 生成 latest.json
 28. **企业微信登录二维码本身就是 PNG，不要再把它编码成二维码。** `https://login.work.weixin.qq.com/wwlogin/sso/qrcode?key=<web_key>` 返回 `image/png`，那张图就是扫码登录码。把它的 URL 再画成二维码会让用户扫到「二维码图片的网址」，打开后还要再扫一次（0.4.6 的真实报障）。`oneway-service.startLogin` 直接 fetch 这张 PNG 转 data URL，并在 flow 内缓存（窗口重开复用同一张码）。
 29. **手机访问的 `pocket.json` 里「关闭」和「忘记」是两件事。** `accepted` 表示"用户亲手同意过公网免责声明"，只有用户关闭/启动失败才撤销；`mode/domain/token` 是连接方式，关闭不能删（删了下次就要重填 Tunnel Token）。壳正常退出（`dispose`）只停隧道、不动记录，下次启动才能恢复"还开着"的公网访问；启动时恢复失败保留 `accepted`（一次网络抖动不应变成永久关闭），用户亲手启动失败则撤销（不在后台反复重试）。
 30. **手机扫码要一次拿到地址+密码。** 二维码 payload 是 `dshpocket://connect?url=…&password=…`（`pocket-qr.ts` 的 `pocketConnectLink`，有 QR 编解码往返单测），Android 端 `PocketAddress.connectLink` 解析密码、`MainActivity` 在系统深链与 App 内扫码两条路径都自动填入。纯地址二维码仍走 `normalise` 回退，旧码不会坏。
+31. **DSH 桌面页脚直接显示「设置」，靠 overlay 禁用 `ui-settings-account`。** 该插件在桌面模式注册 `settings.launcher` 单槽，会把 `SettingsRoot` 的 fallback 设置按钮换成「更多」菜单（设置/意见反馈/登录）。overlay 里加 `- id: ui-settings-account disabled: true`（与禁用内置侧边栏浏览器同一机制），launcher 不注册，fallback 设置按钮出现。**不要用 CSS/DOM 隐藏账号行**：fallback 只在槽空时渲染，隐藏不会让它出现。代价是桌面端没有 DeepSeek 账号入口/额度通知/onboarding；恢复就删那一行（页脚会回到「更多」）。
+32. **用量窗口的网关数据靠 HTML/JSON 形状，且只展示脱敏 Key。** `/my-usage` 的 API Key chip 带 `data-key-masked` / `data-key-full` 属性，解析取 masked（完整 key 不进壳窗口 DOM/剪贴板）；请求明细走 `GET /my-requests/<id>/download`（`application/json`，一条约 1.27 MB，16 MB 上限、5 分钟缓存/20 条、logout 清空），`created_at` 用 Date 解析后按本地时区显示。网关改字段会变成可读错误或「—」，不会静默错值；新增解析逻辑时先抓真实页面/接口对形状，不要凭旧正则想当然。
 
 ## 更新通道
 

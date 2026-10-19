@@ -42,9 +42,15 @@ export interface OverlayOptions {
  *    opens a system browser, and does not trust the LAN;
  * 2. disable DSH's built-in sidebar browser — this shell ships its own, and two browser tab
  *    types would put two "Browser" cards on the guide page and two panes in the sidebar;
- * 3. insert the panel plugin shipped with the shell, with whatever the plugin needs
+ * 3. disable the DSH account launcher — in desktop mode it replaces the settings seat with a
+ *    "更多" menu (设置 / 意见反馈 / 登录), so the footer no longer offers a direct settings button.
+ *    This distribution hides those product-level entries and keeps the plain 设置 trigger, which
+ *    is what makes the sidebar footer useful without a DeepSeek account. The account plugin's
+ *    other surfaces (onboarding, quota notices, model sign-in) go with it: a hidden login that
+ *    still pops dialogs would be worse than no login;
+ * 4. insert the panel plugin shipped with the shell, with whatever the plugin needs
  *    (currently the native tool endpoint);
- * 4. point the shipped MCP client at the shell's browser-tool bridge — unless the plugin
+ * 5. point the shipped MCP client at the shell's browser-tool bridge — unless the plugin
  *    publishes the same catalog as native tools, in which case injecting both would show
  *    the model every tool twice.
  *
@@ -61,6 +67,8 @@ export function writeOverlay(appVersion: string, agentMcp?: AgentMcpEndpoint, op
     surfaceContext: true
     trustedHosts: []
 - id: ui-sidebar-browser
+  disabled: true
+- id: ui-settings-account
   disabled: true
 `
   const rows: string[] = []

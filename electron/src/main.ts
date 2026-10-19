@@ -1636,6 +1636,11 @@ function installUsageWindow(): void {
           pageSize: number(request.pageSize),
         })
       },
+      // The service validates the id again; this only turns an IPC value of the wrong type into the
+      // same displayable rejection instead of passing it on.
+      requestDetail: (id) => (typeof id === 'string' || typeof id === 'number'
+        ? service.requestDetail(id)
+        : Promise.reject(new Error('请求编号不合法，无法查看明细。'))),
     },
   })
   usageWindowRef.install()

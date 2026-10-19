@@ -156,6 +156,10 @@
     .logs th:nth-child(7), .logs td:nth-child(7) { width: 78px; }
     .logs th:nth-child(8), .logs td:nth-child(8) { width: 88px; }
     .logs td { overflow: hidden; text-overflow: ellipsis; }
+    /* A log row opens the request detail; the cursor and focus ring are the only affordance, so the
+       table keeps its eight columns instead of growing a ninth "操作" one. */
+    .logs tbody tr[data-id] { cursor: pointer; }
+    .logs tbody tr[data-id]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
     .logs .model { font-weight: 600; }
     .status { display: inline-block; border-radius: 999px; font-size: 11px; padding: 1px 8px; background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--muted); }
     .status.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
@@ -218,8 +222,32 @@
     .login-state.error { color: var(--danger); }
     .login-state.ok { color: var(--ok); }
     .modal .hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; text-align: center; }
-    .modal .error { margin: 0; font-size: 12px; line-height: 1.55; text-align: center; }
+    .modal .error { margin: 0; font-size: 12px; line-height: 1.55; }
     .modal-actions { display: flex; justify-content: center; gap: 10px; }
+
+    /* ── request detail modal ───────────────────────────────────────────── */
+    /* Wider than the login dialog, and the only modal that scrolls internally: a request body plus
+       its prompt and completion can be a megabyte of pretty-printed JSON. */
+    .detail-modal { width: min(880px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; }
+    .detail-meta { margin: 0; min-height: 18px; color: var(--muted); font-size: 12px; }
+    .detail-loading { padding: 18px 0; text-align: center; color: var(--muted); font-size: 12px; }
+    .detail-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 5px 18px; margin: 0;
+    }
+    .detail-grid > div { display: flex; gap: 8px; min-width: 0; font-size: 12px; }
+    .detail-grid dt { flex: none; width: 64px; color: var(--muted); }
+    .detail-grid dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-tabs { margin-top: 2px; }
+    .detail-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .detail-body-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .detail-body-head .muted { flex: 1 1 auto; }
+    .detail-pre {
+      margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+      background: var(--field); color: var(--fg);
+      font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
+      white-space: pre-wrap; word-break: break-all; user-select: text;
+    }
 
     @media (max-width: 760px) {
       .cards { grid-template-columns: 1fr; }
@@ -407,6 +435,44 @@
     </section>
   </div>
 
+  <!-- Request detail. Opened by clicking a row in the 请求日志 table; the bodies are rendered into
+       <pre> with textContent — this page never builds markup from gateway data. -->
+  <div class="modal-mask" id="detailModal" hidden>
+    <section class="modal detail-modal" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="modal-head">
+        <h2 id="detailTitle">请求明细</h2>
+        <button class="icon" id="detailClose" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="detail-meta" id="detailMeta"></p>
+      <div class="detail-loading" id="detailLoading">正在读取请求明细…</div>
+      <p class="error" id="detailError" hidden></p>
+      <dl class="detail-grid" id="detailInfo" hidden></dl>
+      <div id="detailBodies" hidden>
+        <nav class="tabs detail-tabs" role="tablist" aria-label="请求体与响应体">
+          <button class="tab" role="tab" id="detailTabRequest" aria-selected="true" aria-controls="detailRequestBody" type="button">请求体</button>
+          <button class="tab" role="tab" id="detailTabResponse" aria-selected="false" aria-controls="detailResponseBody" type="button">响应体</button>
+        </nav>
+        <div class="detail-body" id="detailRequestBody" role="tabpanel" aria-labelledby="detailTabRequest">
+          <div class="detail-body-head">
+            <span class="muted" id="detailRequestHint"></span>
+            <button id="detailRequestCopy" type="button" disabled>复制完整 JSON</button>
+          </div>
+          <pre class="detail-pre" id="detailRequestPre"></pre>
+        </div>
+        <div class="detail-body" id="detailResponseBody" role="tabpanel" aria-labelledby="detailTabResponse" hidden>
+          <div class="detail-body-head">
+            <span class="muted" id="detailResponseHint"></span>
+            <button id="detailResponseCopy" type="button" disabled>复制完整 JSON</button>
+          </div>
+          <pre class="detail-pre" id="detailResponsePre"></pre>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="detailFooterClose" type="button">关闭</button>
+      </div>
+    </section>
+  </div>
+
   <script>
     // Everything below talks to the desktop shell only. The bridge is injected by the preload script;
     // without it the page still renders (banner + placeholders) instead of going blank.
@@ -425,10 +491,19 @@
       { key: 'channels', button: 'tabChannels', panel: 'panelChannels' },
       { key: 'models', button: 'tabModels', panel: 'panelModels' },
     ]
+    // A real detail can be >1 MB of pretty JSON. Rendering all of it would freeze the window, so the
+    // first ~120k characters are shown and the copy button always carries the complete text.
+    const DETAIL_BODY_LIMIT = 120000
+    const DETAIL_TABS = [
+      { key: 'request', button: 'detailTabRequest', panel: 'detailRequestBody', pre: 'detailRequestPre', hint: 'detailRequestHint', copy: 'detailRequestCopy', label: '请求体' },
+      { key: 'response', button: 'detailTabResponse', panel: 'detailResponseBody', pre: 'detailResponsePre', hint: 'detailResponseHint', copy: 'detailResponseCopy', label: '响应体' },
+    ]
 
     const settingsCache = { baseUrl: '', refreshSeconds: DEFAULT_REFRESH_SECONDS }
     const logs = { loaded: false, busy: false, page: 1, pages: 1, pageSize: 10 }
     const login = { timer: null, key: null, generation: 0 }
+    // `generation` makes a reply for a row the user already closed (or another row) a no-op.
+    const detail = { id: null, generation: 0, requestText: '', responseText: '', tab: 'request', lastFocus: null }
     let activeTab = 'logs'
     let running = false
     let refreshTimer = null
@@ -476,6 +551,32 @@
       const date = new Date(value)
       if (Number.isNaN(date.getTime())) return String(value)
       return date.toLocaleString('zh-CN', { hour12: false })
+    }
+
+    function fmtMs(value) {
+      if (value === null || value === undefined || value === '') return '—'
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      return number.toLocaleString('zh-CN') + ' ms'
+    }
+
+    function fmtBytes(value) {
+      const bytes = Number(value)
+      if (!Number.isFinite(bytes) || bytes <= 0) return '—'
+      if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB'
+      if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB'
+      return Math.round(bytes) + ' 字节'
+    }
+
+    /** The bodies arrive as parsed JSON; the modal is the only place that decides how much to show. */
+    function stringifyBody(value) {
+      if (value === null || value === undefined) return ''
+      try {
+        const text = JSON.stringify(value, null, 2)
+        return typeof text === 'string' ? text : String(value)
+      } catch (error) {
+        return String(value)
+      }
     }
 
     function el(tag, className, text) {
@@ -739,6 +840,14 @@
       } else {
         for (const row of rows) {
           const line = el('tr')
+          const rowId = row && row.id !== null && row.id !== undefined ? String(row.id) : ''
+          if (/^\d+$/.test(rowId)) {
+            // The row itself is the button: click, Enter and Space all open the detail. Keeping the
+            // id in a data attribute lets a single delegated listener serve every page of rows.
+            line.dataset.id = rowId
+            line.tabIndex = 0
+            line.title = '点击查看请求明细'
+          }
           const statusCell = el('td')
           statusCell.append(statusBadge(row.status))
           line.append(
@@ -791,6 +900,188 @@
       $('logPrev').disabled = true
       $('logNext').disabled = true
       $('logError').hidden = true
+    }
+
+    /* ---------- request detail: row → modal, two body tabs, clipboard ---------- */
+
+    function detailIdFrom(event) {
+      const target = event.target
+      if (!target || typeof target.closest !== 'function') return ''
+      const row = target.closest('tr[data-id]')
+      if (!row || !row.dataset) return ''
+      const id = row.dataset.id || ''
+      return /^\d+$/.test(id) ? id : ''
+    }
+
+    function detailTabOf(key) {
+      for (const tab of DETAIL_TABS) {
+        if (tab.key === key) return tab
+      }
+      return DETAIL_TABS[0]
+    }
+
+    function paintDetailBody(key) {
+      detail.tab = key
+      for (const tab of DETAIL_TABS) {
+        const selected = tab.key === key
+        $(tab.button).setAttribute('aria-selected', selected ? 'true' : 'false')
+        $(tab.panel).hidden = !selected
+      }
+      const tab = detailTabOf(key)
+      const text = key === 'request' ? detail.requestText : detail.responseText
+      const pre = $(tab.pre)
+      const hint = $(tab.hint)
+      const copy = $(tab.copy)
+      if (text === '') {
+        pre.textContent = tab.label + '为空（网关没有返回内容）。'
+        hint.textContent = '共 0 字符'
+        copy.disabled = true
+        return
+      }
+      const truncated = text.length > DETAIL_BODY_LIMIT
+      pre.textContent = truncated
+        ? text.slice(0, DETAIL_BODY_LIMIT) + '\n…（已截断显示，点「复制完整 JSON」获取全文）'
+        : text
+      hint.textContent = truncated
+        ? '已截断，共 ' + fmtInt(text.length) + ' 字符'
+        : '共 ' + fmtInt(text.length) + ' 字符'
+      copy.disabled = false
+    }
+
+    function renderDetailInfo(data) {
+      const host = $('detailInfo')
+      host.replaceChildren()
+      const fields = [
+        ['时间', display(data.time)],
+        ['模型', display(data.model)],
+        ['渠道', display(data.channel)],
+        ['Key', display(data.key)],
+        ['状态', display(data.status)],
+        ['流式', display(data.stream)],
+        ['来源', display(data.source)],
+        ['格式', display(data.format)],
+        ['Client IP', display(data.clientIp)],
+        ['总延迟', fmtMs(data.latencyMs)],
+        ['首字延迟', fmtMs(data.firstTokenMs)],
+        ['推理时长', fmtMs(data.reasoningMs)],
+        ['Token', fmtInt(data.totalTokens)],
+        ['明细大小', fmtBytes(data.bodyBytes)],
+      ]
+      for (const [label, value] of fields) {
+        const cell = el('div')
+        cell.append(el('dt', undefined, label), el('dd', undefined, value))
+        host.append(cell)
+      }
+      host.hidden = false
+    }
+
+    function showDetailDialog(id) {
+      detail.generation += 1
+      detail.id = id
+      detail.requestText = ''
+      detail.responseText = ''
+      detail.tab = 'request'
+      detail.lastFocus = document.activeElement
+      $('detailTitle').textContent = '请求明细 #' + id
+      $('detailMeta').textContent = ''
+      $('detailLoading').hidden = false
+      $('detailError').hidden = true
+      $('detailError').textContent = ''
+      $('detailInfo').hidden = true
+      $('detailInfo').replaceChildren()
+      $('detailBodies').hidden = true
+      for (const tab of DETAIL_TABS) {
+        $(tab.pre).textContent = ''
+        $(tab.hint).textContent = ''
+        $(tab.copy).disabled = true
+      }
+      paintDetailBody('request')
+      $('detailModal').hidden = false
+      $('detailClose').focus()
+      return detail.generation
+    }
+
+    async function openDetail(id) {
+      const text = String(id)
+      const generation = showDetailDialog(text)
+      if (!api || typeof api.requestDetail !== 'function') {
+        // An older shell build exposes the usage bridge without the detail method; say so instead of
+        // throwing from a click handler (the apiMissing banner covers the no-bridge case).
+        $('detailLoading').hidden = true
+        $('detailError').textContent = '当前桌面壳不支持查看请求明细，请升级后重试。'
+        $('detailError').hidden = false
+        return
+      }
+      try {
+        const data = await api.requestDetail(text)
+        if (generation !== detail.generation) return
+        if (!data || typeof data !== 'object') throw new Error('明细数据格式不正确。')
+        detail.requestText = stringifyBody(data.requestBody)
+        detail.responseText = stringifyBody(data.responseBody)
+        $('detailLoading').hidden = true
+        $('detailMeta').textContent = [data.model, data.status, data.time].filter(function (part) {
+          return part !== null && part !== undefined && part !== ''
+        }).join(' · ')
+        renderDetailInfo(data)
+        $('detailBodies').hidden = false
+        detail.tab = 'request'
+        paintDetailBody('request')
+      } catch (error) {
+        if (generation !== detail.generation) return
+        $('detailLoading').hidden = true
+        $('detailError').textContent = '读取请求明细失败：' + messageOf(error)
+        $('detailError').hidden = false
+      }
+    }
+
+    function closeDetail() {
+      detail.generation += 1
+      detail.id = null
+      detail.requestText = ''
+      detail.responseText = ''
+      $('detailModal').hidden = true
+      const last = detail.lastFocus
+      detail.lastFocus = null
+      if (last && typeof last.focus === 'function' && document.contains(last)) last.focus()
+    }
+
+    async function writeClipboard(text) {
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text)
+          return true
+        }
+      } catch (error) {
+        // Sandboxed renderers can refuse the async clipboard; fall through to the selection path.
+      }
+      try {
+        const area = document.createElement('textarea')
+        area.value = text
+        area.setAttribute('readonly', '')
+        area.style.position = 'fixed'
+        area.style.top = '-1000px'
+        area.style.opacity = '0'
+        document.body.append(area)
+        area.select()
+        const ok = document.execCommand('copy')
+        area.remove()
+        return ok === true
+      } catch (error) {
+        return false
+      }
+    }
+
+    async function copyDetailBody(key) {
+      const tab = detailTabOf(key)
+      const text = key === 'request' ? detail.requestText : detail.responseText
+      if (text === '') return
+      const button = $(tab.copy)
+      const ok = await writeClipboard(text)
+      button.textContent = ok ? '已复制' : '复制失败'
+      if (!ok) setStatus('复制失败：剪贴板不可用，请在 JSON 代码块中手动选择并复制。', true)
+      setTimeout(function () {
+        button.textContent = '复制完整 JSON'
+      }, 1500)
     }
 
     /* ---------- render one snapshot ---------- */
@@ -1082,6 +1373,33 @@
       })
       $('logPrev').addEventListener('click', () => { void loadLogs(Math.max(1, logs.page - 1)) })
       $('logNext').addEventListener('click', () => { void loadLogs(Math.min(logs.pages, logs.page + 1)) })
+      // One delegated listener for every page of rows; the row carries its id in `data-id`.
+      $('logRows').addEventListener('click', (event) => {
+        const id = detailIdFrom(event)
+        if (id !== '') void openDetail(id)
+      })
+      $('logRows').addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        const id = detailIdFrom(event)
+        if (id === '') return
+        event.preventDefault()
+        void openDetail(id)
+      })
+      $('detailClose').addEventListener('click', closeDetail)
+      $('detailFooterClose').addEventListener('click', closeDetail)
+      $('detailModal').addEventListener('mousedown', (event) => {
+        if (event.target === $('detailModal')) closeDetail()
+      })
+      for (const tab of DETAIL_TABS) {
+        $(tab.button).addEventListener('click', () => { paintDetailBody(tab.key) })
+        $(tab.copy).addEventListener('click', () => { void copyDetailBody(tab.key) })
+      }
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !$('detailModal').hidden) {
+          event.preventDefault()
+          closeDetail()
+        }
+      })
       $('settingsSave').addEventListener('click', () => { void saveSettings() })
       for (const tab of TABS) {
         $(tab.button).addEventListener('click', () => { selectTab(tab.key) })

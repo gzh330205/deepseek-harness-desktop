@@ -318,6 +318,8 @@ export const IPC = {
   usageLoginPoll: 'shell:usage-login-poll',
   usageLogout: 'shell:usage-logout',
   usageRequests: 'shell:usage-requests',
+  /** 用量窗口 → main: one request's full detail (bodies included) from the gateway JSON endpoint. */
+  usageRequestDetail: 'shell:usage-request-detail',
   usageClose: 'shell:usage-close',
   /**
    * 标题栏「用量」按钮 → main: 鼠标在按钮上（anchor）或离开（null）。

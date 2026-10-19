@@ -71,10 +71,14 @@
       android:layout_height="match_parent"
       android:visibility="gone" />
 
+    <!-- Opaque on purpose: the panel sits on top of the WebView in the same FrameLayout, and a
+         transparent background let the page show through when "改地址" was pressed. The system
+         colour keeps it light/dark with the rest of the app. -->
     <ScrollView
       android:id="@+id/setupPanel"
       android:layout_width="match_parent"
       android:layout_height="match_parent"
+      android:background="?android:attr/colorBackground"
       android:fillViewport="true">
 
       <LinearLayout

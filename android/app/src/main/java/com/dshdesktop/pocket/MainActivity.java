@@ -512,7 +512,17 @@ public final class MainActivity extends AppCompatActivity {
     passwordInput.requestFocus();
   }
 
+  /**
+   * Put the setup/maintenance screen up and take the page off screen while it is there.
+   *
+   * The panel and the WebView share a FrameLayout, and the panel used to be transparent while the
+   * WebView kept drawing underneath: pressing 「改地址」 put the form on top of the page it edits.
+   * Hiding the WebView is what makes the panel readable (and stops it rendering in the background).
+   */
   private void showSetup() {
+    if (webView != null) {
+      webView.setVisibility(View.GONE);
+    }
     setupPanel.setVisibility(View.VISIBLE);
   }
 

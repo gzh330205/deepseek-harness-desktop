@@ -108,6 +108,8 @@ if (isUsageDocument()) {
     loginPoll: (key: unknown) => ipcRenderer.invoke(IPC.usageLoginPoll, key) as Promise<unknown>,
     logout: () => ipcRenderer.invoke(IPC.usageLogout) as Promise<unknown>,
     requests: (query: unknown) => ipcRenderer.invoke(IPC.usageRequests, query) as Promise<unknown>,
+    /** One request's detail; the main process validates the id and never puts it into a URL unparsed. */
+    requestDetail: (id: unknown) => ipcRenderer.invoke(IPC.usageRequestDetail, id) as Promise<unknown>,
     close: () => ipcRenderer.invoke(IPC.usageClose) as Promise<boolean>,
   }))
 }

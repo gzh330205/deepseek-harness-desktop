@@ -355,6 +355,9 @@ test('the browser type is registered the way the source documents it', () => {
   assert.match(SOURCE, /scope\.shortcuts\.register\(\{/u)
   // DSH's own browser tab type is disabled through the launch overlay, so only one browser exists.
   assert.match(OVERLAY_SOURCE, /- id: ui-sidebar-browser\r?\n  disabled: true/u)
+  // The account launcher is disabled too: in desktop mode it replaces the footer's settings seat
+  // with a "更多" menu (设置 / 意见反馈 / 登录), so the footer gets a direct 设置 button instead.
+  assert.match(OVERLAY_SOURCE, /- id: ui-settings-account\r?\n  disabled: true/u)
 })
 test('the panel can be asked to open the sidebar browser tab', () => {
   // The shell sends `browser-open-pane` when the agent wants the user to see a page but no panel

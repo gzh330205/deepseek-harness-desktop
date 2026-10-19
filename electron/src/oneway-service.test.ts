@@ -72,6 +72,42 @@ const USAGE_HTML = [
 
 const LOGIN_PAGE_HTML = '<html><head><title>登录 - 企业微信扫码</title></head><body>请扫码</body></html>'
 
+/**
+ * The API key chip as the current gateway renders it: `data-key-value` / `data-key-masked` /
+ * `data-key-full` were added after the class list, which is exactly what broke the old regex.
+ */
+const USAGE_HTML_DATA_KEY = USAGE_HTML.replace(
+  '<code class="px-2 py-1 rounded bg-slate-100 text-slate-700 font-mono break-all">sk-oneway-abcdef</code>',
+  '<code class="px-2 py-1 rounded bg-slate-100 text-slate-700 font-mono break-all" data-key-value="true" data-key-masked="ah-c0c1...5d1bd2" data-key-full="ah-c0c12294d19e0da0bab39295eef232b669e939de4eb2e9959c5792a0af5d1bd2">ah-c0c1...5d1bd2</code>',
+)
+
+/** A small synthetic detail payload; the real one is ~1.3 MB and lives outside the repo. */
+const REQUEST_DETAIL_JSON = {
+  id: 2912434,
+  created_at: 'Mon Oct 19 2026 03:16:49 GMT+0000 (Coordinated Universal Time)',
+  model_id: 'deepseek-flash',
+  api_key_id: 44,
+  api_key_name: '测试 Key',
+  channel_id: 14,
+  channel_name: 'deepseek',
+  status: 'completed',
+  stream: true,
+  source: 'api',
+  format: 'openai/chat_completions',
+  client_ip: '127.0.0.1',
+  metrics_latency_ms: 4293,
+  metrics_first_token_latency_ms: 1320,
+  metrics_reasoning_duration_ms: null,
+  total_tokens: 214163,
+  request_body: { model: 'deepseek-flash', messages: [{ role: 'user', content: '你好' }] },
+  response_body: { id: 'chatcmpl-1', choices: [{ message: { content: '你好！' } }] },
+}
+
+const REQUEST_DETAIL_TEXT = JSON.stringify(REQUEST_DETAIL_JSON)
+
+/** A valid persisted jar for the mock gateway; a bare `name=value` string would restore as empty. */
+const SESSION_COOKIE = JSON.stringify([{ name: 'gw_session', value: 'ok', domain: 'oneway.test', path: '/' }])
+
 function logRow(row: {
   readonly id: string
   readonly time: string
@@ -300,6 +336,22 @@ test('parseUsage reads the user, API key and the three stat groups', () => {
 
   assert.deepEqual(document.requests, { h5: 120, today: 456, week: 7890, month: null, year: 12_000 })
   assert.deepEqual(document.duration, { h5: 49.3, today: 3.5, week: 1.2, month: null, year: null })
+})
+
+test('parseUsage reads the API key chip even when the gateway adds data-key-* attributes', () => {
+  const document = parseUsage(USAGE_HTML_DATA_KEY, 'https://oneway.test')
+  assert.equal(document.apiKey, 'ah-c0c1...5d1bd2')
+  // The old markup (no attributes) still parses.
+  assert.equal(parseUsage(USAGE_HTML, 'https://oneway.test').apiKey, 'sk-oneway-abcdef')
+  // `data-key-masked` wins over the rendered text when the two disagree.
+  const masked = parseUsage(
+    '<html><code class="font-mono break-all" data-key-masked="ah-aaaa...bbbb">ah-zzzz...yyyy</code></html>',
+    'https://oneway.test',
+  )
+  assert.equal(masked.apiKey, 'ah-aaaa...bbbb')
+  // A <code> block that is not the key chip is ignored.
+  const other = parseUsage('<html><code class="font-mono">npm install</code></html>', 'https://oneway.test')
+  assert.equal(other.apiKey, null)
 })
 
 test('parseUsage reads the channel quota table and the model groups', () => {
@@ -753,6 +805,178 @@ test('an auth failure while loading logs invalidates the usage cache as well', a
   const after = await harness.service.snapshot()
   assert.equal(after.loggedIn, false)
   assert.equal(after.needsLogin, true)
+})
+
+/* ------------------------------------------------------------------ */
+/* Request detail                                                      */
+/* ------------------------------------------------------------------ */
+
+function fakeJsonResponse(body: string, headers: Record<string, string> = { 'content-type': 'application/json' }, status = 200): Response {
+  return {
+    status,
+    url: '',
+    headers: new Headers(headers),
+    text: () => Promise.resolve(body),
+    arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+  } as unknown as Response
+}
+
+/** The gateway's detail download: JSON on success, configurable for the failure cases. */
+function detailHandler(reply: MockReply = {}): MockHandler {
+  return ({ url }) => (url.startsWith('https://oneway.test/my-requests/')
+    ? { headers: { 'content-type': 'application/json' }, json: REQUEST_DETAIL_JSON, ...reply }
+    : { status: 404 })
+}
+
+/** A signed-in harness backed by {@link detailHandler}. */
+function detailHarness(reply: MockReply = {}): Harness {
+  return createHarness(detailHandler(reply), { sessionCookie: SESSION_COOKIE })
+}
+
+test('requestDetail fetches the JSON download endpoint, normalizes it and caches by id', async () => {
+  const harness = detailHarness()
+  const detail = await harness.service.requestDetail('2912434')
+  assert.equal(detail.id, '2912434')
+  assert.equal(detail.model, 'deepseek-flash')
+  assert.equal(detail.key, '测试 Key')
+  assert.equal(detail.channel, 'deepseek')
+  assert.equal(detail.status, 'completed')
+  assert.equal(detail.stream, '是')
+  assert.equal(detail.source, 'api')
+  assert.equal(detail.format, 'openai/chat_completions')
+  assert.equal(detail.clientIp, '127.0.0.1')
+  assert.equal(detail.latencyMs, 4293)
+  assert.equal(detail.firstTokenMs, 1320)
+  assert.equal(detail.reasoningMs, null)
+  assert.equal(detail.totalTokens, 214163)
+  assert.deepEqual(detail.requestBody, REQUEST_DETAIL_JSON.request_body)
+  assert.deepEqual(detail.responseBody, REQUEST_DETAIL_JSON.response_body)
+  assert.equal(detail.bodyBytes, Buffer.byteLength(REQUEST_DETAIL_TEXT, 'utf8'))
+  // The gateway serializes the timestamp as Date#toString; the service renders it readably.
+  assert.match(detail.time, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u)
+
+  const call = harness.calls[0]
+  assert.ok(call !== undefined)
+  assert.equal(new URL(call.url).pathname, '/my-requests/2912434/download')
+  assert.match(headerValue(call, 'cookie'), /gw_session=ok/u)
+  assert.match(headerValue(call, 'user-agent'), /Chrome/u)
+  assert.equal(headerValue(call, 'accept'), 'application/json')
+
+  // Number and string forms share the cache, and the cache expires after five minutes.
+  assert.equal((await harness.service.requestDetail(2912434)).totalTokens, 214163)
+  assert.equal(harness.calls.length, 1)
+  harness.advance(5 * 60 * 1000 + 1)
+  await harness.service.requestDetail('2912434')
+  assert.equal(harness.calls.length, 2)
+})
+
+test('requestDetail caps its cache at 20 details so browsing logs cannot accumulate them', async () => {
+  const harness = detailHarness()
+  for (let index = 1; index <= 21; index += 1) await harness.service.requestDetail(String(index))
+  assert.equal(harness.calls.length, 21)
+  // The first id fell out of the cap; the last one is still cached.
+  await harness.service.requestDetail('21')
+  assert.equal(harness.calls.length, 21)
+  await harness.service.requestDetail('1')
+  assert.equal(harness.calls.length, 22)
+})
+
+test('requestDetail rejects ids that are not plain digits, before touching the network', async () => {
+  const harness = detailHarness()
+  for (const id of ['', 'abc', '12/34', '12 34', '1e3', 0, -3, 1.5, Number.NaN]) {
+    await assert.rejects(harness.service.requestDetail(id), /请求编号不合法/u)
+  }
+  assert.equal(harness.calls.length, 0)
+  // Surrounding whitespace is trimmed rather than rejected.
+  await harness.service.requestDetail(' 42 ')
+  assert.equal(new URL(harness.calls[0]?.url ?? '').pathname, '/my-requests/42/download')
+})
+
+test('requestDetail needs a session and says so', async () => {
+  const harness = createHarness(detailHandler())
+  await assert.rejects(harness.service.requestDetail('1'), /尚未登录/u)
+  assert.equal(harness.calls.length, 0)
+})
+
+test('requestDetail rejects a non-JSON response, a broken body and a non-object body', async () => {
+  const html = detailHarness({ headers: { 'content-type': 'text/html' }, body: '<html>登录页</html>' })
+  await assert.rejects(html.service.requestDetail('1'), /返回类型不是 JSON：text\/html/u)
+
+  const broken = detailHarness({ body: '{not json' })
+  await assert.rejects(broken.service.requestDetail('1'), /不是有效的 JSON/u)
+
+  const arrayBody = detailHarness({ body: '[]' })
+  await assert.rejects(arrayBody.service.requestDetail('1'), /格式不正确/u)
+})
+
+test('requestDetail reports an HTTP failure with the status', async () => {
+  const harness = detailHarness({ status: 500, body: 'boom' })
+  await assert.rejects(harness.service.requestDetail('1'), /HTTP 500/u)
+})
+
+test('requestDetail refuses a response over the size limit, declared or actual', async () => {
+  const declared = detailHarness({ headers: { 'content-type': 'application/json', 'content-length': String(17 * 1024 * 1024) } })
+  await assert.rejects(declared.service.requestDetail('1'), /请求明细过大（17\.0 MB）/u)
+
+  // No content-length (chunked): the check has to happen after reading.
+  const actual = detailHarness({ body: 'x'.repeat(16 * 1024 * 1024 + 1) })
+  await assert.rejects(actual.service.requestDetail('1'), /请求明细过大/u)
+})
+
+test('requestDetail turns a dead session into a login prompt on the next snapshot', async () => {
+  // The gateway rejects both the detail download and the dashboard with 401.
+  const harness = createHarness(() => ({ status: 401 }), { sessionCookie: SESSION_COOKIE })
+  await assert.rejects(harness.service.requestDetail('1'), /重新扫码登录/u)
+  const snapshot = await harness.service.snapshot()
+  assert.equal(snapshot.loggedIn, false)
+  assert.equal(snapshot.needsLogin, true)
+})
+
+test('requestDetail merges concurrent requests for one id and does not cache failures', async () => {
+  let release: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  let calls = 0
+  const fetchImpl = (async (): Promise<Response> => {
+    calls += 1
+    await gate
+    // No `id` in the payload: the detail falls back to the id the caller asked for.
+    return fakeJsonResponse(JSON.stringify({ model_id: 'deepseek-flash' }))
+  }) as typeof fetch
+  const scope = createScope({ sessionCookie: SESSION_COOKIE })
+  const service = createUsageService({ scope: scope.scope, fetchImpl, now: () => 1_700_000_000_000 })
+
+  const first = service.requestDetail('7')
+  const second = service.requestDetail('7')
+  release?.()
+  const [a, b] = await Promise.all([first, second])
+  assert.equal(calls, 1)
+  assert.equal(a, b, '并发请求应共享同一个 promise')
+  assert.equal(a.id, '7', '请求体里的 id 缺失时回落到调用方传入的编号')
+
+  let attempts = 0
+  const flaky = createHarness(({ url }) => {
+    if (!url.startsWith('https://oneway.test/my-requests/')) return { status: 404 }
+    attempts += 1
+    return attempts === 1 ? { status: 500 } : { headers: { 'content-type': 'application/json' }, json: REQUEST_DETAIL_JSON }
+  }, { sessionCookie: SESSION_COOKIE })
+  await assert.rejects(flaky.service.requestDetail('8'), /HTTP 500/u)
+  const retried = await flaky.service.requestDetail('8')
+  assert.equal(retried.id, '2912434')
+  assert.equal(flaky.calls.length, 2, '失败不应进入缓存')
+})
+
+test('logout clears cached details as well as the session', async () => {
+  const harness = detailHarness()
+  await harness.service.requestDetail('2912434')
+  assert.equal(harness.calls.length, 1)
+
+  await harness.service.logout()
+  await assert.rejects(harness.service.requestDetail('2912434'), /尚未登录/u)
+
+  // Signing back in must download again rather than serve the previous session's cached detail.
+  await harness.scope.scope.update({ sessionCookie: SESSION_COOKIE })
+  await harness.service.requestDetail('2912434')
+  assert.equal(harness.calls.length, 2)
 })
 
 /* ------------------------------------------------------------------ */
