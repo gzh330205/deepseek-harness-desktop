@@ -52,6 +52,23 @@ export function titleBarPalette(useDarkColors: boolean): { background: string; s
  */
 export const SHELL_PAGE_DOCUMENTS = ['/settings/index.html', '/pocket/index.html', '/usage/index.html', '/mcp/index.html'] as const
 
+/**
+ * The 用量 button's hover card.
+ *
+ * Deliberately **not** in {@link SHELL_PAGE_DOCUMENTS}: that list hands a page the settings bridge, and
+ * this window is a read-only display that must only see its own two-method bridge. The preload (which
+ * page gets which object) and the main process (which sender its IPC accepts) both read this constant.
+ */
+export const USAGE_POPOVER_PAGE = '/usage-popover/index.html'
+/**
+ * Hover card size.
+ *
+ * Small on purpose: it is a glance, not a panel. The layout is three rows and a footer, so the height
+ * is what those rows need; anything larger becomes a window the user has to dismiss.
+ */
+export const USAGE_POPOVER_WIDTH = 300
+export const USAGE_POPOVER_HEIGHT = 150
+
 export type ShellMenuName = 'app' | 'plugins' | 'pocket' | 'usage'
 /**
  * How long the port gate keeps waiting for the port to come free, and how often it retries.
@@ -301,6 +318,17 @@ export const IPC = {
   usageLogout: 'shell:usage-logout',
   usageRequests: 'shell:usage-requests',
   usageClose: 'shell:usage-close',
+  /**
+   * 标题栏「用量」按钮 → main: 鼠标在按钮上（anchor）或离开（null）。
+   *
+   * Fire-and-forget rather than invoke: hover happens many times a second, and a card that never
+   * opens must not leave unhandled promise rejections in the strip.
+   */
+  usagePopoverHover: 'shell:usage-popover-hover',
+  /** 用量浮窗 → main: read one snapshot (used on first paint, when the push may have been missed). */
+  usagePopoverGet: 'shell:usage-popover-get',
+  /** main → 用量浮窗: the snapshot to render (a push, so an already-open card updates at once). */
+  usagePopoverState: 'shell:usage-popover-state',
   /** MCP 与 Skills 窗口 → main: edit the DSH profile patch / skills links. */
   mcpList: 'shell:mcp-list',
   mcpSaveServer: 'shell:mcp-save-server',

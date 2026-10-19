@@ -102,7 +102,7 @@ import { mergeSettingsInput, type SettingsInput } from './settings-shape.ts'
 import { SettingsWindow, type PocketAction, type PocketSnapshot, type SettingsSnapshot, type SettingsSaveResult } from './settings-window.ts'
 import { createPocketService, type PocketService } from './pocket-service.ts'
 import { allowFirewall, probeFirewall, type PocketFirewallStatus } from './pocket-firewall.ts'
-import { pocketQrDataUrl } from './pocket-qr.ts'
+import { pocketConnectLink, pocketQrDataUrl } from './pocket-qr.ts'
 import { createMarketWindow, installForVerification, installGithubForVerification } from './market-open.ts'
 import { marketChildEnvironment, resolveMarketRuntime } from './market-install.ts'
 import { titleBarPalette } from './constants.ts'
@@ -116,6 +116,7 @@ import { WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, fitBounds, readWindowState, writeW
 import { createUsageStore, type UsageStore } from './usage-state.ts'
 import { createUsageService, type UsageService } from './oneway-service.ts'
 import { UsageWindow } from './usage-window.ts'
+import { UsagePopoverWindow, parseUsagePopoverAnchor, toUsagePopoverState, usagePopoverPosition } from './usage-popover-window.ts'
 import { createDshConfigStore, type DshConfigStore } from './dsh-config.ts'
 import { McpWindow } from './mcp-window.ts'
 import { provisionBundledPlugins } from './plugin-provision.ts'
@@ -165,6 +166,8 @@ let pocketWindowRef: SettingsWindow | undefined
 let pocketService: PocketService | undefined
 /** 用量窗口（ONE-WAY）：状态与抓取都在主进程，页面只拿快照。 */
 let usageWindowRef: UsageWindow | undefined
+/** 标题栏「用量」按钮的悬浮卡片：只展示，不抢鼠标，也不进任务栏。 */
+let usagePopoverRef: UsagePopoverWindow | undefined
 let usageStore: UsageStore | undefined
 let usageService: UsageService | undefined
 /** MCP 与 Skills：直接编辑 DSH profile 补丁与 skills 目录，不经过注入插件。 */
@@ -1174,6 +1177,8 @@ function popupShellMenu(
   anchor?: { x: number; y: number; height: number },
   hooks?: { readonly onItems?: (labels: readonly string[]) => void; readonly onMenu?: (menu: Electron.Menu) => void },
 ): Promise<boolean> {
+  // 开菜单前先收起用量悬浮卡片：卡片是 alwaysOnTop 的，留在菜单旁边只会挡住菜单内容。
+  usagePopoverRef?.hide()
   const window = mainWindow
   if (window === undefined || window.isDestroyed()) return Promise.resolve(false)
   const template = MENU_TEMPLATES[name]()
@@ -1344,15 +1349,33 @@ function pocketSnapshot(): PocketSnapshot {
     ...(apkQr === undefined ? {} : { apkQr }),
     ...(pocketFirewall === undefined ? {} : { firewall: pocketFirewall }),
   }
-  const url = status.url
-  if (url === undefined) return withApp
-  let qr: string | undefined
-  try {
-    qr = pocketQrDataUrl(url)
-  } catch (error) {
-    pushLog(`手机访问二维码生成失败：${error instanceof Error ? error.message : String(error)}`)
+
+  /**
+   * QR code for one connection.
+   *
+   * The payload is the `dshpocket://connect` deep link, not the bare address: one scan has to hand
+   * the phone **both** the address and the password (the plain-address code forced the user to read
+   * the password off the desktop and type it on the phone). The Pocket app fills both fields; a phone
+   * without the app can still read the address/password text on the page. Cell size 4 because the
+   * deep link is longer than a URL and the panel is narrow.
+   */
+  const connectionQr = (label: string, url: string | undefined, password: string): string | undefined => {
+    if (url === undefined || url === '') return undefined
+    try {
+      return pocketQrDataUrl(pocketConnectLink(url, password), { cellSize: 4 })
+    } catch (error) {
+      pushLog(`${label}二维码生成失败：${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
   }
-  return qr === undefined ? withApp : { ...withApp, qr }
+
+  const lanQr = connectionQr('手机访问', status.url, status.password)
+  const publicQr = connectionQr('公网访问', status.publicAccess.url, status.publicAccess.password)
+  return {
+    ...withApp,
+    ...(lanQr === undefined ? {} : { qr: lanQr }),
+    ...(publicQr === undefined ? {} : { publicAccess: { ...status.publicAccess, qr: publicQr } }),
+  }
 }
 
 /** Act on phone access from the settings page; every action answers with the fresh status. */
@@ -1616,6 +1639,61 @@ function installUsageWindow(): void {
     },
   })
   usageWindowRef.install()
+}
+
+/**
+ * 标题栏「用量」按钮的悬浮卡片。
+ *
+ * 悬浮与点击是同一条入口的两个动作：悬停只显示这张只读卡片（不抢焦点、不接收鼠标），点击仍然走
+ * `popupShellMenu` 打开原来的用量菜单。数据由主进程喂：页面没有网络，也拿不到 cookie。
+ *
+ * 位置在主进程算（`usagePopoverPosition`，纯函数、有单测）：标题栏在自己的视图坐标系里报按钮矩形，
+ * 这里加上窗口内容区的屏幕原点，再 clamp 到该显示器的工作区。放在渲染进程算的话，多显示器/负坐标
+ * 这些情况只能在真机上碰运气。
+ */
+function installUsagePopover(): void {
+  const popover = new UsagePopoverWindow({
+    appRoot: app.getAppPath(),
+    backgroundColor: titleBarPalette(nativeTheme.shouldUseDarkColors).background,
+    snapshot: async () => toUsagePopoverState(await usage().snapshot()),
+    log: pushLog,
+  })
+  usagePopoverRef = popover
+  void popover.install().catch((error: unknown) => { pushLog(`用量浮窗：IPC 注册失败（${String(error)}）`) })
+
+  // 只有标题栏能驱动这张卡片：产品页是另一个来源，不该让原生浮窗出现在自己上面。
+  ipcMain.on(IPC.usagePopoverHover, (event, anchor: unknown) => {
+    if (event.sender !== titleBarView?.webContents) return
+    const rect = parseUsagePopoverAnchor(anchor)
+    if (rect === undefined) {
+      popover.hide()
+      return
+    }
+    const window = mainWindow
+    if (window === undefined || window.isDestroyed()) {
+      popover.hide()
+      return
+    }
+    const contentBounds = window.getContentBounds()
+    void popover.show(usagePopoverPosition({
+      anchor: rect,
+      contentBounds,
+      // The display the window is actually on, not the primary one: the card must stay on the same
+      // monitor as the button, and inside that monitor's work area (taskbar excluded).
+      workArea: screen.getDisplayMatching(contentBounds).workArea,
+    })).catch((error: unknown) => { pushLog(`用量浮窗：显示失败（${String(error)}）`) })
+  })
+
+  // 卡片浮在所有窗口之上：主窗口失焦、隐藏、最小化或被拖动/缩放后，它必须跟着消失，否则会悬在
+  // 一个已经不在那儿的按钮下面。
+  const owner = mainWindow
+  if (owner !== undefined && !owner.isDestroyed()) {
+    owner.on('blur', () => { popover.hide() })
+    owner.on('hide', () => { popover.hide() })
+    owner.on('minimize', () => { popover.hide() })
+    owner.on('move', () => { popover.hide() })
+    owner.on('resize', () => { popover.hide() })
+  }
 }
 
 /** `$DSH_HOME`: the managed override, or the user's own `~/.dsh`. */
@@ -1930,6 +2008,19 @@ async function driveSmokeMenu(): Promise<void> {
     report.usageClose = { windowClosed: usageWindowRef?.isOpen() === false }
   } catch (error) {
     report.usageWindow = { loaded: false, error: String(error) }
+  }
+
+  // 用量按钮的悬浮卡片：hover 是用户唯一能触发它的方式，所以直接 show 到固定坐标，证明页面画出来、
+  // preload 桥加载、三个指标元素存在，最后确认能收起。失败只写进本段报告，不影响其他步骤。
+  try {
+    await step('usage-popover-show', async () => { await usagePopoverRef?.show({ x: 60, y: 120 }) })
+    const probe = await step('usage-popover-probe', async () => await usagePopoverRef?.probe() ?? { loaded: false, bridge: false, selectors: {} })
+      ?? { loaded: false, bridge: false, selectors: {} }
+    usagePopoverRef?.hide()
+    await new Promise<void>((resolve) => { setTimeout(resolve, 200) })
+    report.usagePopover = { ...probe, hidden: usagePopoverRef?.isVisible() === false }
+  } catch (error) {
+    report.usagePopover = { loaded: false, bridge: false, selectors: {}, hidden: false, error: String(error) }
   }
 
   // MCP & Skills window: painted, bridge reachable. `skills()` only reads the local skills
@@ -2265,6 +2356,7 @@ async function boot(): Promise<void> {
   installUpdates()
   installSettingsWindow()
   installUsageWindow()
+  installUsagePopover()
   installMcpWindow()
 
   // A bundled runtime is the executable half of the product: verify it is the tree that

@@ -105,12 +105,23 @@ const LOGS_HTML = '<div class="p-6"><p class="text-sm text-slate-500">共 1,234 
 /* Gateway mock                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The WeCom qrcode endpoint answers with a real PNG (probed: `200 image/png`, PNG magic 89504e47),
+ * and that image *is* the login code. A valid 1×1 PNG keeps the mock honest about the bytes the
+ * service must decode and re-encode, without depending on a binary fixture file.
+ */
+const MOCK_QR_PNG = Uint8Array.from(
+  Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'),
+)
+
 interface MockReply {
   readonly status?: number
   readonly headers?: Record<string, string>
   readonly setCookies?: readonly string[]
   readonly body?: string
   readonly json?: unknown
+  /** Raw bytes for binary replies (the QR PNG); takes precedence over `body`. */
+  readonly bytes?: Uint8Array
   /** Response URL, which the parser's auth check inspects; defaults to the request URL. */
   readonly url?: string
 }
@@ -133,6 +144,7 @@ function createFetch(handler: MockHandler): { fetchImpl: typeof fetch; calls: Fe
     const headers = new Headers(reply.headers ?? {})
     for (const cookie of reply.setCookies ?? []) headers.append('set-cookie', cookie)
     const body = reply.body ?? (reply.json === undefined ? '' : JSON.stringify(reply.json))
+    const bytes = reply.bytes === undefined ? new ArrayBuffer(0) : (new Uint8Array(reply.bytes).buffer as ArrayBuffer)
     // A plain object is enough: the service only reads status/url/headers/text/json/arrayBuffer.
     const fake = {
       status: reply.status ?? 200,
@@ -140,7 +152,7 @@ function createFetch(handler: MockHandler): { fetchImpl: typeof fetch; calls: Fe
       headers,
       text: () => Promise.resolve(body),
       json: () => (reply.json === undefined ? Promise.reject(new Error('不是 JSON')) : Promise.resolve(reply.json)),
-      arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+      arrayBuffer: () => Promise.resolve(bytes.slice(0)),
     }
     return fake as unknown as Response
   }) as typeof fetch
@@ -197,6 +209,8 @@ interface LoginScript {
   grantSession: boolean
   /** Statuses the WeCom poll endpoint returns, one per call. */
   readonly pollReplies: readonly string[]
+  /** Overrides the QR-image reply; used for the "endpoint failed" cases. */
+  readonly qrReply?: MockReply
 }
 
 /** The full SSO → WeCom → gateway handshake, as the real endpoints behave. */
@@ -211,9 +225,16 @@ function loginHandler(script: LoginScript): MockHandler {
       }
     }
     if (url.startsWith('https://login.work.weixin.qq.com/wwlogin/sso/qrcode')) {
+      // One path serves both things the flow needs: `?login_type=…` is the scan page, `?key=…` is
+      // the QR image the page embeds. A mock that matched only the prefix would answer the image
+      // request with HTML — exactly the ambiguity the real service has to treat differently.
+      if (url.includes('key=')) {
+        return script.qrReply ?? { status: 200, headers: { 'content-type': 'image/png' }, bytes: MOCK_QR_PNG }
+      }
       // `web_key` is the QR identity the page serializes as NUXT JSON; the SSO escapes "/" as \u002F.
       return {
         status: 200,
+        headers: { 'content-type': 'text/html' },
         body: `<html><script>window.__NUXT__={"web_key":"a1b2c3d4${String(script.issued)}","state":"a\\u002Fb c","redirect_uri":"https:\\u002F\\u002Foauth.eportyun.com\\u002Fsso\\u002Fwecom\\u002Fcallback"};</script></html>`,
       }
     }
@@ -493,18 +514,72 @@ test('snapshot serves the cache for refreshSeconds and refetches when forced', a
 /* QR login state machine                                              */
 /* ------------------------------------------------------------------ */
 
-test('startLogin returns a QR data URL and reuses the flow that is on screen', async () => {
+test('startLogin returns the WeCom login PNG itself, not a QR code drawn around its URL', async () => {
   const script: LoginScript = { issued: 0, polls: 0, grantSession: true, pollReplies: [] }
   const harness = createHarness(loginHandler(script))
   const first = await harness.service.startLogin()
   assert.match(first.key, /^[a-f0-9]+$/u)
-  assert.ok(first.qrDataUrl.startsWith('data:image/gif;base64,'))
+  assert.ok(first.qrDataUrl.startsWith('data:image/png;base64,'), '扫码要直接显示企业微信返回的 PNG')
+  const encoded = first.qrDataUrl.slice('data:image/png;base64,'.length)
+  assert.deepEqual(new Uint8Array(Buffer.from(encoded, 'base64')), MOCK_QR_PNG, 'data URL 必须原样携带二维码字节')
   assert.equal(first.expiresAt, harness.clock.now + 10 * 60 * 1000)
+  // The image is requested with the page's web_key — the magic that makes one scan enough.
+  const qrCall = harness.calls.find(call => call.url.startsWith('https://login.work.weixin.qq.com/wwlogin/sso/qrcode?key='))
+  assert.ok(qrCall !== undefined, '必须按 web_key 抓取二维码图片')
+  assert.equal(new URL(qrCall.url).searchParams.get('key'), first.key)
   const fetchesAfterFirst = harness.calls.length
 
   const again = await harness.service.startLogin()
   assert.equal(again.key, first.key)
+  assert.equal(again.qrDataUrl, first.qrDataUrl)
   assert.equal(harness.calls.length, fetchesAfterFirst, '未过期时不应重新签发二维码')
+})
+
+test('startLogin reports a readable error when the QR image endpoint fails', async () => {
+  const failing: LoginScript = {
+    issued: 0,
+    polls: 0,
+    grantSession: true,
+    pollReplies: [],
+    qrReply: { status: 500, body: 'upstream exploded' },
+  }
+  const harness = createHarness(loginHandler(failing))
+  await assert.rejects(harness.service.startLogin(), /无法获取企业微信登录二维码（HTTP 500）/u)
+  // A failed start leaves no flow behind, so a retry reissues both the page and the image.
+  assert.equal(failing.issued, 1)
+  await assert.rejects(harness.service.startLogin(), /无法获取企业微信登录二维码（HTTP 500）/u)
+  assert.equal(failing.issued, 2, '失败的二维码不应被当作可复用的 flow')
+})
+
+test('startLogin rejects a QR response that is not an image, or is empty', async () => {
+  const notImage: LoginScript = {
+    issued: 0,
+    polls: 0,
+    grantSession: true,
+    pollReplies: [],
+    qrReply: { status: 200, headers: { 'content-type': 'text/html' }, body: '<html>不是二维码</html>' },
+  }
+  await assert.rejects(createHarness(loginHandler(notImage)).service.startLogin(), /返回类型不是图片：text\/html/u)
+
+  const empty: LoginScript = {
+    issued: 0,
+    polls: 0,
+    grantSession: true,
+    pollReplies: [],
+    qrReply: { status: 200, headers: { 'content-type': 'image/png' }, bytes: new Uint8Array(0) },
+  }
+  await assert.rejects(createHarness(loginHandler(empty)).service.startLogin(), /响应为空/u)
+})
+
+test('startLogin rejects an absurdly large QR response instead of base64ing it', async () => {
+  const huge: LoginScript = {
+    issued: 0,
+    polls: 0,
+    grantSession: true,
+    pollReplies: [],
+    qrReply: { status: 200, headers: { 'content-type': 'image/png' }, bytes: new Uint8Array(1024 * 1024) },
+  }
+  await assert.rejects(createHarness(loginHandler(huge)).service.startLogin(), /图片过大/u)
 })
 
 test('startLogin issues a new QR code when the caller asks to refresh', async () => {

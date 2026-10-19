@@ -100,11 +100,15 @@ public final class MainActivity extends AppCompatActivity {
     configureWebView();
 
     scanner = registerForActivityResult(new ScanContract(), result -> {
-      if (result.getContents() == null) {
+      String contents = result.getContents() == null ? "" : result.getContents().trim();
+      if (contents.isEmpty()) {
         return;
       }
-      String contents = result.getContents() == null ? "" : result.getContents().trim();
-      String scanned = PocketAddress.normalise(contents);
+      // The desktop's QR codes are `dshpocket://connect?url=…&password=…` deep links now, so one
+      // scan can fill both boxes. A plain address (an older code, or another tool's code) still
+      // works through the fallback.
+      PocketAddress.Connect link = PocketAddress.connectLink(contents);
+      String scanned = link != null ? link.address : PocketAddress.normalise(contents);
       if (scanned == null) {
         showSetup();
         // The desktop shows two codes: one opens the app, one is the address. Scanning the wrong one
@@ -117,6 +121,11 @@ public final class MainActivity extends AppCompatActivity {
         return;
       }
       addressInput.setText(scanned);
+      if (link != null && link.password != null) {
+        // Both halves came in the code: connect() reads the password field, so the scan is the
+        // whole setup step.
+        passwordInput.setText(link.password);
+      }
       connect(scanned);
     });
 
@@ -175,19 +184,22 @@ public final class MainActivity extends AppCompatActivity {
       return true;
     });
 
-    handleConnectLink(getIntent());
     String remembered = store.password();
     if (remembered != null) {
       passwordInput.setText(remembered);
     }
 
-    List<String> saved = store.addresses();
-    if (saved.isEmpty()) {
-      showSetup();
-      status(getString(R.string.setup_hint));
-    } else {
-      addressInput.setText(saved.get(0));
-      connect(null);
+    // A deep link wins over the remembered address list: filling both boxes and then replacing them
+    // with the last-used address is how the link used to be ignored on a cold start.
+    if (!handleConnectLink(getIntent())) {
+      List<String> saved = store.addresses();
+      if (saved.isEmpty()) {
+        showSetup();
+        status(getString(R.string.setup_hint));
+      } else {
+        addressInput.setText(saved.get(0));
+        connect(null);
+      }
     }
   }
 
@@ -252,36 +264,46 @@ public final class MainActivity extends AppCompatActivity {
   }
 
   /**
-   * Pick up an address from `dshpocket://connect?url=…`.
+   * Pick up a connection from `dshpocket://connect?url=…&password=…`.
    *
-   * Focus goes to the password field: a link that filled in the address and then made the user hunt for
-   * the next box would be worse than typing it by hand.
+   * The desktop's QR codes carry the password too, so a link can fill both fields and the user only
+   * has to press 「连接」. An older link (address only) keeps working: the password box is cleared and
+   * focused as before. Focus matters because at `onCreate` the tree is not laid out yet, so that
+   * request is posted rather than made directly.
    *
    * @param intent - The intent that started or resumed this activity.
+   * @return Whether a link was handled, so a cold start does not replace it with a saved address.
    */
-  private void handleConnectLink(Intent intent) {
+  private boolean handleConnectLink(Intent intent) {
     if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) {
-      return;
+      return false;
     }
-    String address = PocketAddress.fromConnectLink(intent.getDataString());
-    if (address == null) {
+    PocketAddress.Connect link = PocketAddress.connectLink(intent.getDataString());
+    if (link == null) {
       status("这个链接里没有可用的电脑地址。");
-      return;
+      return true;
     }
-    android.util.Log.i("DshPocket", "深链接 → " + address);
-    addressInput.setText(address);
+    android.util.Log.i("DshPocket", "深链接 → " + link.address);
+    addressInput.setText(link.address);
+    if (link.password != null) {
+      // Both halves arrived with the link; the field is already filled, so the user only confirms.
+      passwordInput.setText(link.password);
+      showSetup();
+      passwordInput.post(() -> status("地址和密码已从链接填入，点「连接」即可。"));
+      return true;
+    }
     if (store.rememberPassword() && store.password() != null) {
-      connect(address);
-      return;
+      connect(link.address);
+      return true;
     }
     // A stale value from the last session must not look like the password the link expects.
     passwordInput.setText("");
-    // `post`, not a direct call: at `onCreate` the tree is not laid out yet, and a focus request on an
-    // unattached view is silently dropped — the user then types the password into the address field.
+    showSetup();
     passwordInput.post(() -> {
       passwordInput.requestFocus();
       status("地址已从链接填入，输入电脑上显示的访问密码即可。");
     });
+    return true;
   }
 
   @Override

@@ -66,6 +66,25 @@ test('exactly the bridge methods from the ONE-WAY window contract are used', () 
   assert.deepEqual([...used].sort(), expected, '方法名必须与 preload 契约一致')
 })
 
+test('one page-level scrollbar: inner tables and trend lists no longer scroll on their own', () => {
+  // The window used to have `main { overflow-y: auto }` plus a capped-height `.table-wrap` and
+  // `.bar-list` with their own `overflow`, so scrolling the page inside a panel produced a second,
+  // inner scrollbar. Exactly one rule may scroll vertically now.
+  assert.equal((page.match(/overflow-y:\s*auto/gu) ?? []).length, 1, 'main 是唯一的纵向滚动容器')
+  assert.match(page, /\.table-wrap \{[^}]*overflow-x: auto/u, '窄窗口仍要能横向滚动表格')
+  // Vertical overflow is left to the page: the table-wrap must not cap or scroll its height.
+  assert.doesNotMatch(page, /\.table-wrap \{[^}]*max-height/u)
+  // `overflow-x: auto` alone computes `overflow-y` as `auto` (CSS rule), which made the box a second
+  // vertical scroll container in computed styles; say `clip` explicitly so the single-scroll intent is
+  // visible in the stylesheet and in the layout probe.
+  assert.match(page, /\.table-wrap \{[^}]*overflow-y: clip/u)
+  assert.doesNotMatch(page, /\.table-wrap \{[^}]*overflow-y: (?:auto|scroll)/u)
+  // Same for the hourly/daily lists: they now grow with the page.
+  assert.doesNotMatch(page, /\.bar-list \{[^}]*max-height/u)
+  assert.doesNotMatch(page, /\.bar-list \{[^}]*overflow/u)
+  assert.doesNotMatch(page, /overflow:\s*auto/u, '内层不能再出现双向 auto 滚动')
+})
+
 test('three metric cards show the plugin trio, relative to this week (month when the week is 0)', () => {
   const metrics: ReadonlyArray<readonly [string, string]> = [['metricH5', '近 5 小时'], ['metricToday', '今日'], ['metricWeek', '本周']]
   for (const [id, label] of metrics) {
@@ -160,7 +179,7 @@ test('QR login: loginStart image, 1.5 s loginPoll loop, and every state answered
   assert.match(script, /phase === 'confirmed'[\s\S]{0,320}refreshNow\(\)/u)
 })
 
-test('settings are collapsible, validated (30–3600 s) and refresh immediately after saving', () => {
+test('settings open from the top bar and sit at the top of the page, validated and refreshing immediately', () => {
   assert.match(markup, /<details class="settings" id="settingsBox"/u)
   assert.match(markup, /id="baseUrlInput"/u)
   assert.match(markup, /id="refreshSecondsInput"[^>]*min="30"[^>]*max="3600"/u)
@@ -171,6 +190,21 @@ test('settings are collapsible, validated (30–3600 s) and refresh immediately 
   assert.match(script, /await refreshNow\(\)/u, '保存后立即刷新')
   assert.match(script, /baseUrlInput'\)\.value = settingsCache\.baseUrl/u, '设置表单要回填当前值')
   assert.match(script, /await applySettingsFromShell\(true\)/u, '打开窗口时要把已保存的设置填进表单')
+
+  // The toggle lives in the top bar next to 立即刷新; the form itself is the first thing in <main>,
+  // ahead of the metric cards — it used to be the last block on the page, which is what made it hard
+  // to find. Both controls drive the same <details>, so there is still exactly one settings form.
+  const header = markup.slice(markup.indexOf('<header class="topbar"'), markup.indexOf('</header>'))
+  assert.match(header, /id="refreshBtn"/u)
+  assert.match(header, /id="settingsToggle"[^>]*aria-controls="settingsBox"/u)
+  assert.ok(markup.indexOf('id="refreshBtn"') < markup.indexOf('id="settingsToggle"'), '设置按钮紧挨立即刷新')
+  assert.ok(markup.indexOf('id="settingsBox"') < markup.indexOf('class="cards"'), '设置面板要移到 main 顶部')
+  assert.match(script, /function toggleSettings\(\)/u)
+  assert.match(script, /\$\('settingsBox'\)/u)
+  assert.match(script, /box\.open = !box\.open/u)
+  assert.match(script, /scrollIntoView\(/u, '打开设置后要滚到可见')
+  assert.match(script, /\$\('settingsToggle'\)\.addEventListener\('click', toggleSettings\)/u)
+  assert.match(script, /aria-expanded/u, '按钮与 <details> 的展开状态要保持同步')
 })
 
 test('automatic polling re-reads the settings before every get, so a new interval takes effect', () => {

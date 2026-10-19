@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 
 import { DEFAULT_POCKET_PORT, createPocketService, type PocketService } from './pocket-service.ts'
-import type { PocketTunnel, PocketTunnelStatus } from './pocket-tunnel.ts'
+import type { PocketTunnelRecord } from './pocket-state.ts'
+import type { PocketTunnel, PocketTunnelRequest, PocketTunnelStatus } from './pocket-tunnel.ts'
 import { DEFAULT_POCKET_SETTINGS } from './settings-shape.ts'
 
 const closers: (() => Promise<void> | void)[] = []
@@ -267,10 +268,14 @@ test('disposing stops the listener', async () => {
 // --- the public door -------------------------------------------------------------------------
 
 /** A tunnel that reports success without touching the network; the module has its own tests. */
-function fakeTunnel(url = 'https://random-words-here.trycloudflare.com/'): PocketTunnel {
+function fakeTunnel(
+  url = 'https://random-words-here.trycloudflare.com/',
+  requests: PocketTunnelRequest[] = [],
+): PocketTunnel {
   let current: PocketTunnelStatus = { running: false, mode: 'quick' }
   return {
-    async start(request: { readonly mode: 'quick' | 'named'; readonly token?: string; readonly domain?: string }) {
+    async start(request: PocketTunnelRequest) {
+      requests.push(request)
       current = { running: true, mode: request.mode, url: request.mode === 'named' ? `https://${request.domain ?? ''}/` : url }
       return current
     },
@@ -281,14 +286,51 @@ function fakeTunnel(url = 'https://random-words-here.trycloudflare.com/'): Pocke
   }
 }
 
-async function startPublicService(options: { readonly enabled?: boolean; readonly accepted?: boolean; readonly customPassword?: string } = {}): Promise<Fixture> {
+/** A tunnel that never comes up, for the "failed start must not forget the token" case. */
+function failingTunnel(): PocketTunnel {
+  let current: PocketTunnelStatus = { running: false, mode: 'named' }
+  return {
+    async start(request: PocketTunnelRequest) {
+      current = { running: false, mode: request.mode, error: '隧道故意失败' }
+      return current
+    },
+    async stop() {
+      current = { running: false, mode: current.mode }
+    },
+    status: () => current,
+  }
+}
+
+/** Named-tunnel settings: fixed hostname, token already stored, public side switched on. */
+const NAMED_SETTINGS = {
+  ...FREE_PORT_SETTINGS,
+  tunnel: { ...FREE_PORT_SETTINGS.tunnel, enabled: true, mode: 'named' as const, domain: 'pocket.example.com' },
+}
+
+/** Read the tunnel record back from the state file, as a restart would. */
+function savedTunnel(dir: string): PocketTunnelRecord | undefined {
+  const state = JSON.parse(readFileSync(join(dir, 'pocket.json'), 'utf8')) as { tunnel?: PocketTunnelRecord }
+  return state.tunnel
+}
+
+async function startPublicService(options: {
+  readonly accepted?: boolean
+  readonly customPassword?: string
+  /** Reuse a directory, which is how a restart is simulated. */
+  readonly dir?: string
+  readonly tunnelRecord?: PocketTunnelRecord
+  readonly tunnelRequests?: PocketTunnelRequest[]
+  readonly createTunnel?: () => PocketTunnel
+} = {}): Promise<Fixture> {
   const upstream = await startUpstream()
-  const dir = mkdtempSync(join(tmpdir(), 'pocket-public-'))
-  if (options.accepted === true) {
+  const dir = options.dir ?? mkdtempSync(join(tmpdir(), 'pocket-public-'))
+  const record = options.tunnelRecord
+    ?? (options.accepted === true ? { mode: 'quick' as const, accepted: true } : undefined)
+  if (record !== undefined || options.customPassword !== undefined) {
     writeFileSync(join(dir, 'pocket.json'), `${JSON.stringify({
       version: 1,
       lan: { password: 'Gen00001' },
-      tunnel: { mode: 'quick', accepted: true },
+      ...(record === undefined ? {} : { tunnel: record }),
       ...(options.customPassword === undefined ? {} : { public: { password: options.customPassword, custom: true } }),
     }, null, 2)}\n`, 'utf8')
   }
@@ -300,7 +342,7 @@ async function startPublicService(options: { readonly enabled?: boolean; readonl
     dshCookie: () => 'dsh-auth=shell-cookie',
     log: () => {},
     tunnelBinary: 'C:/fake/cloudflared.exe',
-    createTunnel: () => fakeTunnel(),
+    createTunnel: options.createTunnel ?? (() => fakeTunnel(undefined, options.tunnelRequests)),
     candidates: () => addresses.map(address => ({ address, name: 'test', virtual: false })),
     generate: () => `Gen${String(++serial).padStart(5, '0')}`,
   })
@@ -389,7 +431,7 @@ test('each quick tunnel gets a fresh public password unless the user fixed one',
   assert.equal(third, 'Custom1234', '用户固定过的密码不该被轮换')
 })
 
-test('the tunnel is stopped and forgotten when public access is turned off', async () => {
+test('turning public access off withdraws the acknowledgement, so the next boot cannot reopen it', async () => {
   const fixture = await startPublicService({ accepted: true })
   const { service } = fixture
   await service.apply(FREE_PORT_SETTINGS)
@@ -397,7 +439,122 @@ test('the tunnel is stopped and forgotten when public access is turned off', asy
   const stopped = await service.stopTunnel()
   assert.equal(stopped.publicAccess.running, false)
 
-  // Forgotten on disk, so the next boot cannot reopen a door the user closed.
-  const state = JSON.parse(readFileSync(join(fixture.dir, 'pocket.json'), 'utf8')) as { tunnel?: unknown }
-  assert.equal(state.tunnel, undefined)
+  // The record stays (mode is cheap to keep), but `accepted: false` is what a restart checks.
+  const state = JSON.parse(readFileSync(join(fixture.dir, 'pocket.json'), 'utf8')) as { tunnel?: { accepted?: boolean } }
+  assert.equal(state.tunnel?.accepted, false)
+})
+
+test('a tunnel the user opened survives a restart, token included', async () => {
+  const requests: PocketTunnelRequest[] = []
+  const first = await startPublicService({
+    tunnelRecord: { mode: 'named', accepted: true, token: 'tok-abc', domain: 'pocket.example.com' },
+    tunnelRequests: requests,
+  })
+  await first.service.apply(NAMED_SETTINGS)
+  const started = await first.service.startTunnel({ acceptedDisclaimer: true })
+  assert.equal(started.publicAccess.running, true)
+
+  await first.service.dispose()
+  // Quitting the app is not the user closing public access: the record has to survive, or the
+  // tunnel they had open would never come back after a restart.
+  const saved = savedTunnel(first.dir)
+  assert.equal(saved?.accepted, true)
+  assert.equal(saved?.token, 'tok-abc')
+  assert.equal(saved?.domain, 'pocket.example.com')
+  assert.equal(first.service.status().publicAccess.running, false, '退出时隧道本身应该停掉')
+
+  // Rebuild on the same state directory — that is what the next launch does.
+  const second = await startPublicService({ dir: first.dir, tunnelRequests: requests })
+  await second.service.apply(NAMED_SETTINGS)
+  assert.equal(second.service.status().publicAccess.running, false, 'apply 只恢复局域网，公网要等 restoreTunnel')
+  assert.equal(second.service.status().publicAccess.hasToken, true)
+
+  const restored = await second.service.restoreTunnel()
+  assert.equal(restored.publicAccess.running, true)
+  assert.equal(restored.publicAccess.error, undefined)
+  const lastRequest = requests[requests.length - 1]
+  assert.equal(lastRequest?.token, 'tok-abc', '重启后必须复用已存的 Tunnel Token')
+  assert.equal(lastRequest?.domain, 'pocket.example.com')
+})
+
+test('a user-closed tunnel is not reopened by a restart', async () => {
+  const fixture = await startPublicService({
+    tunnelRecord: { mode: 'named', accepted: true, token: 'tok-abc', domain: 'pocket.example.com' },
+  })
+  await fixture.service.apply(NAMED_SETTINGS)
+  await fixture.service.startTunnel({ acceptedDisclaimer: true })
+  await fixture.service.stopTunnel()
+  await fixture.service.dispose()
+
+  const second = await startPublicService({ dir: fixture.dir })
+  await second.service.apply(NAMED_SETTINGS)
+  const restored = await second.service.restoreTunnel()
+  assert.equal(restored.publicAccess.running, false, '用户主动关闭过的不得自动打开')
+})
+
+test('closing public access keeps the token, so reopening needs no retyping', async () => {
+  const requests: PocketTunnelRequest[] = []
+  const fixture = await startPublicService({
+    tunnelRecord: { mode: 'named', accepted: true, token: 'tok-abc', domain: 'pocket.example.com' },
+    tunnelRequests: requests,
+  })
+  await fixture.service.apply(NAMED_SETTINGS)
+  await fixture.service.startTunnel({ acceptedDisclaimer: true })
+
+  const stopped = await fixture.service.stopTunnel()
+  assert.equal(stopped.publicAccess.running, false)
+  assert.equal(stopped.publicAccess.hasToken, true)
+  const saved = savedTunnel(fixture.dir)
+  assert.equal(saved?.accepted, false, '主动关闭后不能再自动恢复')
+  assert.equal(saved?.token, 'tok-abc', '关闭不能丢掉 Token')
+  assert.equal(saved?.domain, 'pocket.example.com')
+
+  const reopened = await fixture.service.startTunnel({ acceptedDisclaimer: true })
+  assert.equal(reopened.publicAccess.running, true)
+  assert.equal(requests[requests.length - 1]?.token, 'tok-abc')
+})
+
+test('a failed start keeps the token, but not the acknowledgement', async () => {
+  const fixture = await startPublicService({
+    tunnelRecord: { mode: 'named', accepted: true, token: 'tok-abc', domain: 'pocket.example.com' },
+    createTunnel: () => failingTunnel(),
+  })
+  await fixture.service.apply(NAMED_SETTINGS)
+  const failed = await fixture.service.startTunnel({ acceptedDisclaimer: true })
+  assert.equal(failed.publicAccess.running, false)
+  assert.match(String(failed.publicAccess.error), /隧道/u)
+  assert.equal(failed.publicAccess.hasToken, true)
+
+  const saved = savedTunnel(fixture.dir)
+  assert.equal(saved?.token, 'tok-abc', '启动失败不能把 Token 一起清掉')
+  assert.equal(saved?.accepted, false, '失败后重启不该偷偷重试')
+})
+
+test('an empty token field leaves the saved token alone', async () => {
+  const fixture = await startPublicService({
+    tunnelRecord: { mode: 'named', accepted: true, token: 'tok-abc', domain: 'pocket.example.com' },
+  })
+  await fixture.service.apply(NAMED_SETTINGS)
+
+  const unchanged = fixture.service.setTunnelToken('')
+  assert.equal(unchanged.publicAccess.hasToken, true, '「留空则不修改」不能清掉已存 Token')
+  assert.equal(savedTunnel(fixture.dir)?.token, 'tok-abc')
+
+  fixture.service.setTunnelToken('tok-new')
+  assert.equal(savedTunnel(fixture.dir)?.token, 'tok-new', '填了新值仍然要替换')
+})
+
+test('a failed restore keeps the acknowledgement, so the next boot tries again', async () => {
+  const fixture = await startPublicService({
+    tunnelRecord: { mode: 'named', accepted: true, token: 'tok-abc', domain: 'pocket.example.com' },
+    createTunnel: () => failingTunnel(),
+  })
+  await fixture.service.apply(NAMED_SETTINGS)
+
+  const restored = await fixture.service.restoreTunnel()
+  assert.equal(restored.publicAccess.running, false)
+  assert.match(String(restored.publicAccess.error), /隧道/u)
+  const saved = savedTunnel(fixture.dir)
+  assert.equal(saved?.accepted, true, '启动时一次失败不能把「用户开着」这件事忘掉')
+  assert.equal(saved?.token, 'tok-abc', '失败仍然不能丢 Token')
 })

@@ -5,7 +5,7 @@ import { test } from 'node:test'
 // cannot work around, and the only way to catch it before shipping is to decode what we render.
 import jsQR from 'jsqr'
 
-import { pocketQrDataUrl, pocketQrMatrix } from './pocket-qr.ts'
+import { pocketConnectLink, pocketQrDataUrl, pocketQrMatrix } from './pocket-qr.ts'
 
 /**
  * `jsqr` ships as CommonJS, so NodeNext types the import as the module namespace while the runtime
@@ -67,4 +67,45 @@ test('the rendered image is a self-contained data URL', () => {
   // changed each time would look like the target had moved.
   assert.equal(pocketQrDataUrl('http://192.168.1.7:41730/'), dataUrl)
   assert.notEqual(pocketQrDataUrl('http://192.168.1.7:41731/'), dataUrl)
+})
+
+test('a connect link carries the address and the password, percent-encoded', () => {
+  assert.equal(
+    pocketConnectLink('http://192.168.1.7:41730/', 'Abcd1234'),
+    'dshpocket://connect?url=http%3A%2F%2F192.168.1.7%3A41730%2F&password=Abcd1234',
+  )
+  // IPv6 literals: brackets and colons must not survive as raw query syntax.
+  assert.equal(
+    pocketConnectLink('http://[fe80::1]:41730/', 'Abcd1234'),
+    'dshpocket://connect?url=http%3A%2F%2F%5Bfe80%3A%3A1%5D%3A41730%2F&password=Abcd1234',
+  )
+  // A password with `&` or `=` would split the query if it were not encoded; so would a space.
+  assert.equal(
+    pocketConnectLink('http://10.0.0.5:41730/', 'a&b=c d'),
+    'dshpocket://connect?url=http%3A%2F%2F10.0.0.5%3A41730%2F&password=a%26b%3Dc%20d',
+  )
+  // The tunnel hostname shape the public door uses.
+  assert.equal(
+    pocketConnectLink('https://pocket.example.com:443/', 'Gen00001'),
+    'dshpocket://connect?url=https%3A%2F%2Fpocket.example.com%3A443%2F&password=Gen00001',
+  )
+})
+
+test('a connect link without a password leaves the parameter out', () => {
+  const url = 'https://pocket.example.com/'
+  assert.equal(pocketConnectLink(url), `dshpocket://connect?url=${encodeURIComponent(url)}`)
+  assert.equal(pocketConnectLink(url, ''), pocketConnectLink(url))
+  // The two shapes stay distinguishable on the wire.
+  assert.notEqual(pocketConnectLink(url, 'Abcd1234'), pocketConnectLink(url))
+})
+
+test('the deep link survives a QR round trip', () => {
+  for (const link of [
+    pocketConnectLink('http://192.168.1.7:41730/', 'Abcd1234'),
+    pocketConnectLink('http://[fe80::1]:41730/', 'Gen00001'),
+    pocketConnectLink('https://pocket.example.com:443/', 'a&b=c'),
+    pocketConnectLink('https://random-words-here.trycloudflare.com/'),
+  ]) {
+    assert.equal(decode(link), link)
+  }
 })

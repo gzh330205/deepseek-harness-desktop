@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <!--
+    Same discipline as every other shell page: no network, no frames, no external anything. The card
+    gets its numbers from the main process over IPC; it must not be able to talk to the gateway even
+    if a future change made it try.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>Token 用量</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115; --fg: #e8ebf2; --muted: #98a2b5;
+      --line: rgba(255, 255, 255, .09); --error: #ff9a90;
+    }
+    /* Window chrome follows the OS theme, like the title bar and the usage window. */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f3f3f3; --fg: #1f1f1f; --muted: #5b6370;
+        --line: rgba(0, 0, 0, .12); --error: #b3261e;
+      }
+    }
+    html, body { margin: 0; height: 100%; }
+    body {
+      box-sizing: border-box;
+      padding: 9px 12px;
+      background: var(--bg); color: var(--fg);
+      border: 1px solid var(--line); border-radius: 8px;
+      font: 12px/1.35 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      user-select: none; overflow: hidden;
+    }
+    header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+    #title { font-size: 11px; font-weight: 600; letter-spacing: .2px; color: var(--muted); }
+    #updatedAt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    #metrics { display: grid; gap: 1px; }
+    .metric {
+      display: flex; align-items: baseline; justify-content: space-between;
+      padding: 3px 0; border-bottom: 1px solid var(--line);
+    }
+    .metric:last-child { border-bottom: 0; }
+    .label { color: var(--muted); }
+    .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .hint { margin: 4px 0 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hint.error { color: var(--error); }
+  </style>
+</head>
+<body>
+  <header>
+    <span id="title">Token 用量</span>
+    <span id="updatedAt">—</span>
+  </header>
+  <div id="metrics">
+    <div class="metric"><span class="label">近 5 小时</span><span id="metricH5" class="value">—</span></div>
+    <div class="metric"><span class="label">今日</span><span id="metricToday" class="value">—</span></div>
+    <div class="metric"><span class="label">本周</span><span id="metricWeek" class="value">—</span></div>
+  </div>
+  <p id="hint" class="hint" hidden></p>
+  <p id="apiMissing" class="hint error" hidden>桌面壳 API 未加载</p>
+  <script>
+    // The preload exposes exactly two methods here: `get()` and `onState()`.
+    const api = window.__DSH_USAGE_POPOVER__
+    const $ = (id) => document.getElementById(id)
+    const METRICS = [
+      { key: 'h5', id: 'metricH5' },
+      { key: 'today', id: 'metricToday' },
+      { key: 'week', id: 'metricWeek' },
+    ]
+    const LOGIN_HINT = '未登录 · 点击打开用量面板'
+
+    // Same units as the usage window's fmtTokens (亿 / M / K), plus 万 for the range where an M value
+    // would read oddly in Chinese. Both surfaces must show the same number the same way.
+    function fmtTokens(value) {
+      if (value === null || value === undefined || value === '') return '—'
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      if (number >= 1e8) return (number / 1e8).toFixed(2) + '亿'
+      if (number >= 1e6) return (number / 1e6).toFixed(2) + 'M'
+      if (number >= 1e4) return (number / 1e4).toFixed(1) + '万'
+      if (number >= 1e3) return (number / 1e3).toFixed(1) + 'K'
+      return String(Math.round(number))
+    }
+
+    function fmtTime(value) {
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return '—'
+      return date.toLocaleTimeString('zh-CN', { hour12: false })
+    }
+
+    function setHint(text, bad) {
+      const hint = $('hint')
+      hint.textContent = text
+      hint.hidden = text === ''
+      hint.classList.toggle('error', Boolean(bad))
+    }
+
+    function render(state) {
+      if (!state) return
+      const tokens = state.tokens || {}
+      for (const metric of METRICS) $(metric.id).textContent = fmtTokens(tokens[metric.key])
+      $('updatedAt').textContent = state.fetchedAt === undefined || state.fetchedAt === null
+        ? '—'
+        : '更新于 ' + fmtTime(state.fetchedAt)
+      if (state.needsLogin) {
+        setHint(LOGIN_HINT, false)
+      } else if (typeof state.error === 'string' && state.error !== '') {
+        setHint(state.error, true)
+      } else if (state.loggedIn === false) {
+        setHint(LOGIN_HINT, false)
+      } else {
+        setHint('', false)
+      }
+    }
+
+    if (!api) {
+      $('apiMissing').hidden = false
+    } else {
+      // The push may arrive before this listener exists (the card is shown right after load), which
+      // is why the page also asks once on its own.
+      api.onState(render)
+      api.get().then(render).catch((error) => {
+        setHint('用量读取失败：' + (error instanceof Error ? error.message : String(error)), true)
+      })
+    }
+  </script>
+</body>
+</html>

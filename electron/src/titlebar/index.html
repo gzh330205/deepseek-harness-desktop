@@ -66,11 +66,37 @@
       for (const button of document.querySelectorAll('button[data-menu]')) {
         button.addEventListener('click', () => {
           const rect = button.getBoundingClientRect()
+          const name = button.getAttribute('data-menu')
           button.setAttribute('aria-expanded', 'true')
+          // 用量按钮有悬浮卡片；点开菜单前先收起，菜单和卡片不该同屏。
+          if (name === 'usage' && typeof api.hoverUsage === 'function') api.hoverUsage(null)
           // The main process opens a real native menu at these coordinates and tells us when
           // it closed, so the pressed state never sticks.
-          api.menu(button.getAttribute('data-menu'), { x: rect.left, y: rect.top, height: rect.height })
+          api.menu(name, { x: rect.left, y: rect.top, height: rect.height })
             .finally(() => { button.removeAttribute('aria-expanded') })
+        })
+      }
+
+      // 用量按钮的悬浮卡片。mouseleave 延迟 180ms 再收起：指针从按钮移到别处、或系统偶尔丢一次
+      // mouseout，都不该让卡片闪一下；期间重新进入按钮则取消收起。卡片本身不接收鼠标事件
+      // (setIgnoreMouseEvents)，所以指针不会停留在卡片上——收起只由按钮的 mouseleave 决定。
+      const usageButton = document.querySelector('button[data-menu="usage"]')
+      if (usageButton && typeof api.hoverUsage === 'function') {
+        let hideTimer = null
+        const cancelHide = () => {
+          if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null }
+        }
+        usageButton.addEventListener('mouseenter', () => {
+          cancelHide()
+          const rect = usageButton.getBoundingClientRect()
+          api.hoverUsage({ x: rect.left, y: rect.top, height: rect.height })
+        })
+        usageButton.addEventListener('mouseleave', () => {
+          cancelHide()
+          hideTimer = setTimeout(() => {
+            hideTimer = null
+            api.hoverUsage(null)
+          }, 180)
         })
       }
     }

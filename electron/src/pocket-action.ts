@@ -18,8 +18,22 @@ import type { PocketStatus } from './pocket-service.ts'
 
 /** Phone access, as the settings page renders it: live status plus the code to scan. */
 export interface PocketSnapshot extends PocketStatus {
-  /** PNG data URL of the QR code for {@link PocketStatus.url}, when a listener is up. */
+  /**
+   * PNG data URL of the QR code for {@link PocketStatus.url}, when a listener is up.
+   *
+   * The payload is a `dshpocket://connect` deep link carrying the address **and** the password
+   * (built by `pocketConnectLink`), so one scan is enough for the app; a plain address made the user
+   * retype the password on the phone.
+   */
   readonly qr?: string
+  /**
+   * Public access, with the same kind of code.
+   *
+   * The payload is a `dshpocket://connect?url=…&password=…` deep link (built by `pocketConnectLink`),
+   * so one scan hands the phone both the address and the password — the token/user never has to read
+   * a password off the desktop screen.
+   */
+  readonly publicAccess: PocketStatus['publicAccess'] & { readonly qr?: string }
   /** Where the phone app comes from, and its QR code: scanning it installs the client. */
   readonly apkUrl?: string
   readonly apkQr?: string

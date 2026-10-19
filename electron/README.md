@@ -101,6 +101,9 @@ pnpm release:dry        # 发布演习：签名 + 自校验 + 生成 latest.json
 25. **删除 junction 只能用 `unlinkSync` / `rmdirSync`；Electron 下 `rmSync` 会把链接当目录。** Electron 主进程里 `fs.rmSync(<junction>, { force: true })` 抛 `ERR_FS_EISDIR: Path is a directory`（普通 Node 却能删），异常被吞后会静默保留旧链接；而 `rmSync(..., { recursive: true })` 会**跟随链接删掉目标目录的内容**（排障时实测误删过插件源码）。`plugin-provision.ts` 的 `linkPackage` 有静态回归断言钉住这条。
 26. **随壳插件副本必须满足入口点的相对 import。** `prepare-plugins.mjs` 的 `KEEP_FILES/KEEP_DIRECTORIES` 漏掉一个运行时会 import 的目录（`src/` 就这样漏过一版），插件仍会「挂载成功」但报 `entries did not activate` / `ERR_MODULE_NOT_FOUND`，面板照旧不出现。复制后按 `index.js` 的 `from './…'` 逐个断言目标存在；`verify-package.mjs` 的组合门禁再断言启动日志无 `did not activate`。
 27. **启动顺序：先 `ensureDesktopProfile` 播种，再链接/登记随壳插件，最后才 spawn DSH。** `linkPackage` 会 `mkdirSync(profile/node_modules)`，提前跑会让 profile 克隆分支的重命名失败、让 `profileNeedsInstall` 误判「已安装」，并把 bundle 登记跳过；首启 pnpm install 还可能 purge 掉刚建的链接。`main.ts` 里 `needsProfileInstall` 在创建任何 node_modules 之前缓存，`installBundledPlugins()` 排在播种与 store 迁移之后。
+28. **企业微信登录二维码本身就是 PNG，不要再把它编码成二维码。** `https://login.work.weixin.qq.com/wwlogin/sso/qrcode?key=<web_key>` 返回 `image/png`，那张图就是扫码登录码。把它的 URL 再画成二维码会让用户扫到「二维码图片的网址」，打开后还要再扫一次（0.4.6 的真实报障）。`oneway-service.startLogin` 直接 fetch 这张 PNG 转 data URL，并在 flow 内缓存（窗口重开复用同一张码）。
+29. **手机访问的 `pocket.json` 里「关闭」和「忘记」是两件事。** `accepted` 表示"用户亲手同意过公网免责声明"，只有用户关闭/启动失败才撤销；`mode/domain/token` 是连接方式，关闭不能删（删了下次就要重填 Tunnel Token）。壳正常退出（`dispose`）只停隧道、不动记录，下次启动才能恢复"还开着"的公网访问；启动时恢复失败保留 `accepted`（一次网络抖动不应变成永久关闭），用户亲手启动失败则撤销（不在后台反复重试）。
+30. **手机扫码要一次拿到地址+密码。** 二维码 payload 是 `dshpocket://connect?url=…&password=…`（`pocket-qr.ts` 的 `pocketConnectLink`，有 QR 编解码往返单测），Android 端 `PocketAddress.connectLink` 解析密码、`MainActivity` 在系统深链与 App 内扫码两条路径都自动填入。纯地址二维码仍走 `normalise` 回退，旧码不会坏。
 
 ## 更新通道
 

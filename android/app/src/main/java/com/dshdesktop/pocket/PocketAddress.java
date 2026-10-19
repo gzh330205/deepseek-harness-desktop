@@ -82,17 +82,34 @@ public final class PocketAddress {
   }
 
   /**
-   * Read the address out of a `dshpocket://connect?url=…` link.
+   * What a connect link carries: the computer's address and, when the desktop included it, that
+   * door's password.
    *
-   * This is what makes the desktop's QR code usable by the **system camera**: any scanning app hands
-   * the URL to the browser, the browser hands our scheme to us, and the address arrives filled in with
-   * only the password left to type. The in-app scanner keeps working with plain addresses.
-   *
-   * @param link - The whole intent URI, or null.
-   * @returns The normalised address, or null when this is not a usable connect link (including a
-   *   link whose `url` carries a path — that is a web page, not a computer's gateway).
+   * The desktop puts the password into the QR code so one scan is enough. A link from an older
+   * desktop (or one written by another tool) carries only the address, and then {@link #password}
+   * is null and the app asks for it exactly as before.
    */
-  static String fromConnectLink(String link) {
+  public static final class Connect {
+    public final String address;
+    public final String password;
+
+    Connect(String address, String password) {
+      this.address = address;
+      this.password = password == null || password.isEmpty() ? null : password;
+    }
+  }
+
+  /**
+   * Read a whole connection out of a `dshpocket://connect?url=…&password=…` link.
+   *
+   * Both parameters are percent-decoded. The password is optional — `url` alone is still a valid
+   * link — but an address that cannot be turned into a gateway URL makes the whole link unusable,
+   * and a malformed escape does too, rather than yielding half a credential to log in with.
+   *
+   * @param link the whole intent URI, or null
+   * @return the address plus the password (null when absent), or null when the link is unusable
+   */
+  public static Connect connectLink(String link) {
     if (link == null) {
       return null;
     }
@@ -105,20 +122,51 @@ public final class PocketAddress {
       if (raw == null) {
         return null;
       }
+      String address = null;
+      String password = null;
       for (String pair : raw.split("&")) {
         int equals = pair.indexOf('=');
         if (equals <= 0) {
           continue;
         }
-        if ("url".equals(pair.substring(0, equals))) {
-          String value = URLDecoder.decode(pair.substring(equals + 1), "UTF-8");
-          return normalise(value);
+        String key = pair.substring(0, equals);
+        if (!"url".equals(key) && !"password".equals(key)) {
+          continue;
+        }
+        // A bare `+` becomes a space here. `encodeURIComponent` (what the desktop uses) never emits
+        // one, and gateway passwords are letters/digits only, so this stays safe while also reading
+        // links written with form encoding.
+        String value = URLDecoder.decode(pair.substring(equals + 1), "UTF-8");
+        if ("url".equals(key)) {
+          if (address != null) {
+            continue;
+          }
+          address = normalise(value);
+          if (address == null) {
+            return null;
+          }
+        } else {
+          password = value;
         }
       }
-      return null;
+      return address == null ? null : new Connect(address, password);
     } catch (Exception error) {
       return null;
     }
+  }
+
+  /**
+   * Read the address out of a `dshpocket://connect?url=…` link.
+   *
+   * Kept as the address-only entry point (and for callers that do not care about the password);
+   * {@link #connectLink} is the one that also returns the password.
+   *
+   * @param link - The whole intent URI, or null.
+   * @returns The normalised address, or null when this is not a usable connect link.
+   */
+  static String fromConnectLink(String link) {
+    Connect connection = connectLink(link);
+    return connection == null ? null : connection.address;
   }
 
   /** Re-add the brackets an IPv6 literal needs inside a URL. */

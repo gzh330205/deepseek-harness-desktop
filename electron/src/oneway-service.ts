@@ -22,8 +22,6 @@
  *    to delete them — it is a reason to read why each one is shaped that way.
  */
 
-import { pocketQrDataUrl } from './pocket-qr.ts'
-
 /* ------------------------------------------------------------------ */
 /* Constants                                                          */
 /* ------------------------------------------------------------------ */
@@ -62,6 +60,11 @@ const MAX_REDIRECTS = 10
 const LOGS_CACHE_TTL_MS = 15_000
 /** The gateway's log table never shows more than this many rows, and ignores larger requests. */
 const MAX_PAGE_SIZE = 50
+/**
+ * The WeCom QR image is ~2 KB. The window keeps the base64 form in memory and in the DOM, so refuse
+ * anything near a megabyte — that is not a login code, and it would only bloat the window.
+ */
+const WECOM_QR_MAX_BYTES = 1024 * 1024
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
@@ -196,7 +199,12 @@ export interface UsageSnapshot {
 /** A QR login just started; `key` identifies it for {@link UsageService.pollLogin}. */
 export interface UsageLoginStart {
   readonly key: string
-  /** `data:image/gif;base64,…` — the window puts it straight into an `<img>`. */
+  /**
+   * `data:image/png;base64,…` — the WeCom login QR image itself, put straight into an `<img>`.
+   *
+   * This is the endpoint's own PNG, not a QR code drawn around its URL: a phone must scan the login
+   * code in one pass, and wrapping the URL made it open a second QR code on the phone.
+   */
   readonly qrDataUrl: string
   /** Epoch ms after which the QR code must be reissued. */
   readonly expiresAt: number
@@ -781,7 +789,13 @@ interface LoginFlow {
   readonly startedAt: number
   /** The WeCom poll endpoint wants the last status it reported; 0/1 correspond to waiting/scanning. */
   lastStatus: number
-  readonly qrUrl: string
+  /**
+   * The login QR image, fetched from the WeCom qrcode endpoint while the flow is created.
+   *
+   * It is stored rather than fetched per `startLogin` call: reopening the window must show the same
+   * code the phone may already be scanning.
+   */
+  readonly qrDataUrl: string
   /** Cookies picked up before the callback (SSO entry + WeCom page); carried into the handshake. */
   readonly jar: CookieJar
 }
@@ -935,7 +949,7 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
 
   const loginStartOf = (current: LoginFlow): UsageLoginStart => ({
     key: current.webKey,
-    qrDataUrl: pocketQrDataUrl(current.qrUrl),
+    qrDataUrl: current.qrDataUrl,
     expiresAt: current.startedAt + LOGIN_TTL_MS,
   })
 
@@ -990,6 +1004,37 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
     if (keyMatch === null) throw new Error('无法解析企业微信扫码页（web_key 缺失）。')
     const webKey = keyMatch[1] ?? ''
 
+    // The QR image is the login code itself: GETting the qrcode endpoint with the page's `web_key`
+    // answers with the PNG that 企业微信 scans and posts back. Drawing this URL as a QR code (what
+    // the plugin used to do) made the phone open a page that showed *another* QR code, so every
+    // login needed two scans. Fetch it here, once per flow, and hand the window the image bytes.
+    const qrUrl = `${WECOM_QR}?key=${webKey}`
+    let qrResponse: Response
+    try {
+      qrResponse = await fetchImpl(qrUrl, {
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: { 'user-agent': USER_AGENT },
+      })
+    } catch (error) {
+      throw new Error(`无法获取企业微信登录二维码：${messageOf(error)}`)
+    }
+    if (qrResponse.status !== 200) {
+      throw new Error(`无法获取企业微信登录二维码（HTTP ${String(qrResponse.status)}）。`)
+    }
+    const contentType = (qrResponse.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+    if (!contentType.startsWith('image/')) {
+      throw new Error(`无法获取企业微信登录二维码（返回类型不是图片：${contentType === '' ? '未知' : contentType}）。`)
+    }
+    let qrBytes: ArrayBuffer
+    try {
+      qrBytes = await qrResponse.arrayBuffer()
+    } catch (error) {
+      throw new Error(`无法读取企业微信登录二维码：${messageOf(error)}`)
+    }
+    if (qrBytes.byteLength === 0) throw new Error('无法获取企业微信登录二维码（响应为空）。')
+    if (qrBytes.byteLength >= WECOM_QR_MAX_BYTES) throw new Error('无法获取企业微信登录二维码（图片过大）。')
+    const qrDataUrl = `data:${contentType};base64,${Buffer.from(qrBytes).toString('base64')}`
+
     // The browser that completes this flow round-trips the *decoded* state: the page serializes
     // spaces as "+" (a JS URL artifact) and the callback is built with encodeURIComponent, which
     // turns them into %20. Replaying the raw state from the Location header makes the SSO reject the
@@ -1018,7 +1063,7 @@ export function createUsageService(options: UsageServiceOptions): UsageService {
       wecomUrl,
       startedAt: now(),
       lastStatus: 0,
-      qrUrl: `${WECOM_QR}?key=${webKey}`,
+      qrDataUrl,
       jar: flowJar,
     }
     flow = created

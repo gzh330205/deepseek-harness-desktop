@@ -2,6 +2,7 @@ package com.dshdesktop.pocket;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -62,6 +63,53 @@ public final class PocketAddressTest {
     assertEquals(
         "http://my-desktop:41730/",
         PocketAddress.fromConnectLink("dshpocket://connect?url=my-desktop"));
+  }
+
+  @Test
+  public void aConnectLinkCarriesThePasswordToo() {
+    // 新版桌面二维码把密码一起编码进来：扫一次就能把两个输入框都填好。
+    PocketAddress.Connect link = PocketAddress.connectLink(
+        "dshpocket://connect?url=http%3A%2F%2F10.1.6.35%3A41735&password=Abcd1234");
+    assertNotNull(link);
+    assertEquals("http://10.1.6.35:41735/", link.address);
+    assertEquals("Abcd1234", link.password);
+
+    // 参数顺序不影响解析：桌面拼链接的顺序不是协议的一部分。
+    PocketAddress.Connect reordered = PocketAddress.connectLink(
+        "dshpocket://connect?password=Abcd1234&url=http%3A%2F%2F10.1.6.35%3A41735");
+    assertNotNull(reordered);
+    assertEquals("http://10.1.6.35:41735/", reordered.address);
+    assertEquals("Abcd1234", reordered.password);
+  }
+
+  @Test
+  public void aConnectLinkWithoutAPasswordStillWorks() {
+    // 旧二维码 / 手写的链接只有地址：密码留空，App 照旧询问。
+    PocketAddress.Connect link = PocketAddress.connectLink(
+        "dshpocket://connect?url=http://192.168.1.7:41730");
+    assertNotNull(link);
+    assertEquals("http://192.168.1.7:41730/", link.address);
+    assertNull(link.password);
+
+    // 空的 password 参数按「没有密码」处理，不能拿空串去登录。
+    PocketAddress.Connect empty = PocketAddress.connectLink(
+        "dshpocket://connect?url=http%3A%2F%2F192.168.1.7%3A41730&password=");
+    assertNotNull(empty);
+    assertNull(empty.password);
+  }
+
+  @Test
+  public void aMalformedOrUnusableConnectLinkIsRefused() {
+    assertNull(PocketAddress.connectLink(null));
+    assertNull(PocketAddress.connectLink("https://connect?url=http%3A%2F%2F10.0.0.5%3A41730"));
+    assertNull(PocketAddress.connectLink("dshpocket://connect"));
+    assertNull(PocketAddress.connectLink("dshpocket://connect?url="));
+    // 百分号转义坏了就整条链接作废：宁可让用户手输，也不要拿半个凭据去登录。
+    assertNull(PocketAddress.connectLink(
+        "dshpocket://connect?url=http%3A%2F%2F10.0.0.5%3A41730&password=%zz"));
+    // url 带路径说明这是一个网页，不是电脑网关。
+    assertNull(PocketAddress.connectLink(
+        "dshpocket://connect?url=https%3A%2F%2Fgithub.com%2Fx%2FDSH.Pocket.apk&password=Abcd1234"));
   }
 
   @Test

@@ -80,19 +80,22 @@ try {
 }
 if (!pocketHtml.includes('__DSH_SETTINGS__')) fail('手机访问窗口页面没有引用 __DSH_SETTINGS__ 桥')
 
-// The 用量 (ONE-WAY) and MCP & Skills windows are shell surfaces as well. Their pages must be in the
-// archive *and* reference their preload bridges, or the menu items open an empty window.
+// The 用量 (ONE-WAY), MCP & Skills and hover-card pages are shell surfaces as well. Their pages must be
+// in the archive *and* reference their preload bridges, or the entry opens an empty window.
 for (const [name, pagePath, bridge] of [
   ['用量', join('dist', 'usage', 'index.html'), '__DSH_USAGE__'],
   ['MCP 与 Skills', join('dist', 'mcp', 'index.html'), '__DSH_MCP__'],
+  // The 用量 button's hover card: a missing page here means hovering the button shows a blank sliver,
+  // which no menu smoke would catch on a packaged build.
+  ['用量浮窗', join('dist', 'usage-popover', 'index.html'), '__DSH_USAGE_POPOVER__'],
 ]) {
   let html = ''
   try {
     html = (await archive.readFile(pagePath)).toString('utf8')
   } catch (error) {
-    fail(`app.asar 里没有${name}窗口页面 ${pagePath}：${String(error)}`)
+    fail(`app.asar 里没有${name}页面 ${pagePath}：${String(error)}`)
   }
-  if (!html.includes(bridge)) fail(`${name}窗口页面没有引用 ${bridge} 桥`)
+  if (!html.includes(bridge)) fail(`${name}页面没有引用 ${bridge} 桥`)
 }
 
 // The bundled plugins are separate packages the shell links into the profile, so they live in

@@ -77,7 +77,7 @@
 </head>
 <body>
   <h1>手机访问</h1>
-  <p class="hint">让手机打开这台电脑上的 DSH。同一 WiFi 用第一条通道；不在同一 WiFi 时用第二条（流量经 Cloudflare 隧道）。手机端装「DSH 口袋」App 后扫码即可。</p>
+  <p class="hint">让手机打开这台电脑上的 DSH。同一 WiFi 用第一条通道；不在同一 WiFi 时用第二条（流量经 Cloudflare 隧道）。手机端装「DSH 口袋」App 后扫码即可自动填入地址与密码。</p>
 
   <section>
     <h2>局域网（同一 WiFi）</h2>
@@ -109,8 +109,8 @@
         </div>
         <ol class="howto">
           <li>手机装好「DSH 口袋」（见页面底部的下载按钮）。</li>
-          <li>用 App 扫左边这个二维码，或手动填上面的地址。</li>
-          <li>输入上面显示的 8 位密码。勾「记住密码」后，电脑上的 DSH 重启也不用重新输。</li>
+          <li>用 App 扫左边这个二维码：扫码打开 Pocket App 会自动填入地址和密码（未安装 App 时也可手动输入上面的地址与密码）。</li>
+          <li>点「连接」即可；密码没自动填上时，手动输入上面显示的 8 位密码。勾「记住密码」后，电脑上的 DSH 重启也不用重新输。</li>
         </ol>
       </div>
     </div>
@@ -166,8 +166,8 @@
         </div>
         <ol class="howto">
           <li>手机在任何网络（4G/5G 也行）打开「DSH 口袋」。</li>
-          <li>扫左边的码或填上面的公网地址（<strong>手机装不上 App 时也可直接用手机浏览器打开这个地址</strong>）。</li>
-          <li>输入公网密码。用完请回来点「关闭公网访问」。</li>
+          <li>扫左边的码会自动填入公网地址与密码；也可以手动填上面的公网地址（<strong>手机装不上 App 时也可直接用手机浏览器打开这个地址</strong>）。</li>
+          <li>点「连接」即可；用完请回来点「关闭公网访问」。</li>
         </ol>
       </div>
     </div>
@@ -225,6 +225,8 @@
       const running = pocket.running === true && pocket.url !== undefined;
       $('lanConnect').hidden = !running;
       if (running) {
+        // The main process builds the PNG from a `dshpocket://connect?…` deep link (address +
+        // password); the page only displays it, so both codes stay one implementation.
         $('lanQr').src = pocket.qr || '';
         $('lanUrl').textContent = pocket.url;
         $('lanPassword').textContent = pocket.password || '—';
@@ -280,6 +282,7 @@
       state.className = 'tag' + (wan.error ? ' bad' : running ? ' ok' : '');
       $('wanConnect').hidden = !running || wan.url === undefined;
       if (running) {
+        // Same shape as the LAN code: a deep link carrying the public address and password.
         $('wanQr').src = wan.qr || '';
         $('wanUrl').textContent = wan.url || '—';
         $('wanPassword').textContent = wan.password || '—';

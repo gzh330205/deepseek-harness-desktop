@@ -16,9 +16,32 @@ import qrcode from 'qrcode-generator'
 const DEFAULT_CELL_SIZE = 6
 const DEFAULT_MARGIN = 2
 
+/** URL scheme the phone client registers for a link that carries a whole connection. */
+export const POCKET_CONNECT_SCHEME = 'dshpocket'
+
 export interface PocketQrOptions {
   readonly cellSize?: number
   readonly margin?: number
+}
+
+/**
+ * Build the `dshpocket://connect?...` link a phone can turn back into a connection.
+ *
+ * The QR code carries this instead of the bare address so one scan hands over **the address and the
+ * password**, rather than making the user read the password off the desktop screen. Both values are
+ * `encodeURIComponent`-encoded because everything after `?` is a query string: an IPv6 literal
+ * (`[fe80::1]`), a `&` or a `=` would otherwise split the payload the phone decodes.
+ *
+ * @param url - The gateway address, as the page shows it.
+ * @param password - The password for that door; omitted (or empty) links the address alone.
+ * @returns The deep link to encode in the QR code.
+ */
+export function pocketConnectLink(url: string, password?: string): string {
+  const query = [`url=${encodeURIComponent(url)}`]
+  // An empty password is not a password, and leaving the parameter out keeps the link readable by a
+  // client that only knows `url`.
+  if (password !== undefined && password !== '') query.push(`password=${encodeURIComponent(password)}`)
+  return `${POCKET_CONNECT_SCHEME}://connect?${query.join('&')}`
 }
 
 /**

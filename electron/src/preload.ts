@@ -16,6 +16,7 @@ import { MARKET_IPC } from './market-ipc.ts'
 import {
   IPC,
   SHELL_PAGE_DOCUMENTS,
+  USAGE_POPOVER_PAGE,
   type ShellMenuName,
   PANEL_EMIT_EVENTS,
   PANEL_LISTEN_EVENTS,
@@ -54,6 +55,15 @@ if (isTitleBarDocument()) {
     state: () => ipcRenderer.invoke(IPC.titlebarState) as Promise<{ productName: string; version: string }>,
     menu: (name: ShellMenuName, anchor: { x: number; y: number; height: number }) =>
       ipcRenderer.invoke(IPC.titlebarMenu, name, anchor) as Promise<boolean>,
+    /**
+     * 用量按钮的悬浮卡片：`anchor` 是按钮的视口矩形（主进程加上窗口原点），`null` 表示收起。
+     *
+     * Fire-and-forget: hover fires often, and a card that fails to open must not leave an unhandled
+     * rejection in the strip (which would look like a broken button).
+     */
+    hoverUsage: (anchor: { x: number; y: number; height: number } | null): void => {
+      ipcRenderer.send(IPC.usagePopoverHover, anchor)
+    },
   }))
 }
 
@@ -99,6 +109,24 @@ if (isUsageDocument()) {
     logout: () => ipcRenderer.invoke(IPC.usageLogout) as Promise<unknown>,
     requests: (query: unknown) => ipcRenderer.invoke(IPC.usageRequests, query) as Promise<unknown>,
     close: () => ipcRenderer.invoke(IPC.usageClose) as Promise<boolean>,
+  }))
+}
+
+/**
+ * The 用量 button's hover card.
+ *
+ * A display, not a window: it gets the snapshot the main process sends and one way to ask for it
+ * again. Two methods, no ipcRenderer, no Node — the card cannot refresh itself, change settings or
+ * reach the gateway even if its own script is replaced.
+ */
+function isUsagePopoverDocument(): boolean {
+  return location.protocol === 'file:' && location.pathname.replace(/\\/gu, '/').endsWith(USAGE_POPOVER_PAGE)
+}
+
+if (isUsagePopoverDocument()) {
+  contextBridge.exposeInMainWorld('__DSH_USAGE_POPOVER__', Object.freeze({
+    get: () => ipcRenderer.invoke(IPC.usagePopoverGet) as Promise<unknown>,
+    onState: (listener: (state: unknown) => void): (() => void) => subscribe(IPC.usagePopoverState, listener),
   }))
 }
 

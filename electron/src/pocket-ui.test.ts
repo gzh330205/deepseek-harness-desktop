@@ -92,6 +92,16 @@ test('a blocked firewall is explained, and lifted only by a button', () => {
   assert.match(render, /netsh /u)
 })
 
+test('the connect code hands the phone the password too, and the page says so', () => {
+  // The desktop puts a `dshpocket://connect?…` deep link in the QR image, so one scan fills both the
+  // address and the password. The page must not reduce that to "type the password" again.
+  assert.match(markup, /扫码打开 Pocket App 会自动填入地址和密码（未安装 App 时也可手动输入上面的地址与密码）/u)
+  // Both codes are produced by the main process; the page only displays the PNG it is given, so
+  // there is one implementation of the payload rather than two that drift.
+  assert.match(script, /\$\('lanQr'\)\.src = pocket\.qr \|\| ''/u)
+  assert.match(script, /\$\('wanQr'\)\.src = wan\.qr \|\| ''/u)
+})
+
 test('the page tells the user how to connect on the phone, for both doors', () => {
   const howto = [...markup.matchAll(/<ol class="howto">[\s\S]*?<\/ol>/gu)].map(match => match[0])
   assert.ok(howto.length >= 3, `应该有三段「手机上怎么连」：局域网、公网、App（实际 ${howto.length}）`)

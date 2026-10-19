@@ -118,13 +118,23 @@ export interface PocketService {
    *   say "the user agreed to this", which is also what a later restart is allowed to restore.
    */
   startTunnel(options: { readonly acceptedDisclaimer: boolean }): Promise<PocketStatus>
-  /** Close public access and forget the acknowledgement, so a restart cannot reopen it. */
+  /**
+   * Close public access and withdraw the acknowledgement, so a restart cannot reopen it.
+   *
+   * What it took to connect (mode, hostname, Tunnel Token) is kept: closing the door is not
+   * forgetting the key, and asking for the token again on every close would be its own bug.
+   */
   stopTunnel(): Promise<PocketStatus>
   /** Restart a tunnel a previous run had open and the user had accepted. */
   restoreTunnel(): Promise<PocketStatus>
   rotatePublicPassword(): PocketStatus
   setPublicPassword(value: string): PocketPasswordResult
-  /** Store (or clear) the named-tunnel token; it never enters the settings document. */
+  /**
+   * Store the named-tunnel token; it never enters the settings document.
+   *
+   * A blank value means "leave it as it is", which is what the page's placeholder promises — a user
+   * who reopens the window must not have to go back to Cloudflare for the same credential.
+   */
   setTunnelToken(value: string): PocketStatus
   dispose(): Promise<void>
 }
@@ -235,6 +245,22 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
     }
   }
 
+  /**
+   * Withdraw "the user agreed to this", keeping everything else the record knows.
+   *
+   * A restart only restores a tunnel whose acknowledgement is still `true`, so this is what makes a
+   * user-requested close (or a failed start) stick. The token, the mode and the hostname stay on
+   * disk: forgetting the whole record would also throw away a credential the user would have to copy
+   * out of Cloudflare again.
+   */
+  const revokeTunnelAcceptance = (): void => {
+    const record = state.tunnel
+    if (record === undefined || record.accepted !== true) return
+    // `mode` follows the settings, because that is what the next attempt would use; the token and
+    // the hostname are whatever was stored, because those are the parts that are expensive to lose.
+    persistTunnel({ ...record, mode: preferences.tunnel.mode, accepted: false })
+  }
+
   const publicPassword = (): string => {
     const existing = state.public
     if (existing !== undefined) return existing.password
@@ -261,7 +287,7 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
     ...(tunnelError === undefined ? {} : { error: tunnelError }),
   })
 
-  const stopPublic = async (forget: boolean): Promise<void> => {
+  const stopPublic = async (revokeAcceptance: boolean): Promise<void> => {
     if (tunnel !== undefined) {
       await tunnel.stop()
       tunnel = undefined
@@ -273,10 +299,21 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
     // Everyone signed in through the public door is signed out.
     publicSessions.rotate()
     tunnelError = undefined
-    if (forget) persistTunnel(undefined)
+    // Stopping the listener is not the same as forgetting how to start it again: only the
+    // acknowledgement is withdrawn, never the token.
+    if (revokeAcceptance) revokeTunnelAcceptance()
   }
 
-  const startPublic = async (accepted: boolean): Promise<void> => {
+  /**
+   * Open the public door.
+   *
+   * @param accepted - Whether this start carries the disclaimer acknowledgement.
+   * @param keepAcceptanceOnFailure - Keep `accepted` when the tunnel does not come up. A *restore* at
+   *   startup uses this: a transient network/proxy failure at boot must not silently disable the
+   *   "reopen what was open" promise, while a user-requested start still withdraws it on failure so
+   *   a broken configuration is not retried behind their back.
+   */
+  const startPublic = async (accepted: boolean, keepAcceptanceOnFailure = false): Promise<void> => {
     tunnelError = undefined
     if (options.tunnelBinary === undefined) {
       tunnelError = '找不到随包的隧道程序（cloudflared），公网访问不可用'
@@ -324,9 +361,15 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
     })
     const started = await tunnel.start(mode === 'named' ? { mode, token, domain } : { mode: 'quick' })
     if (!started.running) {
-      tunnelError = started.error ?? '公网隧道没有起来'
-      await stopPublic(false)
-      persistTunnel(undefined)
+      const message = started.error ?? '公网隧道没有起来'
+      // A failed start still means "not open": withdraw the acknowledgement so a restart does not
+      // silently retry, but keep the token so the next attempt does not need it typed again.
+      // A failed *restore* keeps the acknowledgement instead (see `startPublic`): the user left it
+      // open, and one bad boot should not stop the next one from trying.
+      // `stopPublic` clears the error on the way out, so the reason is put back afterwards — "没开成"
+      // without a reason is the one state the page cannot explain.
+      await stopPublic(!keepAcceptanceOnFailure)
+      tunnelError = message
       return
     }
     persistTunnel({
@@ -403,7 +446,7 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
       if (!preferences.tunnel.enabled) return status()
       if (state.tunnel?.accepted !== true) return status()
       if (tunnelStatus().running) return status()
-      await startPublic(true)
+      await startPublic(true, true)
       return status()
     },
     rotatePublicPassword() {
@@ -420,17 +463,22 @@ export function createPocketService(options: PocketServiceOptions): PocketServic
     },
     setTunnelToken(value) {
       const token = value.trim()
+      // Blank means "leave it": the page's placeholder promises exactly that, and a user who opens
+      // the window again must not have to fetch the same credential from Cloudflare.
+      const effective = token === '' ? (state.tunnel?.token ?? '') : token
       persistTunnel({
         mode: preferences.tunnel.mode,
         accepted: state.tunnel?.accepted === true,
         ...(preferences.tunnel.domain === '' ? {} : { domain: preferences.tunnel.domain }),
-        ...(token === '' ? {} : { token }),
+        ...(effective === '' ? {} : { token: effective }),
       })
       return status()
     },
     async dispose() {
       await stop(false)
-      await stopPublic(true)
+      // Quitting is not the user closing public access. Keep the record (the acknowledgement
+      // included), so the next start can restore the tunnel they had open.
+      await stopPublic(false)
     },
   }
 }

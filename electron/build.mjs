@@ -61,6 +61,8 @@ await cp(resolve(root, 'src/settings-ui'), resolve(out, 'settings'), { recursive
 await cp(resolve(root, 'src/market-ui'), resolve(out, 'market'), { recursive: true })
 await cp(resolve(root, 'src/pocket-ui'), resolve(out, 'pocket'), { recursive: true })
 await cp(resolve(root, 'src/usage-ui'), resolve(out, 'usage'), { recursive: true })
+// 用量按钮的悬浮卡片：壳自有页面，必须进包，否则 hover 只会打开一个空白小窗。
+await cp(resolve(root, 'src/usage-popover'), resolve(out, 'usage-popover'), { recursive: true })
 await cp(resolve(root, 'src/mcp-ui'), resolve(out, 'mcp'), { recursive: true })
 // The strip shows the same logo the window and tray use.
 await copyFile(resolve(root, 'build', 'icons', '32x32.png'), resolve(out, 'titlebar', 'icon.png'))
