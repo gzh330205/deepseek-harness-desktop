@@ -8,10 +8,21 @@
  */
 
 import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { IPC, SHELL_PAGE_DOCUMENTS } from './constants.ts'
 import type { DshConfigStore, McpServerInput, McpTransport } from './dsh-config.ts'
+
+/** Where the Node executable offered to MCP stdio servers came from. */
+export type McpNodeSource = 'bundled' | 'environment' | 'missing'
+
+/** What the page's `node` bridge method reports: a path plus enough provenance for its hint. */
+export interface McpNodeInfo {
+  readonly path: string
+  readonly source: McpNodeSource
+  readonly exists: boolean
+}
 
 export interface McpWindowOptions {
   readonly appRoot: string
@@ -20,6 +31,13 @@ export interface McpWindowOptions {
   readonly isShellDocument: (url: string) => boolean
   /** Restart the shell (and its DSH child) so the edited config takes effect. */
   readonly restart: () => void
+  /**
+   * Node executable to prefill for stdio servers: the runtime bundled with the shell first, then
+   * `DSH_DESKTOP_NODE_EXECUTABLE`. Only set when the main process confirmed the file exists.
+   */
+  readonly nodeExecutable?: string
+  /** Provenance of {@link nodeExecutable}, used only by the page's hint. */
+  readonly nodeSource?: McpNodeSource
 }
 
 const MCP_PAGE = '/mcp/index.html'
@@ -69,10 +87,57 @@ export function parseMcpInput(value: unknown): McpServerInput | { readonly reaso
   }
 }
 
+/**
+ * Pick the Node executable the MCP page should offer, without touching the filesystem when `exists`
+ * is supplied (the unit tests rely on that).
+ *
+ * Order: the runtime bundled with the shell — the one the app itself ships and validated for this
+ * platform — then an explicitly configured `DSH_DESKTOP_NODE_EXECUTABLE`. Anything else, including
+ * `process.execPath`, would be the GUI-subsystem Electron binary: it cannot run a server as Node.
+ */
+export function resolveNodeExecutable(input: {
+  readonly bundledBinDir?: string | undefined
+  readonly environment?: string | undefined
+  readonly exists?: (path: string) => boolean
+}): { readonly path: string; readonly source: McpNodeSource } {
+  const exists = input.exists ?? existsSync
+  if (input.bundledBinDir !== undefined && input.bundledBinDir !== '') {
+    const bundled = join(input.bundledBinDir, 'node.exe')
+    if (exists(bundled)) return { path: bundled, source: 'bundled' }
+  }
+  const environment = input.environment === undefined ? '' : input.environment.trim()
+  if (environment !== '' && exists(environment)) return { path: environment, source: 'environment' }
+  return { path: '', source: 'missing' }
+}
+
+/**
+ * Normalize a stdio server's command before it is written.
+ *
+ * An empty command (or a bare `node` / `node.exe`) means "use the Node the shell shipped". Leaving
+ * it alone made DSH spawn whatever `node` PATH happened to resolve — the hand-written path users
+ * complained about. A real command (absolute path, another launcher) is never rewritten.
+ */
+export function resolveStdioCommand(input: McpServerInput, nodePath?: string): McpServerInput {
+  if (input.transport !== 'stdio') return input
+  const detected = nodePath === undefined ? '' : nodePath.trim()
+  if (detected === '') return input
+  const current = input.command === undefined ? '' : input.command.trim()
+  if (current === '' || /^(?:node|node\.exe)$/iu.test(current)) return { ...input, command: detected }
+  return input
+}
+
 export class McpWindow {
   private window: BrowserWindow | undefined
+  /**
+   * Explicit field rather than a constructor parameter property: `node --test` strips TypeScript and
+   * cannot compile parameter properties, and the pure helpers above are unit-tested through this
+   * module (the electron import is stubbed by the test's module hook).
+   */
+  private readonly options: McpWindowOptions
 
-  constructor(private readonly options: McpWindowOptions) {}
+  constructor(options: McpWindowOptions) {
+    this.options = options
+  }
 
   private create(): BrowserWindow {
     const window = new BrowserWindow({
@@ -174,7 +239,9 @@ export class McpWindow {
       guard(event)
       const parsed = parseMcpInput(input)
       if ('reason' in parsed) return { ok: false, reason: parsed.reason }
-      return store.saveMcpServer(parsed)
+      // Backend fallback for the page's prefill: another caller (or an older page) may still hand us
+      // an empty / bare `node` command, and DSH would then spawn whatever PATH resolves.
+      return store.saveMcpServer(resolveStdioCommand(parsed, this.options.nodeExecutable))
     })
     ipcMain.handle(IPC.mcpRemoveServer, (event, id: unknown) => {
       guard(event)
@@ -183,6 +250,17 @@ export class McpWindow {
     ipcMain.handle(IPC.mcpSetEnabled, (event, id: unknown, enabled: unknown) => {
       guard(event)
       return typeof id === 'string' ? store.setMcpEnabled(id, enabled === true) : { ok: false, reason: '记录 id 无效。' }
+    })
+    ipcMain.handle(IPC.mcpNode, (event) => {
+      guard(event)
+      const path = this.options.nodeExecutable === undefined ? '' : this.options.nodeExecutable
+      const info: McpNodeInfo = {
+        path,
+        source: path === '' ? 'missing' : (this.options.nodeSource ?? 'bundled'),
+        // Re-checked at call time: the window may outlive a runtime directory that was moved.
+        exists: path !== '' && existsSync(path),
+      }
+      return info
     })
     ipcMain.handle(IPC.mcpSkills, (event) => {
       guard(event)

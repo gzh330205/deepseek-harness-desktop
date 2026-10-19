@@ -118,7 +118,7 @@ import { createUsageService, type UsageService } from './oneway-service.ts'
 import { UsageWindow } from './usage-window.ts'
 import { UsagePopoverWindow, parseUsagePopoverAnchor, toUsagePopoverState, usagePopoverPosition } from './usage-popover-window.ts'
 import { createDshConfigStore, type DshConfigStore } from './dsh-config.ts'
-import { McpWindow } from './mcp-window.ts'
+import { McpWindow, resolveNodeExecutable } from './mcp-window.ts'
 import { provisionBundledPlugins } from './plugin-provision.ts'
 
 // Scheme privileges must be granted before the app is ready; userData must be
@@ -1787,11 +1787,20 @@ function installMcpWindow(): void {
       pushLog(`MCP：修复了 ${String(migration.repaired)} 条不会挂载的 MCP 行（旧写法，已移入 insert 补丁）`)
     }
   }
+  // Stdio MCP servers are almost always Node programs, so the window offers the Node the shell
+  // already ships instead of asking the user to type a path. `DSH_DESKTOP_NODE_EXECUTABLE` is the
+  // fallback for installs whose runtime tree is absent; both are checked for existence here, never
+  // in the page.
+  const node = resolveNodeExecutable({
+    bundledBinDir: runtimeBinDir(),
+    environment: process.env.DSH_DESKTOP_NODE_EXECUTABLE,
+  })
   mcpWindowRef = new McpWindow({
     appRoot: app.getAppPath(),
     store,
     isShellDocument: isLauncherSender,
     restart: () => { restartShell('MCP 配置变更后重启') },
+    ...(node.path === '' ? {} : { nodeExecutable: node.path, nodeSource: node.source }),
   })
   mcpWindowRef.install()
 }

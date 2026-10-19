@@ -143,6 +143,8 @@ if (isMcpDocument()) {
   contextBridge.exposeInMainWorld('__DSH_MCP__', Object.freeze({
     list: () => ipcRenderer.invoke(IPC.mcpList) as Promise<unknown>,
     saveServer: (input: unknown) => ipcRenderer.invoke(IPC.mcpSaveServer, input) as Promise<unknown>,
+    /** The Node executable to prefill for stdio servers (bundled runtime first, then the env). */
+    node: () => ipcRenderer.invoke(IPC.mcpNode) as Promise<unknown>,
     removeServer: (id: unknown) => ipcRenderer.invoke(IPC.mcpRemoveServer, id) as Promise<unknown>,
     setEnabled: (id: unknown, enabled: unknown) => ipcRenderer.invoke(IPC.mcpSetEnabled, id, enabled) as Promise<unknown>,
     skills: () => ipcRenderer.invoke(IPC.mcpSkills) as Promise<unknown>,

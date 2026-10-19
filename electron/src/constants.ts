@@ -335,6 +335,8 @@ export const IPC = {
   /** MCP 与 Skills 窗口 → main: edit the DSH profile patch / skills links. */
   mcpList: 'shell:mcp-list',
   mcpSaveServer: 'shell:mcp-save-server',
+  /** MCP 窗口 → main: the Node executable auto-detected for stdio servers (path + provenance). */
+  mcpNode: 'shell:mcp-node',
   mcpRemoveServer: 'shell:mcp-remove-server',
   mcpSetEnabled: 'shell:mcp-set-enabled',
   mcpSkills: 'shell:mcp-skills',

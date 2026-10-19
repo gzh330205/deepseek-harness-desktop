@@ -106,6 +106,7 @@ pnpm release:dry        # 发布演习：签名 + 自校验 + 生成 latest.json
 30. **手机扫码要一次拿到地址+密码。** 二维码 payload 是 `dshpocket://connect?url=…&password=…`（`pocket-qr.ts` 的 `pocketConnectLink`，有 QR 编解码往返单测），Android 端 `PocketAddress.connectLink` 解析密码、`MainActivity` 在系统深链与 App 内扫码两条路径都自动填入。纯地址二维码仍走 `normalise` 回退，旧码不会坏。
 31. **DSH 桌面页脚直接显示「设置」，靠 overlay 禁用 `ui-settings-account`。** 该插件在桌面模式注册 `settings.launcher` 单槽，会把 `SettingsRoot` 的 fallback 设置按钮换成「更多」菜单（设置/意见反馈/登录）。overlay 里加 `- id: ui-settings-account disabled: true`（与禁用内置侧边栏浏览器同一机制），launcher 不注册，fallback 设置按钮出现。**不要用 CSS/DOM 隐藏账号行**：fallback 只在槽空时渲染，隐藏不会让它出现。代价是桌面端没有 DeepSeek 账号入口/额度通知/onboarding；恢复就删那一行（页脚会回到「更多」）。
 32. **用量窗口的网关数据靠 HTML/JSON 形状，且只展示脱敏 Key。** `/my-usage` 的 API Key chip 带 `data-key-masked` / `data-key-full` 属性，解析取 masked（完整 key 不进壳窗口 DOM/剪贴板）；请求明细走 `GET /my-requests/<id>/download`（`application/json`，一条约 1.27 MB，16 MB 上限、5 分钟缓存/20 条、logout 清空），`created_at` 用 Date 解析后按本地时区显示。网关改字段会变成可读错误或「—」，不会静默错值；新增解析逻辑时先抓真实页面/接口对形状，不要凭旧正则想当然。
+33. **MCP 窗口是「body flex 列 + main 唯一纵向滚动 + footer flex:none」；Node 路径由主进程检测，不要手填。** 不要再给 `main` 写 `calc(100vh - Npx)` 这类固定高度（表单一长就把 footer 挤出窗口），也不要让 `.scroll` 自己带纵向滚动（双滚动条）。stdio MCP 的启动命令用 `resolveNodeExecutable`：随包 `runtimeBinDir()/node.exe` → `DSH_DESKTOP_NODE_EXECUTABLE` → missing；页面经 `mcpNode` IPC 自动预填，保存时前后端都用 `resolveStdioCommand` 把空/裸 `node` 归一成检测路径，用户填的绝对命令不改写。打包后该路径是 `resources/app.asar.unpacked/dsh/bin/node.exe`（`runtimeBinDir()` 已验证）。
 
 ## 更新通道
 
