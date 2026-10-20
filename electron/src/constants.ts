@@ -341,6 +341,12 @@ export const IPC = {
   mcpSetEnabled: 'shell:mcp-set-enabled',
   /** MCP 窗口 → main: connect to one configured server and list its tools (real availability check). */
   mcpCheck: 'shell:mcp-check',
+  /** MCP 窗口 → main: parse pasted Codex / Claude MCP configuration for preview. */
+  mcpImportParse: 'shell:mcp-import-parse',
+  /** MCP 窗口 → main: pick a config file and return its text (limited to 2 MB). */
+  mcpImportPick: 'shell:mcp-import-pick',
+  /** MCP 窗口 → main: save the selected imported servers (overwrite or skip name conflicts). */
+  mcpImportApply: 'shell:mcp-import-apply',
   mcpSkills: 'shell:mcp-skills',
   mcpAddSkill: 'shell:mcp-add-skill',
   mcpRemoveSkill: 'shell:mcp-remove-skill',

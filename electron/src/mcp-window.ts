@@ -9,10 +9,18 @@
 
 import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFile, stat } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 
 import { IPC, SHELL_PAGE_DOCUMENTS } from './constants.ts'
 import type { DshConfigStore, McpServer, McpServerInput, McpTransport } from './dsh-config.ts'
+import {
+  MAX_IMPORT_ENTRIES,
+  MAX_IMPORT_FILE_BYTES,
+  MAX_IMPORT_TEXT_BYTES,
+  parseMcpImport,
+  type McpImportResult,
+} from './mcp-import.ts'
 import { probeMcpServer, type McpProbeResult } from './mcp-probe.ts'
 
 /** Where the Node executable offered to MCP stdio servers came from. */
@@ -24,6 +32,19 @@ export interface McpNodeInfo {
   readonly source: McpNodeSource
   readonly exists: boolean
 }
+
+/** Outcome of writing a preview selection from the import dialog. */
+export interface McpImportApplyResult {
+  readonly ok: boolean
+  readonly imported: number
+  readonly skipped: number
+  readonly failed: readonly { readonly name: string; readonly reason: string }[]
+}
+
+/** Result of picking a configuration file: its text, or a displayable reason it was not read. */
+export type McpImportPickResult =
+  | { readonly ok: true; readonly fileName: string; readonly text: string }
+  | { readonly ok: false; readonly reason: string }
 
 export interface McpWindowOptions {
   readonly appRoot: string
@@ -60,6 +81,16 @@ const stringMap = (value: unknown): Record<string, string> | undefined => {
     if (typeof item === 'string') out[key] = item
   }
   return Object.keys(out).length === 0 ? undefined : out
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/** Best-effort name for a failed import item, so the failure list can say which one it was. */
+function importNameOf(input: unknown): string {
+  if (!isRecord(input)) return ''
+  const name = input['serverName']
+  return typeof name === 'string' ? name.trim().slice(0, 80) : ''
 }
 
 /** One renderer message → a store input; unknown shapes become validation errors, never crashes. */
@@ -194,6 +225,76 @@ export class McpWindow {
     })
   }
 
+  /** Parse pasted text against the live server list so previews can flag name conflicts. */
+  private parseImportText(text: unknown): McpImportResult {
+    if (typeof text !== 'string') return { format: 'unknown', entries: [], errors: ['导入内容必须是文本。'], warnings: [] }
+    if (Buffer.byteLength(text, 'utf8') > MAX_IMPORT_TEXT_BYTES) {
+      return { format: 'unknown', entries: [], errors: ['导入内容超过 2 MB，请缩小配置后重试。'], warnings: [] }
+    }
+    const existing = this.options.store.listMcpServers().map((server) => ({ id: server.id, serverName: server.serverName }))
+    return parseMcpImport(text, existing)
+  }
+
+  /**
+   * Write a preview selection.
+   *
+   * Every item is re-validated here (the renderer is not trusted) and goes through the same
+   * `resolveStdioCommand` normalization as the normal save path. A name conflict is skipped unless
+   * the item explicitly asks to overwrite, in which case the existing row id is reused.
+   */
+  private applyImport(items: unknown): McpImportApplyResult {
+    try {
+      if (!Array.isArray(items)) return { ok: false, imported: 0, skipped: 0, failed: [{ name: '', reason: '导入列表格式无效。' }] }
+      if (items.length === 0) return { ok: false, imported: 0, skipped: 0, failed: [{ name: '', reason: '没有选中要导入的服务。' }] }
+      if (items.length > MAX_IMPORT_ENTRIES) {
+        return {
+          ok: false,
+          imported: 0,
+          skipped: 0,
+          failed: [{ name: '', reason: `一次最多导入 ${String(MAX_IMPORT_ENTRIES)} 条。` }],
+        }
+      }
+      let imported = 0
+      let skipped = 0
+      const failed: Array<{ readonly name: string; readonly reason: string }> = []
+      const invalidated = new Set<string>()
+      for (const item of items) {
+        const record = isRecord(item) ? item : {}
+        const overwrite = record['overwrite'] === true
+        const parsed = parseMcpInput(record['input'])
+        if ('reason' in parsed) {
+          failed.push({ name: importNameOf(record['input']), reason: parsed.reason })
+          continue
+        }
+        const input = resolveStdioCommand(parsed, this.options.nodeExecutable)
+        // Looked up per item: an earlier item in the same batch may have created this name, and a
+        // stale snapshot would then write a duplicate instead of updating it.
+        const conflicting = this.options.store.listMcpServers().find((server) => server.serverName === input.serverName)
+        if (conflicting !== undefined && !overwrite) {
+          skipped += 1
+          continue
+        }
+        const write: McpServerInput = conflicting === undefined ? input : { ...input, id: conflicting.id }
+        const saved = this.options.store.saveMcpServer(write)
+        if (!saved.ok) {
+          failed.push({ name: input.serverName, reason: saved.reason ?? '保存失败。' })
+          continue
+        }
+        imported += 1
+        if (conflicting !== undefined) invalidated.add(conflicting.id)
+      }
+      for (const id of invalidated) this.clearProbe(id)
+      return { ok: true, imported, skipped, failed }
+    } catch (error) {
+      return {
+        ok: false,
+        imported: 0,
+        skipped: 0,
+        failed: [{ name: '', reason: `导入失败：${error instanceof Error ? error.message : String(error)}` }],
+      }
+    }
+  }
+
   private create(): BrowserWindow {
     const window = new BrowserWindow({
       width: 900,
@@ -301,6 +402,45 @@ export class McpWindow {
       // (the store does not return its generated id), so only updates need clearing.
       if (saved.ok && parsed.id !== undefined) this.clearProbe(parsed.id)
       return saved
+    })
+    ipcMain.handle(IPC.mcpImportParse, (event, text: unknown) => {
+      guard(event)
+      return this.parseImportText(text)
+    })
+    ipcMain.handle(IPC.mcpImportPick, async (event) => {
+      guard(event)
+      try {
+        const owner = BrowserWindow.fromWebContents(event.sender)
+        const options: Electron.OpenDialogOptions = {
+          title: '选择 MCP 配置文件',
+          properties: ['openFile'],
+          filters: [
+            // JSON with comments (`.jsonc`) is not parsed: the parser is standard JSON, and offering
+            // the extension would only turn a supported-looking file into a parse error.
+            { name: 'MCP 配置（.toml / .json / .txt）', extensions: ['toml', 'json', 'txt'] },
+            { name: '所有文件', extensions: ['*'] },
+          ],
+        }
+        const picked = owner === null ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(owner, options)
+        const file = picked.filePaths[0]
+        if (picked.canceled || file === undefined) return { ok: false, reason: '已取消。' } satisfies McpImportPickResult
+        const info = await stat(file)
+        if (info.size > MAX_IMPORT_FILE_BYTES) {
+          const megabytes = (info.size / 1024 / 1024).toFixed(1)
+          return { ok: false, reason: `文件过大（${megabytes} MB），请选择小于 2 MB 的配置文件。` } satisfies McpImportPickResult
+        }
+        const text = await readFile(file, 'utf8')
+        if (Buffer.byteLength(text, 'utf8') > MAX_IMPORT_FILE_BYTES) {
+          return { ok: false, reason: '文件超过 2 MB，请缩小配置后重试。' } satisfies McpImportPickResult
+        }
+        return { ok: true, fileName: basename(file), text } satisfies McpImportPickResult
+      } catch (error) {
+        return { ok: false, reason: `读取文件失败：${error instanceof Error ? error.message : String(error)}` } satisfies McpImportPickResult
+      }
+    })
+    ipcMain.handle(IPC.mcpImportApply, (event, items: unknown) => {
+      guard(event)
+      return this.applyImport(items)
     })
     ipcMain.handle(IPC.mcpRemoveServer, (event, id: unknown) => {
       guard(event)

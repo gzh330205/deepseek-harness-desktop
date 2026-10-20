@@ -33,7 +33,7 @@ test('every element the script looks up exists in the markup', () => {
 
 test('the bridge methods match the preload contract exactly', () => {
   const used = new Set([...script.matchAll(/api\.([A-Za-z]+)\(/gu)].map((match) => match[1]))
-  const expected = ['addSkill', 'check', 'close', 'list', 'node', 'removeServer', 'removeSkill', 'restart', 'saveServer', 'setEnabled', 'skills']
+  const expected = ['addSkill', 'check', 'close', 'importApply', 'importParse', 'importPick', 'list', 'node', 'removeServer', 'removeSkill', 'restart', 'saveServer', 'setEnabled', 'skills']
   assert.deepEqual([...used].sort(), expected)
   assert.match(script, /window\.__DSH_MCP__/u)
   assert.doesNotMatch(script, /__DSH_SETTINGS__|__DSH_USAGE__|__DSH_MARKET__/u)
@@ -134,6 +134,48 @@ test('the check bridge is real: one card check, all cards serial, no bridge mean
   assert.match(script, /async function autoCheckEnabled\(\)/u)
   assert.match(script, /void autoCheckEnabled\(\)/u)
   assert.match(script, /server\.enabled !== false && !server\.probe/u)
+})
+
+test('the import modal offers paste, file pick, parse and an apply button that starts disabled', () => {
+  for (const id of [
+    'importMcp', 'importModal', 'importTitle', 'importText', 'importPick', 'importParse',
+    'importStatus', 'importPreview', 'importApply', 'importCancel', 'importClose',
+  ]) {
+    assert.match(markup, new RegExp(`id="${id}"`, 'u'), `缺少 ${id}`)
+  }
+  assert.match(markup, /id="importMcp"[^>]*>导入配置</u)
+  assert.match(markup, /id="importModal"[^>]*hidden/u)
+  assert.match(markup, /id="importModal"[\s\S]{0,220}role="dialog"[^>]*aria-modal="true"/u)
+  assert.match(markup, /id="importTitle">导入 MCP 配置/u)
+  assert.match(markup, /Codex config\.toml 的 \[mcp_servers\.\*\]/u)
+  assert.match(markup, /Claude Code \/ Claude Desktop 的 \.mcp\.json（mcpServers）/u)
+  assert.match(markup, /id="importApply"[^>]*disabled/u)
+  // Preview rows are built from DOM nodes; the checked state lives in data attributes.
+  assert.match(script, /setAttribute\('data-import-select', String\(index\)\)/u)
+  assert.match(script, /setAttribute\('data-import-overwrite', String\(index\)\)/u)
+  assert.match(script, /同名已存在/u)
+  assert.match(script, /勾选「覆盖」/u)
+  assert.match(script, /已导入 ' \+ imported \+ ' 个，跳过 ' \+ skipped \+ ' 个，失败 ' \+ failed\.length/u)
+})
+
+test('the import bridge is wired end to end and never leaves dead controls', () => {
+  assert.match(script, /api\.importParse\(text\)/u)
+  assert.match(script, /api\.importPick\(\)/u)
+  assert.match(script, /api\.importApply\(items\)/u)
+  assert.match(script, /typeof api\.importParse !== 'function'/u)
+  assert.match(script, /typeof api\.importPick !== 'function'/u)
+  assert.match(script, /typeof api\.importApply !== 'function'/u)
+  assert.match(script, /async function pickImport\(\)/u)
+  assert.match(script, /async function parseImport\(\)/u)
+  assert.match(script, /async function applyImportSelection\(\)/u)
+  assert.match(script, /function collectImportItems\(\)/u)
+  assert.match(script, /\$\('importMcp'\)\.addEventListener\('click', openImport\)/u)
+  assert.match(script, /\$\('importApply'\)\.addEventListener\('click', \(\) => \{ void applyImportSelection\(\) \}\)/u)
+  // Esc / mask / cancel close it, and the apply button tracks the selection.
+  assert.match(script, /event\.key === 'Escape' && !\$\('importModal'\)\.hidden/u)
+  assert.match(script, /event\.target === \$\('importModal'\)/u)
+  assert.match(script, /void autoCheckEnabled\(\)/u, '导入后刷新列表仍由自动检查接管')
+  assert.match(script, /if \(imported > 0\) \{\s*autoCheckStarted = false\s*autoCheckQuiet = true/u)
 })
 
 test('the MCP form switches between stdio and HTTP fields', () => {

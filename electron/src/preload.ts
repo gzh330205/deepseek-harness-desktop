@@ -149,6 +149,10 @@ if (isMcpDocument()) {
     setEnabled: (id: unknown, enabled: unknown) => ipcRenderer.invoke(IPC.mcpSetEnabled, id, enabled) as Promise<unknown>,
     /** Real availability check for one server: connect, list tools, return a plain result object. */
     check: (id: unknown) => ipcRenderer.invoke(IPC.mcpCheck, id) as Promise<unknown>,
+    /** Import Codex / Claude configuration: parse text, pick a file, or write the selected servers. */
+    importParse: (text: unknown) => ipcRenderer.invoke(IPC.mcpImportParse, text) as Promise<unknown>,
+    importPick: () => ipcRenderer.invoke(IPC.mcpImportPick) as Promise<unknown>,
+    importApply: (items: unknown) => ipcRenderer.invoke(IPC.mcpImportApply, items) as Promise<unknown>,
     skills: () => ipcRenderer.invoke(IPC.mcpSkills) as Promise<unknown>,
     addSkill: () => ipcRenderer.invoke(IPC.mcpAddSkill) as Promise<unknown>,
     removeSkill: (name: unknown) => ipcRenderer.invoke(IPC.mcpRemoveSkill, name) as Promise<unknown>,

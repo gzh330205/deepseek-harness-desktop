@@ -7,7 +7,7 @@
 <style>
   :root {
     --bg: #ffffff; --fg: #1c1e21; --muted: #6b7280; --line: #e5e7eb; --panel: #f7f8fa;
-    --brand: #2f6feb; --danger: #d9453d; --ok: #1a7f37;
+    --brand: #2f6feb; --danger: #d9453d; --ok: #1a7f37; --warn: #9a6700;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -77,6 +77,43 @@
   #statusBar { color: var(--muted); flex: 1 1 240px; min-width: 0; min-height: 18px; overflow-wrap: anywhere; }
   #statusBar.error { color: var(--danger); }
   #statusBar.ok { color: var(--ok); }
+
+  /* ── import modal (Codex / Claude configuration) ───────────────────── */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: rgba(0, 0, 0, .45);
+  }
+  .modal {
+    width: min(720px, 100%); max-height: 88vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--bg); box-shadow: 0 16px 40px rgba(0, 0, 0, .25);
+  }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .modal-head h2 { margin: 0; font-size: 15px; }
+  .modal .hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  button.icon { border: 0; font-size: 18px; line-height: 1; padding: 2px 8px; color: var(--muted); }
+  #importText { min-height: 150px; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .import-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .import-actions .grow { flex: 1 1 auto; }
+  #importStatus { color: var(--muted); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+  #importStatus.error { color: var(--danger); }
+  #importStatus.ok { color: var(--ok); }
+  .import-preview { display: flex; flex-direction: column; gap: 8px; }
+  .import-item {
+    display: flex; flex-direction: column; gap: 4px;
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel);
+  }
+  .import-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+  .import-head input { flex: none; margin: 0; }
+  .import-name { font-weight: 600; }
+  .import-target { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .import-conflict { display: flex; align-items: center; gap: 6px; color: var(--warn); font-size: 11.5px; }
+  .import-warnings { margin: 0; padding-left: 18px; color: var(--warn); font-size: 11.5px; line-height: 1.55; }
+  .import-errors { margin: 0; padding-left: 18px; color: var(--danger); font-size: 12px; line-height: 1.6; }
+  .import-warning { margin: 0; color: var(--warn); font-size: 12px; line-height: 1.6; }
+  .import-empty { margin: 0; color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -92,6 +129,7 @@
     <section class="panel active" id="panelMcp">
       <div class="toolbar">
         <button type="button" class="primary" id="addServer">新增 MCP</button>
+        <button type="button" id="importMcp">导入配置</button>
         <button type="button" id="refreshMcp">刷新</button>
         <button type="button" id="checkAll" disabled>检查全部</button>
         <span class="path" id="patchPath"></span>
@@ -156,6 +194,30 @@
     <button type="button" id="closeButton">关闭</button>
   </footer>
 
+  <!-- Import: paste or pick a Codex / Claude configuration, preview it, then write the selection.
+       The textarea and preview are plain DOM; nothing here fetches or writes markup. -->
+  <div class="modal-mask" id="importModal" hidden>
+    <section class="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+      <div class="modal-head">
+        <h2 id="importTitle">导入 MCP 配置</h2>
+        <button class="icon" id="importClose" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="hint">支持 Codex config.toml 的 [mcp_servers.*] 与 Claude Code / Claude Desktop 的 .mcp.json（mcpServers）。</p>
+      <textarea id="importText" placeholder="粘贴 Codex config.toml 的 [mcp_servers.*] 片段，或 Claude 的 .mcp.json 内容"></textarea>
+      <div class="import-actions">
+        <button type="button" id="importPick">从文件选择…</button>
+        <button type="button" class="primary" id="importParse">解析</button>
+        <span class="grow"></span>
+        <span id="importStatus"></span>
+      </div>
+      <div class="import-preview" id="importPreview"></div>
+      <div class="modal-actions">
+        <button type="button" id="importCancel">取消</button>
+        <button type="button" class="primary" id="importApply" disabled>导入选中</button>
+      </div>
+    </section>
+  </div>
+
   <script>
     const api = window.__DSH_MCP__
     const $ = (id) => document.getElementById(id)
@@ -173,6 +235,10 @@
     const PROBE_ERROR_LINE_LIMIT = 240
     const probeState = { checking: new Set(), batchRunning: false, batchDone: 0, batchTotal: 0 }
     let autoCheckStarted = false
+    // Set by an import so its own summary is not overwritten by the background "已自动检查…" line.
+    let autoCheckQuiet = false
+    // The last parse result shown in the import modal; selection state lives in the preview DOM.
+    const importState = { result: null, applying: false }
 
     function setStatus(text, kind) {
       const bar = $('statusBar')
@@ -550,6 +616,9 @@
     async function autoCheckEnabled() {
       if (autoCheckStarted) return
       autoCheckStarted = true
+      // An import already shows "已导入 N 个…"; the background checks must not overwrite that line.
+      const quiet = autoCheckQuiet
+      autoCheckQuiet = false
       if (!api || typeof api.check !== 'function') return
       const targets = servers
         .filter((server) => server.enabled !== false && !server.probe)
@@ -560,6 +629,7 @@
         if (!servers.some((server) => server.id === id)) continue
         results.push(await checkOne(id, { silent: true }))
       }
+      if (quiet) return
       const failed = results.filter((result) => !result || result.ok !== true).length
       setStatus(
         '已自动检查 ' + targets.length + ' 个 MCP 服务' + (failed === 0 ? '，全部可用。' : '，' + failed + ' 个不可用。'),
@@ -595,6 +665,232 @@
       } finally {
         probeState.batchRunning = false
         renderServers()
+      }
+    }
+
+    /* ---------- import: Codex config.toml / Claude .mcp.json → preview → apply ---------- */
+
+    function importFormatLabel(format) {
+      if (format === 'codex') return 'Codex TOML'
+      if (format === 'claude') return 'Claude JSON'
+      return '未识别格式'
+    }
+
+    function importTarget(entry) {
+      const input = (entry && entry.input) || {}
+      if (input.transport === 'streamable-http') return input.url || ''
+      const args = Array.isArray(input.args) ? input.args.join(' ') : ''
+      return String(input.command || '') + (args === '' ? '' : ' ' + args)
+    }
+
+    function importEntryRow(entry, index) {
+      const item = el('div', 'import-item')
+      const head = el('label', 'import-head')
+      const selected = document.createElement('input')
+      selected.type = 'checkbox'
+      selected.checked = true
+      selected.setAttribute('data-import-select', String(index))
+      head.append(selected, el('span', 'import-name', entry.name || '（未命名）'))
+      head.append(tag(entry.input && entry.input.transport === 'streamable-http' ? 'streamable-http' : 'stdio'))
+      if (entry.input && entry.input.enabled === false) head.append(tag('已停用'))
+      head.append(el('span', 'import-target', importTarget(entry)))
+      item.append(head)
+      if (entry.conflict) {
+        const conflict = el('label', 'import-conflict')
+        const overwrite = document.createElement('input')
+        overwrite.type = 'checkbox'
+        overwrite.setAttribute('data-import-overwrite', String(index))
+        conflict.append(overwrite, el('span', undefined, '同名已存在，勾选「覆盖」后导入会更新原配置'))
+        item.append(conflict)
+      }
+      if (Array.isArray(entry.warnings) && entry.warnings.length > 0) {
+        const warnings = el('ul', 'import-warnings')
+        for (const warning of entry.warnings) warnings.append(el('li', undefined, String(warning)))
+        item.append(warnings)
+      }
+      return item
+    }
+
+    function renderImportPreview(result) {
+      const preview = $('importPreview')
+      preview.replaceChildren()
+      const errors = Array.isArray(result.errors) ? result.errors : []
+      if (errors.length > 0) {
+        const list = el('ul', 'import-errors')
+        for (const error of errors) list.append(el('li', undefined, String(error)))
+        preview.append(list)
+      }
+      for (const warning of (Array.isArray(result.warnings) ? result.warnings : [])) {
+        preview.append(el('p', 'import-warning', warning))
+      }
+      const entries = Array.isArray(result.entries) ? result.entries : []
+      for (const [index, entry] of entries.entries()) preview.append(importEntryRow(entry, index))
+      if (entries.length === 0 && errors.length === 0 && (result.warnings || []).length === 0) {
+        preview.append(el('p', 'import-empty', '没有可导入的服务。'))
+      }
+      const status = $('importStatus')
+      status.textContent = '识别为 ' + importFormatLabel(result.format) + '：' + entries.length + ' 条可导入'
+        + (errors.length === 0 ? '。' : '，' + errors.length + ' 个错误。')
+      status.className = errors.length > 0 && entries.length === 0 ? 'error' : ''
+      $('importApply').disabled = entries.length === 0 || importState.applying
+    }
+
+    /** Selected preview rows → the IPC items the shell writes (renderer state is rebuilt each render). */
+    function collectImportItems() {
+      const result = importState.result
+      if (!result) return []
+      const preview = $('importPreview')
+      const items = []
+      for (const [index, entry] of result.entries.entries()) {
+        const selected = preview.querySelector('input[data-import-select="' + index + '"]')
+        if (!selected || selected.checked !== true) continue
+        const overwrite = preview.querySelector('input[data-import-overwrite="' + index + '"]')
+        items.push({ input: entry.input, overwrite: Boolean(entry.conflict && overwrite && overwrite.checked) })
+      }
+      return items
+    }
+
+    function updateImportApplyState() {
+      $('importApply').disabled = importState.applying || collectImportItems().length === 0
+    }
+
+    function openImport() {
+      importState.result = null
+      importState.applying = false
+      $('importText').value = ''
+      $('importStatus').textContent = ''
+      $('importStatus').className = ''
+      $('importPreview').replaceChildren()
+      $('importApply').disabled = true
+      $('importModal').hidden = false
+      $('importText').focus()
+    }
+
+    function closeImport() {
+      if (importState.applying) return
+      importState.result = null
+      $('importModal').hidden = true
+      $('importPreview').replaceChildren()
+      $('importStatus').textContent = ''
+      $('importStatus').className = ''
+    }
+
+    async function pickImport() {
+      if (!api || typeof api.importPick !== 'function') {
+        setStatus('当前桌面壳不支持导入配置，请升级后重试。', 'error')
+        return
+      }
+      const status = $('importStatus')
+      status.className = ''
+      status.textContent = '正在选择文件…'
+      try {
+        const result = await api.importPick()
+        if (!result || result.ok !== true) {
+          if (result && result.reason === '已取消。') {
+            status.textContent = ''
+            return
+          }
+          status.textContent = (result && result.reason) || '读取配置文件失败。'
+          status.className = 'error'
+          return
+        }
+        $('importText').value = String(result.text || '')
+        $('importPreview').replaceChildren()
+        $('importApply').disabled = true
+        importState.result = null
+        status.textContent = '已读取 ' + String(result.fileName || '配置文件') + '，点「解析」查看预览。'
+      } catch (error) {
+        status.textContent = '读取配置文件失败：' + String(error)
+        status.className = 'error'
+      }
+    }
+
+    async function parseImport() {
+      if (!api || typeof api.importParse !== 'function') {
+        setStatus('当前桌面壳不支持导入配置，请升级后重试。', 'error')
+        return
+      }
+      const text = $('importText').value
+      const status = $('importStatus')
+      if (text.trim() === '') {
+        status.textContent = '请先粘贴配置内容或从文件选择。'
+        status.className = 'error'
+        return
+      }
+      status.textContent = '正在解析…'
+      status.className = ''
+      $('importApply').disabled = true
+      $('importPreview').replaceChildren()
+      importState.result = null
+      try {
+        const raw = await api.importParse(text)
+        if (!raw || typeof raw !== 'object') throw new Error('解析结果无效。')
+        const result = {
+          format: raw.format === 'codex' || raw.format === 'claude' ? raw.format : 'unknown',
+          entries: Array.isArray(raw.entries) ? raw.entries : [],
+          errors: Array.isArray(raw.errors) ? raw.errors : [],
+          warnings: Array.isArray(raw.warnings) ? raw.warnings : [],
+        }
+        importState.result = result
+        renderImportPreview(result)
+      } catch (error) {
+        status.textContent = '解析失败：' + String(error)
+        status.className = 'error'
+        $('importApply').disabled = true
+      }
+    }
+
+    async function applyImportSelection() {
+      if (importState.applying) return
+      if (!api || typeof api.importApply !== 'function') {
+        setStatus('当前桌面壳不支持导入配置，请升级后重试。', 'error')
+        return
+      }
+      const items = collectImportItems()
+      if (items.length === 0) {
+        $('importStatus').textContent = '没有选中要导入的服务。'
+        $('importStatus').className = 'error'
+        return
+      }
+      importState.applying = true
+      const status = $('importStatus')
+      status.className = ''
+      status.textContent = '正在导入…'
+      $('importApply').disabled = true
+      for (const id of ['importPick', 'importParse', 'importCancel', 'importClose']) $(id).disabled = true
+      try {
+        const result = await api.importApply(items)
+        const imported = Number(result && result.imported) || 0
+        const skipped = Number(result && result.skipped) || 0
+        const failed = Array.isArray(result && result.failed) ? result.failed : []
+        const failures = failed.map((failure) => (failure.name ? failure.name + '：' : '') + String(failure.reason || '未知原因'))
+        if (!result || result.ok !== true) {
+          status.textContent = failures.length > 0 ? failures.join('；') : '导入失败。'
+          status.className = 'error'
+          return
+        }
+        const summary = '已导入 ' + imported + ' 个，跳过 ' + skipped + ' 个，失败 ' + failed.length + ' 个。'
+        status.textContent = summary + (failures.length > 0 ? ' ' + failures.join('；') : '')
+        status.className = failed.length > 0 ? 'error' : 'ok'
+        // A fresh list may contain new servers; let the one-shot auto-check pick them up so the rows
+        // show a real availability badge instead of "未检查", without replacing the import summary.
+        if (imported > 0) {
+          autoCheckStarted = false
+          autoCheckQuiet = true
+        }
+        await loadServers()
+        if (imported > 0) {
+          importState.result = null
+          $('importModal').hidden = true
+          setStatus(summary + (failures.length > 0 ? ' ' + failures.join('；') : '') + ' 重启 DSH 服务后生效。', failed.length > 0 ? 'error' : 'ok')
+        }
+      } catch (error) {
+        status.textContent = '导入失败：' + String(error)
+        status.className = 'error'
+      } finally {
+        importState.applying = false
+        for (const id of ['importPick', 'importParse', 'importCancel', 'importClose']) $(id).disabled = false
+        if (!$('importModal').hidden) updateImportApplyState()
       }
     }
 
@@ -689,6 +985,22 @@
       $('tabMcp').addEventListener('click', () => { switchTab('mcp') })
       $('tabSkills').addEventListener('click', () => { switchTab('skills') })
       $('addServer').addEventListener('click', () => { showForm(null) })
+      $('importMcp').addEventListener('click', openImport)
+      $('importClose').addEventListener('click', closeImport)
+      $('importCancel').addEventListener('click', closeImport)
+      $('importModal').addEventListener('mousedown', (event) => {
+        if (event.target === $('importModal')) closeImport()
+      })
+      $('importPick').addEventListener('click', () => { void pickImport() })
+      $('importParse').addEventListener('click', () => { void parseImport() })
+      $('importApply').addEventListener('click', () => { void applyImportSelection() })
+      $('importPreview').addEventListener('change', updateImportApplyState)
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !$('importModal').hidden) {
+          event.preventDefault()
+          closeImport()
+        }
+      })
       $('refreshMcp').addEventListener('click', () => { void loadServers() })
       $('checkAll').addEventListener('click', () => { void checkAll() })
       $('serverTransport').addEventListener('change', syncTransportFields)

@@ -1,7 +1,7 @@
 {
   "name": "dsh-desktop-electron",
   "productName": "DSH Desktop",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "private": true,
   "description": "Electron shell for DSH Desktop (the Tauri shell has been retired)",
   "license": "MIT",
@@ -44,6 +44,7 @@
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "jsqr": "^1.4.0",
+    "smol-toml": "^1.9.1",
     "typescript": "~5.7.3"
   },
   "pnpm": {

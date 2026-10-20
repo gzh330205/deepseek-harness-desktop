@@ -17,7 +17,9 @@ import { test } from 'node:test'
 
 import { IPC } from './constants.ts'
 import type { DshConfigStore, McpServer, McpServerInput } from './dsh-config.ts'
+import { MAX_IMPORT_ENTRIES, type McpImportResult } from './mcp-import.ts'
 import type { McpProbeResult } from './mcp-probe.ts'
+import type { McpImportApplyResult } from './mcp-window.ts'
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -185,7 +187,30 @@ function createHarness(
     patchPath: 'C:/home/profiles/dsh-desktop/cordis.patch.yml',
     skillsRoot: 'C:/home/skills',
     listMcpServers: () => state,
-    saveMcpServer: (input: McpServerInput) => { saved.push(input); return { ok: true } },
+    saveMcpServer: (input: McpServerInput) => {
+      saved.push(input)
+      const existing = input.id === undefined ? undefined : state.find((server) => server.id === input.id)
+      if (existing !== undefined) {
+        state[state.indexOf(existing)] = {
+          ...existing,
+          ...input,
+          id: existing.id,
+          serverName: input.serverName,
+          transport: input.transport,
+          enabled: input.enabled !== false,
+        }
+      } else {
+        state.push({
+          ...input,
+          id: `row-${String(state.length + 1)}-${String(saved.length)}`,
+          serverName: input.serverName,
+          transport: input.transport,
+          enabled: input.enabled !== false,
+          failOnStartupError: input.failOnStartupError === true,
+        })
+      }
+      return { ok: true }
+    },
     removeMcpServer: (id: string) => {
       const index = state.findIndex((server) => server.id === id)
       if (index >= 0) state.splice(index, 1)
@@ -332,4 +357,103 @@ test('a probe that throws becomes a failed result instead of a rejected IPC call
   assert.equal(result.ok, false)
   assert.equal(result.error, 'boom')
   assert.equal(result.transport, 'stdio')
+})
+
+/* ------------------------------------------------------------------ */
+/* Import: parse against the live list, then apply with conflicts      */
+/* ------------------------------------------------------------------ */
+
+test('mcpImportParse flags name conflicts against the live store', async () => {
+  const harness = createHarness([mcpServer('a', { serverName: 'existing' })])
+  const result = await harness.call(IPC.mcpImportParse, JSON.stringify({
+    mcpServers: {
+      existing: { command: 'node' },
+      fresh: { type: 'http', url: 'https://fresh.test/mcp' },
+    },
+  })) as McpImportResult
+  assert.equal(result.format, 'claude')
+  assert.deepEqual(result.errors, [])
+  assert.deepEqual(result.entries.map((entry) => entry.name), ['existing', 'fresh'])
+  assert.deepEqual(result.entries[0]?.conflict, { id: 'a' })
+  assert.equal(result.entries[1]?.conflict, undefined)
+})
+
+test('mcpImportParse rejects non-text and over-2 MB input without throwing', async () => {
+  const harness = createHarness([])
+  const notText = await harness.call(IPC.mcpImportParse, 42) as McpImportResult
+  assert.deepEqual(notText.errors, ['导入内容必须是文本。'])
+
+  const tooBig = await harness.call(IPC.mcpImportParse, 'x'.repeat(2 * 1024 * 1024 + 16)) as McpImportResult
+  assert.ok(tooBig.errors.some((error) => error.includes('超过 2 MB')))
+})
+
+test('mcpImportApply imports new servers through the same validation and Node normalization', async () => {
+  const harness = createHarness([], undefined, BUNDLED_NODE)
+  const result = await harness.call(IPC.mcpImportApply, [
+    { input: { serverName: 'fresh', transport: 'stdio', command: 'node', args: ['server.js'] } },
+  ]) as McpImportApplyResult
+  assert.deepEqual(result, { ok: true, imported: 1, skipped: 0, failed: [] })
+  assert.equal(harness.servers.length, 1)
+  assert.equal(harness.servers[0]?.serverName, 'fresh')
+  assert.equal(harness.servers[0]?.command, BUNDLED_NODE, '导入也要归一裸 node')
+  assert.deepEqual(harness.saved[0]?.args, ['server.js'])
+})
+
+test('mcpImportApply skips a name conflict unless the item asks to overwrite', async () => {
+  const harness = createHarness(
+    [mcpServer('a', { serverName: 'existing', command: 'C:/custom/node.exe' })],
+    undefined,
+    BUNDLED_NODE,
+  )
+  const skipped = await harness.call(IPC.mcpImportApply, [
+    { input: { serverName: 'existing', transport: 'stdio', command: 'node' }, overwrite: false },
+  ]) as McpImportApplyResult
+  assert.deepEqual(skipped, { ok: true, imported: 0, skipped: 1, failed: [] })
+  assert.equal(harness.servers[0]?.command, 'C:/custom/node.exe', '未勾选覆盖时原有配置不动')
+
+  const overwritten = await harness.call(IPC.mcpImportApply, [
+    { input: { serverName: 'existing', transport: 'stdio', command: 'node', args: ['new.js'] }, overwrite: true },
+  ]) as McpImportApplyResult
+  assert.deepEqual(overwritten, { ok: true, imported: 1, skipped: 0, failed: [] })
+  assert.equal(harness.servers.length, 1, '覆盖是原地更新，不新增一行')
+  assert.equal(harness.servers[0]?.id, 'a', '沿用已有 id')
+  assert.equal(harness.servers[0]?.command, BUNDLED_NODE)
+  assert.ok(harness.saved.some((input) => input.id === 'a'))
+})
+
+test('mcpImportApply clears the cached probe of overwritten servers', async () => {
+  const harness = createHarness([mcpServer('a', { serverName: 'existing' })], async () => probeOk())
+  await harness.call(IPC.mcpCheck, 'a')
+  assert.equal((await harness.call(IPC.mcpList) as Listed).servers[0]?.probe?.ok, true)
+
+  await harness.call(IPC.mcpImportApply, [
+    { input: { serverName: 'existing', transport: 'stdio', command: 'node' }, overwrite: true },
+  ])
+  assert.equal(Object.hasOwn((await harness.call(IPC.mcpList) as Listed).servers[0] ?? {}, 'probe'), false)
+})
+
+test('mcpImportApply reports invalid items without throwing and rejects bad batches', async () => {
+  const harness = createHarness([])
+  const partial = await harness.call(IPC.mcpImportApply, [
+    { input: { serverName: '', transport: 'stdio' } },
+    'not-an-item',
+    { input: { serverName: 'ok', transport: 'streamable-http', url: 'https://ok.test/mcp' } },
+  ]) as McpImportApplyResult
+  assert.equal(partial.ok, true)
+  assert.equal(partial.imported, 1)
+  assert.equal(partial.failed.length, 2)
+  assert.ok(partial.failed.some((failure) => failure.reason.includes('服务名不能为空')))
+  assert.ok(partial.failed.some((failure) => failure.reason.includes('MCP 记录格式无效')))
+
+  assert.deepEqual(
+    await harness.call(IPC.mcpImportApply, 'nope') as McpImportApplyResult,
+    { ok: false, imported: 0, skipped: 0, failed: [{ name: '', reason: '导入列表格式无效。' }] },
+  )
+  assert.deepEqual(
+    await harness.call(IPC.mcpImportApply, []) as McpImportApplyResult,
+    { ok: false, imported: 0, skipped: 0, failed: [{ name: '', reason: '没有选中要导入的服务。' }] },
+  )
+  const tooMany = await harness.call(IPC.mcpImportApply, Array.from({ length: MAX_IMPORT_ENTRIES + 1 }, () => ({ input: {} }))) as McpImportApplyResult
+  assert.equal(tooMany.ok, false)
+  assert.ok(tooMany.failed[0]?.reason.includes('一次最多导入'))
 })
