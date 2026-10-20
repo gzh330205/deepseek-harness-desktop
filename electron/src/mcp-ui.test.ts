@@ -145,6 +145,9 @@ test('the import modal offers paste, file pick, parse and an apply button that s
   }
   assert.match(markup, /id="importMcp"[^>]*>导入配置</u)
   assert.match(markup, /id="importModal"[^>]*hidden/u)
+  // .modal-mask is display:flex, which beats the UA [hidden] rule: the explicit rule is what
+  // keeps the dialog closed until the toolbar button opens it.
+  assert.match(markup, /\.modal-mask\[hidden\] \{ display: none; \}/u)
   assert.match(markup, /id="importModal"[\s\S]{0,220}role="dialog"[^>]*aria-modal="true"/u)
   assert.match(markup, /id="importTitle">导入 MCP 配置/u)
   assert.match(markup, /Codex config\.toml 的 \[mcp_servers\.\*\]/u)

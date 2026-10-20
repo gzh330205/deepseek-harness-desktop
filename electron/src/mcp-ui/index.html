@@ -83,6 +83,9 @@
     position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
     padding: 24px; background: rgba(0, 0, 0, .45);
   }
+  /* The mask is a flex container, so the UA's [hidden] rule loses to it: without this the
+     dialog is visible (and blocking the window) from the first paint. */
+  .modal-mask[hidden] { display: none; }
   .modal {
     width: min(720px, 100%); max-height: 88vh; overflow-y: auto;
     display: flex; flex-direction: column; gap: 10px;
