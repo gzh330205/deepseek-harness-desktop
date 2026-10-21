@@ -190,6 +190,13 @@ test('trend tab: 24 hourly and 30 daily bars made of divs and widths, never canv
   assert.match(script, /renderBars\(\$\('hourlyList'\), snapshot\.hourly, 'hour'/u)
   assert.match(script, /renderBars\(\$\('dailyList'\), snapshot\.daily, 'date'/u)
   assert.match(script, /fill\.style\.width = /u)
+  // The gateway's hourly points carry a full timestamp. The old row printed it raw and the fixed
+  // column ellipsised every label to "2026-10-20 …"; compact it (MM-DD HH:mm) and keep the raw value
+  // in the tooltip, with a column wide enough for the label.
+  assert.match(script, /function barTime\(value, timeKey\)/u)
+  assert.match(script, /\$\{dateTime\[2\]\}-\$\{dateTime\[3\]\} \$\{dateTime\[4\]\}:\$\{dateTime\[5\]\}/u)
+  assert.match(script, /timeCell\.title = time\.title/u)
+  assert.match(markup, /\.bar-row \{[^}]*grid-template-columns: 88px/u)
   assert.doesNotMatch(page, /<canvas|<svg/iu, '条形图必须用 div 宽度实现')
 })
 

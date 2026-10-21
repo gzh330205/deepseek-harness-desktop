@@ -177,7 +177,7 @@
       display: flex; flex-direction: column; gap: 2px;
       border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px;
     }
-    .bar-row { display: grid; grid-template-columns: 76px 62px 70px 1fr; gap: 8px; align-items: center; font-size: 11.5px; padding: 3px 2px; border-radius: 6px; }
+    .bar-row { display: grid; grid-template-columns: 88px 62px 70px 1fr; gap: 8px; align-items: center; font-size: 11.5px; padding: 3px 2px; border-radius: 6px; }
     .bar-row:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
     .bar-time { color: var(--muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .bar-reqs { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -678,6 +678,22 @@
 
     /* ---------- trend: 24 hourly / 30 daily rows, width-only bars ---------- */
 
+    /* The gateway returns full timestamps (2026-10-20 14:00:00), which used to be ellipsised
+       to "2026-10-20 …" inside the fixed time column. Show a compact local label instead and
+       keep the full value in the tooltip, so every row stays readable at a glance. */
+    function barTime(value, timeKey) {
+      const raw = display(value)
+      if (raw === '—') return { label: raw, title: '' }
+      if (timeKey === 'hour') {
+        const dateTime = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/u.exec(raw)
+        if (dateTime) return { label: `${dateTime[2]}-${dateTime[3]} ${dateTime[4]}:${dateTime[5]}`, title: raw }
+        return { label: raw, title: raw }
+      }
+      const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(raw)
+      if (dateOnly) return { label: `${dateOnly[2]}-${dateOnly[3]}`, title: raw }
+      return { label: raw, title: raw }
+    }
+
     function renderBars(host, rows, timeKey, emptyText) {
       host.replaceChildren()
       if (!Array.isArray(rows) || rows.length === 0) {
@@ -696,9 +712,12 @@
         const fill = el('span')
         fill.style.width = Math.max(0, Math.min(100, (tokens / max) * 100)) + '%'
         track.append(fill)
+        const time = barTime(row && row[timeKey], timeKey)
+        const timeCell = el('span', 'bar-time', time.label)
+        if (time.title) timeCell.title = time.title
         const line = el('div', 'bar-row')
         line.append(
-          el('span', 'bar-time', display(row && row[timeKey])),
+          timeCell,
           el('span', 'bar-reqs', fmtInt(row && row.requests) + ' 次'),
           el('span', 'bar-tokens', fmtTokens(row && row.tokens)),
           track,

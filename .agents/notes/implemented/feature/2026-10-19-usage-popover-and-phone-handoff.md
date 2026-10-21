@@ -110,6 +110,11 @@ topbar「立即刷新」旁新增「设置」按钮切换它并滚到可见（ar
 - 0.4.14（点击用量直接开窗）：发版 235,147,801 B（+sig，`latest.json` version=0.4.14），打包组合校验通过；真实构建页 harness 6/6 —— 点击只发一次 `openUsage`、先发
   `hoverUsage(null)`、不再发 `menu('usage')`，应用菜单仍正常；单测 632 / 624 pass / 0 fail / 8 skipped，
   `tsc --noEmit` 与 `build.mjs` 通过。
+- 0.4.15（趋势时间列看不全）：网关头是完整时间戳 `2026-10-20 09:00:00`，旧代码整串塞进 76px 列，
+  每行被省略成 `2026-10-20 …`；`barTime()` 把小时点压成 `MM-DD HH:mm`、日点压成 `MM-DD`，原值放
+  `title`，列宽 76→88px。真实构建页 harness 8/8（8 个小时标签 scrollWidth==clientWidth==88、
+  tooltip 保留完整时间戳、日标签 `MM-DD`、无 console error），单测断言 `barTime`/标题/列宽。
+  截图 `.tmp-perf/usage-trend-labels/trend-labels.png`；发版 235,148,008 B（+sig）、打包组合校验通过。
 - 手机访问持久化：`pocket-service/pocket-state/pocket-qr` 31/31 PASS，含 dispose 保留记录、同状态重建后
   restore 复用 token、用户关闭过不自动开、stop/failed start 保 token、空 token 不覆盖、failed restore
   保留 accepted。
