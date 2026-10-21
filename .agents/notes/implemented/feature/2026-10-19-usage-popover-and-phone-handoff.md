@@ -47,7 +47,10 @@ topbar「立即刷新」旁新增「设置」按钮切换它并滚到可见（ar
   本身也补上了原来横向的空。颜色、单位（亿/M/万/K）与用量窗口保持一致。
 
 - 标题栏 hover 时把按钮的视口矩形通过 `titlebar → main` 的 IPC 发出去；mouseleave 延迟 180 ms 收起；
-  点击按钮先收起卡片、再走原来的 `popupShellMenu('usage')`。
+  点击按钮先收起卡片，然后**直接打开用量窗口**。0.4.14 起不再走 `popupShellMenu('usage')`：
+  「立即刷新 / 退出登录」窗口里本来就有，中间再弹一层菜单只是多一次点击。按钮因此从
+  `data-menu="usage"` 改成 `data-action="usage"`，`ShellMenuName` 里也删掉了 `usage`；点击走新的
+  `IPC.usageOpen`（`shell:usage-open`，同样只接受标题栏 sender），而不是菜单通道。
 - 位置在主进程算（`usagePopoverPosition` 纯函数，单测覆盖负坐标/贴右/贴底/第二显示器）：
   窗口内容区原点 + 按钮矩形，再 clamp 到**按钮所在显示器**的 workArea。
 - 数据仍然只在主进程：页面通过 `__DSH_USAGE_POPOVER__` 只能 `get()` 和订阅 `onState`，CSP
@@ -102,8 +105,11 @@ topbar「立即刷新」旁新增「设置」按钮切换它并滚到可见（ar
   `usagePopover.loaded/bridge=true`，`metricH5/Today/Week`、`pctH5/Today/Week`、`barH5/Today/Week`
   九个元素全部存在且 `hidden=true`（0.4.8 改版后复测）。
 - dev 壳冒烟：11/11 PASS —— `usagePopover{loaded:true,bridge:true,selectors×3:true,hidden:true}`；
-  app/plugins/pocket/usage 四菜单 opened；usageWindow/mcpWindow loaded+bridge；pocketWindow loaded；
+  app/plugins/pocket 三个菜单 opened；usageWindow/mcpWindow loaded+bridge；pocketWindow loaded；
   真实开启局域网网关（`http://10.1.6.35:47904/`）且设置持久化；无插件 import 失败。
+- 0.4.14（点击用量直接开窗）：发版 235,147,801 B（+sig，`latest.json` version=0.4.14），打包组合校验通过；真实构建页 harness 6/6 —— 点击只发一次 `openUsage`、先发
+  `hoverUsage(null)`、不再发 `menu('usage')`，应用菜单仍正常；单测 632 / 624 pass / 0 fail / 8 skipped，
+  `tsc --noEmit` 与 `build.mjs` 通过。
 - 手机访问持久化：`pocket-service/pocket-state/pocket-qr` 31/31 PASS，含 dispose 保留记录、同状态重建后
   restore 复用 token、用户关闭过不自动开、stop/failed start 保 token、空 token 不覆盖、failed restore
   保留 accepted。
@@ -118,6 +124,8 @@ topbar「立即刷新」旁新增「设置」按钮切换它并滚到可见（ar
 
 - 0.4.8 按用户反馈把卡片从 300 收到 240 并加上以本周为参考的进度条/百分比（只动页面与窗口尺寸常量，
   桥与数据形状不变）；这版的小改动仍沿用本笔记，不另立新篇。
+- 0.4.14 起用量按钮只有两个交互：hover 出卡片、点击直接开窗；刷新/退出/设置在窗口内完成。菜单通道
+  只剩应用/插件/手机访问三个，冒烟的菜单循环也随之少一项（用量窗口本身仍有独立的 probe/bridge 检查）。
 - Tunnel Token 会在用户主动关闭公网访问后继续留在 `pocket.json`（0600）——这是"不要每次重填"的代价；
   目前没有显式清除 token 的 UI，`setTunnelToken('')` 表示"不修改"。
 - hover 卡片多了一个 BrowserWindow，但它不可聚焦、不接收鼠标、不进任务栏；主窗口拖动/最小化即收起。
@@ -126,3 +134,4 @@ topbar「立即刷新」旁新增「设置」按钮切换它并滚到可见（ar
 - 登录二维码 PNG 在 flow 内缓存 10 分钟；企微侧提前失效时仍走原有"已过期，请刷新二维码"分支，行为不变。
 - 用量页表头 sticky 的滚动容器随 `.table-wrap` 改变，页面整体滚时表头不再吸顶（此前只在小盒子里吸顶，
   视觉无新增问题）；若以后要页面级吸顶需换表格结构。
+

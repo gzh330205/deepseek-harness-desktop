@@ -70,7 +70,7 @@ export const USAGE_POPOVER_PAGE = '/usage-popover/index.html'
 export const USAGE_POPOVER_WIDTH = 240
 export const USAGE_POPOVER_HEIGHT = 150
 
-export type ShellMenuName = 'app' | 'plugins' | 'pocket' | 'usage'
+export type ShellMenuName = 'app' | 'plugins' | 'pocket'
 /**
  * How long the port gate keeps waiting for the port to come free, and how often it retries.
  * Covers the one launch where the outgoing Tauri process is still dying: its `dsh` child
@@ -301,6 +301,11 @@ export const IPC = {
   titlebarMenu: 'shell:titlebar-menu',
   /** Title bar → main: product name and version for its label. */
   titlebarState: 'shell:titlebar-state',
+  /**
+   * Title bar → main: open the 用量 window directly. The button used to open a menu (面板/刷新/
+   * 退出); both actions already live in the window, so a menu only added a step.
+   */
+  usageOpen: 'shell:usage-open',
   /** Settings window → main: read the current snapshot. */
   settingsGet: 'shell:settings-get',
   /** Settings window → main: submit values. */

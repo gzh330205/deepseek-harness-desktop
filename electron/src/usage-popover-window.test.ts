@@ -247,8 +247,9 @@ test('the title bar reports hover with a 180 ms leave delay, and the preload exp
   assert.match(titleBar, /mouseenter/u)
   assert.match(titleBar, /mouseleave/u)
   assert.match(titleBar, /180/u)
-  // Clicking still opens the menu, and the card is taken down first.
-  assert.match(titleBar, /name === 'usage' && typeof api\.hoverUsage === 'function'/u)
+  // Clicking opens the window directly (no menu), and the card is taken down first.
+  assert.match(titleBar, /api\.hoverUsage\(null\)[\s\S]{0,80}api\.openUsage\(\)/u)
+  assert.doesNotMatch(titleBar, /menu\('usage'/u)
   assert.match(preload, /hoverUsage/u)
   assert.match(preload, /__DSH_USAGE_POPOVER__/u)
   assert.match(preload, /USAGE_POPOVER_PAGE/u)

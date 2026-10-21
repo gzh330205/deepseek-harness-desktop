@@ -56,6 +56,15 @@ if (isTitleBarDocument()) {
     menu: (name: ShellMenuName, anchor: { x: number; y: number; height: number }) =>
       ipcRenderer.invoke(IPC.titlebarMenu, name, anchor) as Promise<boolean>,
     /**
+     * 用量按钮：直接打开用量窗口。刷新与退出都在窗口里，菜单只是多一次点击。
+     *
+     * Fire-and-forget for the same reason as the hover card: a failed open must not leave an
+     * unhandled rejection in the strip.
+     */
+    openUsage: (): void => {
+      void (ipcRenderer.invoke(IPC.usageOpen) as Promise<boolean>).catch(() => {})
+    },
+    /**
      * 用量按钮的悬浮卡片：`anchor` 是按钮的视口矩形（主进程加上窗口原点），`null` 表示收起。
      *
      * Fire-and-forget: hover fires often, and a card that fails to open must not leave an unhandled

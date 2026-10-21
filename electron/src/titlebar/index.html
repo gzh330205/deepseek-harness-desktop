@@ -53,8 +53,9 @@
     <!-- Phone access lives here rather than in the settings window: it is a feature the shell owns,
          and this strip is where the shell's own entries go. -->
     <button type="button" data-menu="pocket" aria-haspopup="menu">手机访问</button>
-    <!-- Token usage (ONE-WAY): a shell window, not a DSH page — same rule as phone access. -->
-    <button type="button" data-menu="usage" aria-haspopup="menu">用量</button>
+    <!-- Token usage (ONE-WAY): a shell window, not a DSH page — same rule as phone access.
+         Clicking opens the window directly; refresh/logout live inside it, so there is no menu. -->
+    <button type="button" data-action="usage">用量</button>
   </nav>
   <script>
     // The preload exposes exactly one object here: no ipcRenderer, no Node.
@@ -68,8 +69,6 @@
           const rect = button.getBoundingClientRect()
           const name = button.getAttribute('data-menu')
           button.setAttribute('aria-expanded', 'true')
-          // 用量按钮有悬浮卡片；点开菜单前先收起，菜单和卡片不该同屏。
-          if (name === 'usage' && typeof api.hoverUsage === 'function') api.hoverUsage(null)
           // The main process opens a real native menu at these coordinates and tells us when
           // it closed, so the pressed state never sticks.
           api.menu(name, { x: rect.left, y: rect.top, height: rect.height })
@@ -77,10 +76,18 @@
         })
       }
 
+      // 用量按钮：直接开窗口，不再弹「打开面板 / 立即刷新 / 退出登录」菜单——后两项窗口里本来就有。
+      const usageButton = document.querySelector('button[data-action="usage"]')
+      if (usageButton && typeof api.openUsage === 'function') {
+        usageButton.addEventListener('click', () => {
+          if (typeof api.hoverUsage === 'function') api.hoverUsage(null)
+          api.openUsage()
+        })
+      }
+
       // 用量按钮的悬浮卡片。mouseleave 延迟 180ms 再收起：指针从按钮移到别处、或系统偶尔丢一次
       // mouseout，都不该让卡片闪一下；期间重新进入按钮则取消收起。卡片本身不接收鼠标事件
       // (setIgnoreMouseEvents)，所以指针不会停留在卡片上——收起只由按钮的 mouseleave 决定。
-      const usageButton = document.querySelector('button[data-menu="usage"]')
       if (usageButton && typeof api.hoverUsage === 'function') {
         let hideTimer = null
         const cancelHide = () => {

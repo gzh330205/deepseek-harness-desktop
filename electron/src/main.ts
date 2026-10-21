@@ -1045,7 +1045,6 @@ const MENU_TEMPLATES: Record<ShellMenuName, () => Electron.MenuItemConstructorOp
   app: appMenuTemplate,
   plugins: pluginsMenuTemplate,
   pocket: pocketMenuTemplate,
-  usage: usageMenuTemplate,
 }
 
 /**
@@ -1561,31 +1560,11 @@ function openPocketWindow(): void {
 }
 
 /**
- * The 用量 menu (ONE-WAY token usage).
+ * The 用量 window (ONE-WAY token usage).
  *
- * The window owns everything; the menu is the shortcut surface: open it, refresh it, log out. It is
- * a shell feature now, so no DSH page or plugin is involved.
+ * The window owns everything. There is deliberately no 用量 menu: refresh and logout already exist
+ * inside the window, and the title strip opens it directly on click.
  */
-function usageMenuTemplate(): Electron.MenuItemConstructorOptions[] {
-  return [
-    { label: '打开用量面板…', click: () => { openUsageWindow() } },
-    {
-      label: '立即刷新',
-      click: () => {
-        void usage().snapshot({ force: true })
-          .then((snapshot) => pushLog(`用量：刷新${snapshot.loggedIn ? '完成' : '未登录'}${snapshot.error === undefined ? '' : `（${snapshot.error}）`}`))
-          .catch((error: unknown) => pushLog(`用量：刷新失败 ${String(error)}`))
-      },
-    },
-    { type: 'separator' },
-    {
-      label: '退出登录',
-      click: () => {
-        void usage().logout().then(() => pushLog('用量：已退出登录')).catch((error: unknown) => pushLog(`用量：退出登录失败 ${String(error)}`))
-      },
-    },
-  ]
-}
 
 /** Lazy accessor: the service is created on first use so startup pays nothing when unused. */
 function usage(): UsageService {
@@ -2508,6 +2487,15 @@ async function boot(): Promise<void> {
     const valid = rect !== undefined
       && typeof rect.x === 'number' && typeof rect.y === 'number' && typeof rect.height === 'number'
     return popupShellMenu(name, valid ? { x: rect.x as number, y: rect.y as number, height: rect.height as number } : undefined)
+  })
+
+  ipcMain.handle(IPC.usageOpen, (event) => {
+    // Same ownership rule as the menus: only the strip may open shell windows.
+    if (event.sender !== titleBarView?.webContents) {
+      throw new Error('dsh desktop: rejected title bar IPC from an unowned renderer')
+    }
+    openUsageWindow()
+    return true
   })
 
   ipcMain.handle(IPC.launcherSubscribe, (event) => {
