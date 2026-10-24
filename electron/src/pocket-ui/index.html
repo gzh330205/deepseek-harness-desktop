@@ -21,8 +21,10 @@
       margin: 0; padding: 18px 20px 16px;
       background: var(--bg); color: var(--fg);
       font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-      user-select: none;
+      user-select: text;
     }
+    /* Interactive chrome stays unselectable; everything else can be copied. */
+    button, summary, label { user-select: none; }
     h1 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
     p.hint { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
     section { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; background: var(--panel); }

@@ -106,6 +106,7 @@ import { pocketConnectLink, pocketQrDataUrl } from './pocket-qr.ts'
 import { createMarketWindow, installForVerification, installGithubForVerification } from './market-open.ts'
 import { marketChildEnvironment, resolveMarketRuntime } from './market-install.ts'
 import { titleBarPalette } from './constants.ts'
+import { installCopyContextMenus } from './context-menu-install.ts'
 import { createTray, resolveIconPath } from './tray.ts'
 import { UpdateController } from './update-controller.ts'
 import { UpdateWindow } from './update-window.ts'
@@ -2846,6 +2847,8 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     // No native menu bar: the strip's buttons pop these submenus up instead.
     Menu.setApplicationMenu(null)
+    // Shell windows only: right-click gets copy/paste/select-all instead of nothing.
+    installCopyContextMenus()
 
     tray = createTray({
       show: showMainWindow,
