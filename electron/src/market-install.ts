@@ -150,7 +150,7 @@ const FAILURE_RULES: readonly {
     test: /minimumReleaseAge|minimum release age|published too recently|MINIMUM_RELEASE_AGE/iu,
     kind: 'too-new',
     message: '这个版本刚发布，被 pnpm 的「新版本冷静期」拦住了',
-    hint: '等几天再装，或改用列表里较早的版本',
+    hint: '等它满 24 小时（冷静期）再装；或在 profile 的 pnpm-workspace.yaml 设置 trustLockfile: true 跳过锁文件复检',
   },
   {
     // GitHub sources fail differently from registry sources: git itself has to run, and the tarball
@@ -164,6 +164,43 @@ const FAILURE_RULES: readonly {
 ]
 
 /**
+ * The offending entry pnpm names when a *lockfile* verification fails:
+ *
+ *     billion-context@0.1.205 was published at 2026-10-23T18:07:01.660Z, within the minimumReleaseAge cutoff …
+ *
+ * This is a different failure from "the package you asked for is too new": pnpm checks every entry in
+ * the existing lockfile before resolving, so a plugin installed minutes ago makes the *next* install
+ * fail, and the error text then names that unrelated package. Blaming the requested plugin (which may
+ * be days old) sends users chasing the wrong thing, so the message has to name the real entry.
+ */
+const LOCKFILE_RELEASE_AGE = /([^\s'"]+)@([^\s'"]+) was published at ([^,\n]+), within the minimumReleaseAge cutoff/u
+
+/** Format an ISO timestamp as `YYYY-MM-DD HH:mm` in Beijing time, deterministically. */
+function cstMinute(iso: string): string | undefined {
+  const milliseconds = Date.parse(iso)
+  if (!Number.isFinite(milliseconds)) return undefined
+  const date = new Date(milliseconds + 8 * 60 * 60_000)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${String(date.getUTCFullYear())}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
+}
+
+/** Replace the generic "too new" text with the lockfile entry pnpm actually rejected. */
+function refineTooNew(text: string, failure: MarketFailure): MarketFailure {
+  const match = LOCKFILE_RELEASE_AGE.exec(text)
+  if (match === null) return failure
+  const [, name, version, publishedIso] = match
+  if (name === undefined || version === undefined || publishedIso === undefined) return failure
+  const published = cstMinute(publishedIso)
+  if (published === undefined) return failure
+  const eligible = cstMinute(new Date(Date.parse(publishedIso) + 24 * 60 * 60_000).toISOString())
+  return {
+    kind: 'too-new',
+    message: `锁文件里的 ${name}@${version} 刚发布（${published}），触发了 pnpm 的锁文件供应链校验；这次要装的包本身没问题`,
+    hint: `等它满 24 小时（约 ${eligible ?? '明天同一时间'}）再更新，或在 profile 的 pnpm-workspace.yaml 设置 trustLockfile: true 跳过对已装条目的复检`,
+  }
+}
+
+/**
  * Turn pnpm's output into a category the UI can act on.
  *
  * Returns `undefined` when pnpm succeeded — callers must not classify success.
@@ -175,7 +212,10 @@ export function classifyPnpmFailure(output: string, code: number | null): Market
   if (code === 0) return undefined
   const text = output
   for (const rule of FAILURE_RULES) {
-    if (rule.test.test(text)) return { kind: rule.kind, message: rule.message, ...(rule.hint === undefined ? {} : { hint: rule.hint }) }
+    if (rule.test.test(text)) {
+      const failure: MarketFailure = { kind: rule.kind, message: rule.message, ...(rule.hint === undefined ? {} : { hint: rule.hint }) }
+      return rule.kind === 'too-new' ? refineTooNew(text, failure) : failure
+    }
   }
   const firstError = text
     .split(/\r?\n/u)

@@ -63,6 +63,27 @@ test('known pnpm failures get a name, a message and — where we know one — a 
   assert.equal(classifyPnpmFailure('pnpm-workspace.yaml claims this install', 1)?.kind, 'workspace')
 })
 
+test('a lockfile policy failure names the entry pnpm rejected, not the plugin the user asked for', () => {
+  const output = [
+    '✗ Lockfile failed supply-chain policy check (117 entries in 10.3s)',
+    '[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:',
+    '  billion-context@0.1.205 was published at 2026-10-23T18:07:01.660Z, within the minimumReleaseAge cutoff (2026-10-23T00:53:47.142Z)',
+  ].join('\n')
+  const failure = classifyPnpmFailure(output, 1)
+  assert.equal(failure?.kind, 'too-new')
+  assert.match(failure?.message ?? '', /billion-context@0\.1\.205/u)
+  assert.match(failure?.message ?? '', /锁文件/u)
+  assert.match(failure?.hint ?? '', /trustLockfile: true/u)
+  // 18:07Z + 8h + 24h = 次日 02:07 北京时间.
+  assert.match(failure?.hint ?? '', /2026-10-25 02:07/u)
+})
+
+test('a generic too-new failure still suggests the lockfile escape hatch', () => {
+  const failure = classifyPnpmFailure('ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION published too recently', 1)
+  assert.equal(failure?.kind, 'too-new')
+  assert.match(failure?.hint ?? '', /trustLockfile: true/u)
+})
+
 test('an unclassified failure still carries the first error line, not just an exit code', () => {
   const failure = classifyPnpmFailure('WARN something\n ERR_PNPM_SOMETHING_NEW  weird\nmore', 1)
   assert.equal(failure?.kind, 'unknown')

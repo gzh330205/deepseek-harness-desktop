@@ -125,5 +125,5 @@ test('the failures GitHub sources actually produce have their own categories', (
   assert.equal(classifyPnpmFailure('ERROR  published too recently', 1)?.kind, 'too-new')
   assert.equal(classifyPnpmFailure('ERR_PNPM_GIT_UNKNOWN_ERROR  Command failed with exit code 128', 1)?.kind, 'github')
   assert.equal(classifyPnpmFailure('Failed to fetch tarball https://github.com/a/b/releases/latest/download/b.tgz', 1)?.kind, 'github')
-  assert.match(classifyPnpmFailure('ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION', 1)?.hint ?? '', /等几天/u)
+  assert.match(classifyPnpmFailure('ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION', 1)?.hint ?? '', /24 小时/u)
 })
